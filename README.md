@@ -1,4 +1,4 @@
-# Silent Pass VPN UI
+# Silent Pass VPN for iOS
 
 Silent Pass combines decentralization, fragmentation, and a zero-trust architecture to deliver unparalleled internet privacy.
 
