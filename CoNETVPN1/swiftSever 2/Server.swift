@@ -30,8 +30,6 @@ class Server {
         self.portNumber = port
     }
     
-    
-
     func start() {
         print("Local Proxy Server starting on port \(self.port) ...")
         listener.stateUpdateHandler = self.stateDidChange(to:)

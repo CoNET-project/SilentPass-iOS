@@ -3,6 +3,12 @@
 <plist version="1.0">
 <dict>
 	<key>com.apple.developer.networking.networkextension</key>
-	<array/>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.fx168.CoNETVPN1.CoNETVPN1</string>
+	</array>
 </dict>
 </plist>

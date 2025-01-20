@@ -1,0 +1,51 @@
+{
+  "originHash" : "cf057c38b89be5f15350b5f544d3dc13f6ed43b70026374babed645b8f6a0c7f",
+  "pins" : [
+    {
+      "identity" : "bigint",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/attaswift/BigInt.git",
+      "state" : {
+        "revision" : "0ed110f7555c34ff468e72e1686e59721f2b0da6",
+        "version" : "5.3.0"
+      }
+    },
+    {
+      "identity" : "cryptoswift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/krzyzanowskim/CryptoSwift.git",
+      "state" : {
+        "revision" : "039f56c5d7960f277087a0be51f5eb04ed0ec073",
+        "version" : "1.5.1"
+      }
+    },
+    {
+      "identity" : "mbprogresshud",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jdg/MBProgressHUD.git",
+      "state" : {
+        "revision" : "bca42b801100b2b3a4eda0ba8dd33d858c780b0d",
+        "version" : "1.2.0"
+      }
+    },
+    {
+      "identity" : "objectivepgp",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/krzyzanowskim/ObjectivePGP.git",
+      "state" : {
+        "revision" : "29d7a531f00140224434d0cbaf5f2f21168bfe9c",
+        "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "web3swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/web3swift-team/web3swift.git",
+      "state" : {
+        "revision" : "8a026108ae5ff730ac83e9b574c8cf1c14413c94",
+        "version" : "3.2.2"
+      }
+    }
+  ],
+  "version" : 3
+}

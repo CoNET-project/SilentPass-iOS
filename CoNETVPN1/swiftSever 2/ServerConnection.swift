@@ -31,6 +31,7 @@ class ServerConnection {
     let port: UInt16
     var serverBridge: ServerBridge!
     var excludeIP: [String]
+    let dns = DomainFilter()
     init(nwConnection: NWConnection, _layerMinus: LayerMinus, port: UInt16) {
 
         connection = nwConnection
@@ -82,10 +83,7 @@ class ServerConnection {
                 break
         }
         var sockString = socks5 ? "socks5" : "socks"
-        var _excludeIP = ""
-        for ip in excludeIP {
-            _excludeIP += "   isInNet( dnsResolve( host ), \"\(ip)\", \"255.255.255.255\" ) ||\n"
-        }
+        let _excludeIP = dns.getSocksDomain()
         var ret = "function FindProxyForURL ( url, host ) {\n"
                 + "if (isInNet ( dnsResolve( host ), \"0.0.0.0\", \"255.0.0.0\") ||\n"
                 + "   isInNet( dnsResolve( host ), \"172.16.0.0\", \"255.240.255.0\") ||\n"

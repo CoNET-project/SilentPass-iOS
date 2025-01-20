@@ -9,17 +9,6 @@ import Foundation
 import Network
 
 
-let AVAILABLE_INTERFACES = [
-    "en0",
-    "en2",
-    "en3",
-    "en4",
-    "pdp_ip0",
-    "pdp_ip1",
-    "pdp_ip2",
-    "pdp_ip3",
-]
-
 class ServerConnection {
     //The TCP maximum package size is 64K 65536
     let MTU = 65536
@@ -46,7 +35,7 @@ class ServerConnection {
     var didStopCallback: ((Error?) -> Void)? = nil
 
     func start() {
-        print("Local Proxy \(self.port) connection \(id) will start")
+        NSLog("Local Proxy \(self.port) connection \(id) will start")
         connection.stateUpdateHandler = self.stateDidChange(to:)
         setupReceive()
         connection.start(queue: .main)
@@ -100,6 +89,12 @@ class ServerConnection {
                 + "   dnsDomainIs( host, \".icloud.com\") ||\n"
                 + "   dnsDomainIs( host, \".icloud-content.com\") ||\n"
                 + "   dnsDomainIs( host, \".apple.com\") ||\n"
+                + "   dnsDomainIs( host, \".aplle.com\")) {\n"
+                + "   dnsDomainIs( host, \".cn\")) {\n"
+                + "   dnsDomainIs( host, \".qq.com\")) {\n"
+                + "   dnsDomainIs( host, \".cdn-apple.com\") ||\n"
+                + "   dnsDomainIs( host, \".apple.news\") ||\n"
+        
                 + "   dnsDomainIs( host, \".local\")) {\n"
                 //+ "   dnsDomainIs( host, \".openpgp.online\")) {\n"
                 + "       return \"DIRECT\";\n"
@@ -118,7 +113,7 @@ class ServerConnection {
             if let data = data, !data.isEmpty {
                 //      Try http & https Proxy Protocol
                 let header = String(data: data, encoding: .utf8) ?? ""
-                print(header)
+                NSLog(header)
                 if header.hasPrefix("CONNECT ") {
                     self.connection.receive(minimumIncompleteLength: 1, maximumLength: self.MTU) {(data1, _, isComplete, error) in
                         if let data1 = data1, !data1.isEmpty {
@@ -131,7 +126,7 @@ class ServerConnection {
                 
                 if header.hasPrefix("GET /pac HTTP/") {
                     var splitLine = header.components(separatedBy: "\r")
-                    print(splitLine)
+                    NSLog("Local Proxy /pac" + splitLine.joined(separator: "\n"))
                     return self.send(data: self.responseHttp(body: self.retPac(socks5: false, excludeIP: self.excludeIP)))
                 }
                 
@@ -143,7 +138,7 @@ class ServerConnection {
                 let hexStr = data.hexString
                 if hexStr.hasPrefix("04") {
                     let connect = Socks4(client: self, data: data)
-                    return print("Local Proxy \(self.port) received Socks v4 data \(hexStr)")
+                    return NSLog("Local Proxy \(self.port) received Socks v4 data \(hexStr)")
                 }
                 
                 if hexStr.hasPrefix("05") {
@@ -151,14 +146,14 @@ class ServerConnection {
                     return self.serverBridge = connect.serverBridge
                 }
                 
-                print("Local Proxy \(self.port) received unknow Protocol \(hexStr) ")
-                print("Local Proxy \(self.port) \(data.base64EncodedString())")
+                NSLog("Local Proxy \(self.port) received unknow Protocol \(hexStr) ")
+                NSLog("Local Proxy \(self.port) \(data.base64EncodedString())")
                 return self.stop(error: nil)
             }
             
             
             if let error = error {
-                print("Local Proxy \(self.port) connection \(self.id) error")
+                NSLog("Local Proxy \(self.port) connection \(self.id) error")
                 self.connectionDidFail(error: error)
             }
         }
@@ -191,8 +186,9 @@ class ServerConnection {
                             let request = self.layerMinus.makeRequest(host: entryNode, data: pre_request)
                             let port = NWEndpoint.Port(rawValue: 80)!
                             let host = NWEndpoint.Host(entryNode)
+                            NSLog("Local Proxy \(self.id) http protocol Target :[\(message)] ")
                             self.serverBridge = ServerBridge(sendData: request.data(using: .utf8)!, host: host, port: port, proxyConnect: self)
-//                            print("Proxy connect started entry node:[ \(entryNode):\(_entryNode.ip_addr) ] egress node:[ \(egressNode):\(_egressNode.ip_addr) ] request:[ \(request) ]")
+//                            NSLog("Proxy connect started entry node:[ \(entryNode):\(_entryNode.ip_addr) ] egress node:[ \(egressNode):\(_egressNode.ip_addr) ] request:[ \(request) ]")
                             return self.serverBridge.start()
                         }
                     }
@@ -209,7 +205,7 @@ class ServerConnection {
             }
             let userInfo: [String: Any] = ["当前通知类型": "网络连接失败","重试": "需重试"]
             NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-            print("Local Proxy \(self.port) hasn't EgressNodes yet Error!")
+            NSLog("Local Proxy \(self.port) hasn't EgressNodes yet Error!")
             self.stop(error: nil)
         }))
     }
@@ -221,32 +217,33 @@ class ServerConnection {
             if let error = error {
                 return self.stop(error: error)
             }
-            print("Local Proxy \(self.port) connection \(self.id) did send, data: \(data)")
+            NSLog("Local Proxy \(self.port) connection \(self.id) did send, data: \(data)")
         }))
     }
 
 
     func connectionDidFail(error: Error) {
-        print("Local Proxy \(self.port) connection \(id) did fail, error: \(error)")
+        NSLog("Local Proxy \(self.port) connection \(id) did fail, error: \(error)")
         stop(error: error)
     }
 
     private func connectionDidEnd() {
-        print("Local Proxy \(self.port) connection \(id) did end")
+        NSLog("Local Proxy \(self.port) connection \(id) did end")
         stop(error: nil)
     }
 
     func stop(error: Error?) {
         if self.connection.stateUpdateHandler != nil {
             self.connection.stateUpdateHandler = nil
-            self.connection.cancel()
+            
         }
+        
         
         if self.serverBridge != nil {
             self.serverBridge.stop(error: error)
             self.serverBridge = nil
         }
-        
+        self.connection.cancel()
         if let didStopCallback = didStopCallback {
             self.didStopCallback = nil
             didStopCallback(error)

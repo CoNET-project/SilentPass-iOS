@@ -10,13 +10,14 @@ import os.log
 
 class PacketTunnelProvider: NEPacketTunnelProvider {
     var localServer: Server?
-    let port = 8889
+    let port = 8888
 //    let log = Logger(subsystem: "com.example.myvpnapp", category: "packet-tunnel")
     
     var server: Server!
     var layerMinus:LayerMinus!
     let localhost = "127.0.0.1"
     let VirtualIP = "10.222.222.222"
+    
     override init() {
         super.init()
 //        self.log.log(level: .debug, "隧道启动")
@@ -44,19 +45,17 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let egressNodes = layerMinus.nodeJSON(nodeJsonStr: egressNodesStr)
         let entryNodesIpAddress = entryNodes.map { $0.ip_addr }
         let egressNodesIpAddress = egressNodes.map { $0.ip_addr }
-        NSLog("PacketTunnelProvider VPN 隧道启动 egressNodes [\(egressNodesIpAddress)] entryNodes [\(entryNodesIpAddress)]")
-        layerMinus.startInVPN(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes, port: self.port)
+        NSLog("MiningProcess PacketTunnelProvider VPN 隧道启动 egressNodes [\(egressNodesIpAddress)] entryNodes [\(entryNodesIpAddress)]")
+        self.layerMinus.startInVPN(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes, port: self.port)
         
         
         let delay = DispatchTime.now() + 1
-            DispatchQueue.main.asyncAfter(deadline: delay) {
+        DispatchQueue.main.asyncAfter(deadline: delay) {
                 
-                self.setup(entryNodes: entryNodesIpAddress, egressNodes: egressNodesIpAddress, completionHandler: completionHandler)
+            self.setup(entryNodes: entryNodesIpAddress, egressNodes: egressNodesIpAddress, completionHandler: completionHandler)
                 
         }
-                
-        
-       
+    
         
     }
     
@@ -68,8 +67,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     
 //        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: VirtualIP)
         settings.mtu = 1500
-        
 //        settings.dnsSettings = NEDNSSettings(servers: ["8.8.8.8", "1.1.1.1"])
+//        settings.dnsSettings?.matchDomains = [""]
         //      proxy setup
         
         
@@ -81,6 +80,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         
         proxySettings.httpsEnabled = true
         proxySettings.httpsServer = NEProxyServer(address: localhost, port: self.port)
+        
         
         proxySettings.autoProxyConfigurationEnabled = true
         proxySettings.excludeSimpleHostnames = true
@@ -99,7 +99,27 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 //                localServer?.putNodes(entryNodes: entryNodesArray1, egressNodes: egressNodesArray1, privateKey: privateKey)
         
         // 添加额外的条目到 exceptionList
-        let updatedArray = combinedArray + ["*.apple.com","*.push-apple.com.akadns.net"]
+        let dns = DomainFilter()
+        let addedArray = dns.getIPArray()
+        
+        let updatedArray = addedArray + combinedArray + [
+            "10.0.0.0/8",
+            "169.254.0.0/16",
+            "172.16.0.0/14",
+            "192.168.0.0/16",
+            "127.0.0.0/8",
+            "1.1.1.1/32",
+            "8.8.8.8/32",
+            "*.local",
+            "conet.network","*.conet.network",
+//
+//            "*.apple.com","*.push-apple.com.akadns.net",
+//            "*.icloud.com",
+//            "apple-mapkit.com","*.apple-mapkit.com","*.firefox.com","*.mozilla.com","*.icloud-content.com",
+//            "*.cdn-apple.com","*.aplle.com","*.cdn-apple.com","*.apple.news","*.apple.com.edgecast.net",
+//            "*.cn","qq.com","*.qq.com",
+            
+        ]
          
         
         print(updatedArray) // 验证合并结果
@@ -128,10 +148,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         // 遍历 combinedArray 数组
         var nodeArray = [NEIPv4Route]()
         for node in combinedArray {
-            
             let route = NEIPv4Route(destinationAddress: node, subnetMask: "255.255.255.255")
             nodeArray.append(route) // 将路由添加到可变数组
-            
+        }
+        for ip in dns.getAll_IpAddr() {
+            let mask = dns.getMask(ip)
+            nodeArray.append(NEIPv4Route(destinationAddress: ip, subnetMask: mask))
         }
 
         nodeArray.append(NEIPv4Route(destinationAddress: "10.0.0.0", subnetMask: "255.0.0.0"))
@@ -139,8 +161,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         nodeArray.append(NEIPv4Route(destinationAddress: "172.16.0.0", subnetMask: "255.240.255.0"))
         nodeArray.append(NEIPv4Route(destinationAddress: "192.168.0.0", subnetMask: "255.255.0.0"))
         nodeArray.append(NEIPv4Route(destinationAddress: "127.0.0.0", subnetMask: "255.0.0.0"))
-
+        nodeArray.append(NEIPv4Route(destinationAddress: "1.1.1.1", subnetMask: "255.255.255.255"))
+        nodeArray.append(NEIPv4Route(destinationAddress: "8.8.8.8", subnetMask: "255.255.255.255"))
         ipv4Settings.excludedRoutes = nodeArray
+        
+        
             
         settings.ipv4Settings = ipv4Settings
 //        settings.ipv4Settings = NEIPv4Settings(addresses: ["10.0.0.252"], subnetMasks: ["255.255.255.255"])
@@ -197,6 +222,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         print("停止启动")
         localServer?.stop()
+        localServer?.layerMinus.miningProcess.keep = false
+        localServer?.layerMinus.miningProcess?.stop(false)
+        server.stop()
         // Add code here to start the process of stopping the tunnel.
         completionHandler()
     }

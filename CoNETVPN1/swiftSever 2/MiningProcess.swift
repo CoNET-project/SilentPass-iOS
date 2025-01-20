@@ -9,28 +9,41 @@ import Foundation
 
 class MiningProcess {
     let MTU = 65536
-    var _layerMinus: LayerMinus
+    var _layerMinus: LayerMinus!
     var miningNodeObj: NWConnection!
     var miningNode: Node!
     var firstSend: Data = "".data(using: .utf8)!
     var body = Data()
-    var first = true
-    init (layerMinus: LayerMinus) {
+    var firstResponse = true
+    var processing = false
+    var port: Int
+    var startMessage: String
+    var keep = true
+    var listeningCount = 0
+    init (layerMinus: LayerMinus, post: Int, message: String) {
         self._layerMinus = layerMinus
+        self.port = post
+        self.startMessage = message
     }
     
     
     func start() {
-        self.first = true
+        NSLog("MiningProcess \(self.port) \(self.startMessage) start() ")
+        if self.processing == true {
+            return NSLog("MiningProcess \(self.port) \(self.startMessage) start Error! already other process started")
+        }
+        self.firstResponse = true
+        self.processing  = true
         
         Task {
             self.miningNode = self._layerMinus.getRandomEntryNodes()
            
             if (self.miningNode.ip_addr == "") {
-                return print("MiningProcess Error! No mining node can found from getRandomNodeFromEntryNodes")
+                processing = false
+                return print("MiningProcess \(self.port) \(self.startMessage)  Error! No mining node can found from getRandomNodeFromEntryNodes")
             }
             
-            NSLog("MiningProcess 挖礦開始，聆聽節點\(self.miningNode.ip_addr) 本地IP address \(self._layerMinus.localIpaddress)")
+            NSLog("MiningProcess \(self.port) \(self.startMessage) 挖礦開始，聆聽節點\(self.miningNode.ip_addr)")
             let host = NWEndpoint.Host(self.miningNode.ip_addr)
             let post = NWEndpoint.Port(80)
             self.miningNodeObj = NWConnection(host: host, port: post, using: .tcp)
@@ -38,7 +51,7 @@ class MiningProcess {
             let _data =  try await self._layerMinus.createConnectCmd(node: self.miningNode)
             
             let sendDate = self._layerMinus.makeRequest(host: self.miningNode.ip_addr, data: _data)
-            NSLog("MiningProcess \(sendDate) ")
+            NSLog("MiningProcess \(self.port) \(self.startMessage) \(sendDate) ")
             self.firstSend = sendDate.data(using: .utf8)!
             self.miningNodeObj.start(queue: .main)
         }
@@ -60,31 +73,32 @@ class MiningProcess {
     
     
     private func ready () {
-        NSLog("MiningProcess connectMining ready")
+        NSLog("MiningProcess connectMining \(self.startMessage) ready")
         self.miningNodeObj.send(content: self.firstSend, completion: .contentProcessed( { error in
             if let error = error {
                 self.connectionDidFail(error: error)
                 return
             }
-            NSLog("MiningProcess connectMining did first")
+            NSLog("MiningProcess \(self.port) \(self.startMessage) connectMining did first")
             self.nextStep()
         }))
     }
     
     private func nextStep () {
         self.miningNodeObj.receive(minimumIncompleteLength: 1, maximumLength: MTU) {(data, _, _, error) in
-            if (error != nil) {
-                return self.stop(keep: true)
-            }
             
             if let data = data, !data.isEmpty {
                 self.body += data
+                
+                
                 if let responseJSON = try? JSONSerialization.jsonObject(with: self.body, options: []) as? [String: Any] {
                     if let epoch = responseJSON["epoch"] as? String {
                         let nodeHash = responseJSON["hash"] as! String
+                        let before = Date()
+                        
                         Task {
                             let minerResponseHash = await self._layerMinus.signEphch(hash: nodeHash)
-                            NSLog("MiningProcess epoch \(epoch) \(self._layerMinus.walletAddress)\nhash \(minerResponseHash)")
+                            NSLog("MiningProcess \(self.port) \(self.startMessage) epoch \(epoch) \(self._layerMinus.walletAddress)\nhash \(minerResponseHash)")
                             let nodeWallet = responseJSON["nodeWallet"] as! String
                             let nodeDomain = responseJSON["nodeDomain"] as! String
                             
@@ -97,15 +111,20 @@ class MiningProcess {
                                     if let callFun2 = self._layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message") {
                                         if let ret2 = callFun2.call(withArguments: [message, "0x\(signMessage.toHexString())"]) {
                                             let cmd = ret2.toString()!
-//                                            print("Mining epoch \(epoch) \(self._layerMinus.privateKeyAromed)\nhash \(minerResponseHash)\n\(message)")
-
+                                            //                                            print("Mining epoch \(epoch) \(self._layerMinus.privateKeyAromed)\nhash \(minerResponseHash)\n\(message)")
+                                            
                                             self._layerMinus.egressNodes.forEach { _node in
                                                 let response = self._layerMinus.createValidatorData(node: _node, responseData: cmd)
                                                 let submitNode = self._layerMinus.getRandomEntryNodes().ip_addr
                                                 if !response.isEmpty {
-                                                    print("MiningProcess [\(self._layerMinus.walletAddress)] 挖礦信息，送往出口節點 Send Validator to Node [\(_node.ip_addr)] via submitNode 通過入口 \(submitNode) 轉發")
-                                                    NSLog("MiningProcess  [\(self._layerMinus.walletAddress)] 挖礦信息，送往出口節點 Send Validator to Node [\(_node.ip_addr)] via submitNode 通過入口 \(submitNode) 轉發")
-                                                    let validNode = ValidatorPost(postData: response, node: submitNode, layerMinus: self._layerMinus )
+                                                    let after = Date()
+                                                    let timeInterval = after.timeIntervalSince(before)
+                                                    if timeInterval > 48 {
+                                                        return NSLog("NSLog MiningProcess timeInterval = \(timeInterval) > 48 STOP 送往出口節點")
+                                                        
+                                                    }
+                                                    NSLog("NSLog MiningProcess timeInterval = [\(timeInterval)] \(self.startMessage) \(self.port) listeningCount \(self.listeningCount) [\(self._layerMinus.walletAddress)] eposh \(epoch) 挖礦信息，送往出口節點 Send Validator to Node [\(_node.ip_addr)] via submitNode 通過入口 \(submitNode) 轉發")
+                                                    let validNode = ValidatorPost(postData: response, node: submitNode, layerMinus: self._layerMinus)
                                                     validNode.start()
                                                 }
                                             }
@@ -116,30 +135,30 @@ class MiningProcess {
                             }
                             
                         }
-                        self.body = "".data(using: .utf8)!
+                        
                     }
-                    
-                } else {
-                    if (self.first) {
-                        self.body = "".data(using: .utf8)!
-                        self.first = false
-                    }
+                    self.stop(true)
                 }
                 
-            } else {
-                NSLog("MiningProcess nextStep data.isEmpty")
-                return self.stop(keep: true)
+                if self.firstResponse == true {
+                    self.firstResponse = false
+                    self.body = "".data(using: .utf8)!
+                    
+                }
+                
             }
+            
             self.nextStep()
+            
         }
         
     }
     
-    func stop(keep: Bool) {
-        NSLog("MiningProcess 挖礦停止")
-        
+    func stop(_ keep: Bool = false) {
+        NSLog("MiningProcess \(self.port) 挖礦停止 with keep \(keep)")
+        processing = false
         guard let miningNode = miningNodeObj else {
-            NSLog("MiningProcess Error: miningNodeObj is nil")
+            NSLog("MiningProcess \(self.port) Error: miningNodeObj is nil")
             return // or handle error accordingly
         }
         
@@ -150,16 +169,23 @@ class MiningProcess {
             self.didStopCallback = nil
             didStopCallback(nil)
             
-            if keep {
-                return self.start()
+        }
+        
+        if keep == true {
+            let delay = DispatchTime.now() + 120
+            DispatchQueue.main.asyncAfter(deadline: delay) {
+                if self.keep == true {
+                    self.start()
+                }
             }
         }
     }
+    
     var didStopCallback: ((Error?) -> Void)? = nil
     
     private func connectionDidComplete(error: Error?) {
-        NSLog("MiningProcess ServerBridge connection did complete, error: \(String(describing: error))")
-        stop(keep: true)
+        NSLog("MiningProcess \(self.port) ServerBridge connection did complete, error: \(String(describing: error))")
+        
     }
     
     private func connectionDidFail(error: Error) {
@@ -167,8 +193,8 @@ class MiningProcess {
         let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
         NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
         
-        NSLog("MiningProcess ServerBridge connection did fail, error: \(error)")
-        stop(keep: true)
+        NSLog("MiningProcess \(self.port) ServerBridge connection did fail, error: \(error)")
+        
     }
     
 }

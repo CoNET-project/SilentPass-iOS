@@ -20,29 +20,29 @@ class Socks5 {
         self.client.connection.receive(minimumIncompleteLength: 1, maximumLength: self.client.MTU) {(data1, _, _, error) in
             if let error {
                 self.client.stop(error: error)
-                return print("Local Proxy Socks5 \(client.port) error: \(error)")
+                return print("Local Proxy Socks5 [\(client.id)] \(client.port) error: \(error)")
             }
             if let data = data1, !data.isEmpty {
                 self.buffer = data
                 self.rfc1928 = Rfc1928(data: data)
                 let req = data.hexString
-                print("Local Proxy Socks5 got first request: \(req) CMD \(String(describing: self.rfc1928.CMD()))")
+                NSLog("Local Proxy Socks5 got first request: \(req) CMD \(String(describing: self.rfc1928.CMD()))")
                 switch self.rfc1928.CMD() {
                     
                     case .BIND:
                         self.stop_stage1_withSUPPORTED_or_PROTOCOL_ERROR()
-                        return print("Local Proxy Socks5 \(client.port) got BIND request: \(req)")
+                        return NSLog("Local Proxy Socks5 \(client.port) got BIND request: \(req)")
                         
                     case .CONNECT:
                         return self.CONNECT()
                         
                     case .UDP_ASSOCIATE:
                         self.stop_stage1_withSUPPORTED_or_PROTOCOL_ERROR()
-                        return print("Local Proxy Socks5 \(client.port) got UDP_ASSOCIATE request: \(req)")
+                        return NSLog("Local Proxy Socks5 \(client.port) got UDP_ASSOCIATE request: \(req)")
                         
                     default :
                         self.stop_stage1_withSUPPORTED_or_PROTOCOL_ERROR()
-                        return print("Local Proxy Socks5 \(client.port) got invalid request: \(req)")
+                        return NSLog("Local Proxy Socks5 \(client.port) got invalid request: \(req)")
                 }
                 
                 
@@ -79,13 +79,13 @@ class Socks5 {
             case .DOMAINNAME:
                 host = self.rfc1928.domain()
             case .IP_V6:
-                print("Local Proxy Socks5 UDP_ASSOCIATE \(client.port) got CONNECT with IPv6 STOP")
+            NSLog("Local Proxy Socks5 UDP_ASSOCIATE \(client.port) got CONNECT with IPv6 STOP")
                 return self.stop_stage2_WithREQUEST_FAILED()
             default:
                 self.stop_stage2_WithREQUEST_FAILED()
-                return print("Local Proxy Socks5 UDP_ASSOCIATE \(client.port) got CONNECT with invalid ATYP: \(String(describing: self.rfc1928.ATYP()))")
+                return NSLog("Local Proxy Socks5 UDP_ASSOCIATE \(client.port) got CONNECT with invalid ATYP: \(String(describing: self.rfc1928.ATYP()))")
         }
-        print ("Local Proxy Socks5 \(client.port) got UDP_ASSOCIATE \(String(describing: self.rfc1928.ATYP())) with host: \(host):\(self.rfc1928.port()) buffer length = \(self.rfc1928.dataArray.count)")
+        NSLog ("Local Proxy Socks5 \(client.port) got UDP_ASSOCIATE \(String(describing: self.rfc1928.ATYP())) with host: \(host):\(self.rfc1928.port()) buffer length = \(self.rfc1928.dataArray.count)")
         print (self.buffer.hexString)
         self.client.connection.receive(minimumIncompleteLength: 1, maximumLength: self.client.MTU) {(data, _, isComplete, error) in
             if let data = data, !data.isEmpty {
@@ -107,13 +107,13 @@ class Socks5 {
             case .DOMAINNAME:
                 host = self.rfc1928.domain()
             case .IP_V6:
-                print("Local Proxy Socks5 \(client.port) got CONNECT with IPv6 STOP")
+            NSLog("Local Proxy Socks5 \(client.port) got CONNECT with IPv6 STOP")
                 return self.stop_stage2_WithREQUEST_FAILED()
             default:
                 self.stop_stage2_WithREQUEST_FAILED()
-                return print("Local Proxy Socks5 \(client.port) got CONNECT with invalid ATYP: \(String(describing: self.rfc1928.ATYP()))")
+                return NSLog("Local Proxy Socks5 \(client.port) got CONNECT with invalid ATYP: \(String(describing: self.rfc1928.ATYP()))")
         }
-        print ("Local Proxy Socks5 \(client.port) got CONNECT \(String(describing: self.rfc1928.ATYP())) with host: \(host):\(self.rfc1928.port()) buffer length = \(self.rfc1928.dataArray.count)")
+        NSLog ("Local Proxy Socks5 \(client.port) got CONNECT \(String(describing: self.rfc1928.ATYP())) with host: \(host):\(self.rfc1928.port()) buffer length = \(self.rfc1928.dataArray.count)")
         print (self.buffer.hexString)
         
         self.client.connection.receive(minimumIncompleteLength: 1, maximumLength: self.client.MTU) {(data, _, isComplete, error) in
@@ -168,21 +168,21 @@ class Socks4 {
             switch self.rfc1928.CMD() {
                 
                 case .BIND:
-                    print("Proxy Socks4 \(client.port) got BIND request: \(req)")
+                    NSLog("Proxy Socks4 \(client.port) got BIND request: \(req)")
                     self.stop_stage1_withSUPPORTED_or_PROTOCOL_ERROR()
                     return
                     
                 case .CONNECT:
-                    print("Proxy Socks4 \(client.port) got CONNECT request: \(req)")
+                    NSLog("Proxy Socks4 \(client.port) got CONNECT request: \(req)")
                     self.CONNECT()
                     return
                 case .UDP_ASSOCIATE:
-                    print("Proxy Socks4 \(client.port) got UDP_ASSOCIATE request: \(req)")
+                    NSLog("Proxy Socks4 \(client.port) got UDP_ASSOCIATE request: \(req)")
                     self.stop_stage1_withSUPPORTED_or_PROTOCOL_ERROR()
                     return
                     
                 default :
-                    print("Proxy Socks4 \(client.port) got invalid request: \(req)")
+                    NSLog("Proxy Socks4 \(client.port) got invalid request: \(req)")
                     self.stop_stage1_withSUPPORTED_or_PROTOCOL_ERROR()
                     return
             }
@@ -195,7 +195,7 @@ class Socks4 {
         self.client.connection.receive(minimumIncompleteLength: 1, maximumLength: self.client.MTU) {(data, _, isComplete, error) in
             if let data = data, !data.isEmpty {
                 let body = data.base64EncodedString()
-                print("Proxy Socks4 \(self.client.port) got CONNECT \(self.rfc1928.IPv4()):\(self.rfc1928.port()) body length = \(data.count)")
+                NSLog("Proxy Socks4 \(self.client.id) \(self.client.port) got CONNECT \(self.rfc1928.IPv4()):\(self.rfc1928.port()) body length = \(data.count)")
                 let message = self.client.layerMinus.makeSocksRequest(host: self.rfc1928.IPv4(), port: self.rfc1928.port(), body: body, command: "CONNECT")
                 let messageData = message.data(using: .utf8)!
                 let account = self.client.layerMinus.keystoreManager.addresses![0]

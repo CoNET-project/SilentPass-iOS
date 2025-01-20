@@ -18,36 +18,38 @@ import ObjectivePGP
 import JavaScriptCore
 
 func getIPAddress() -> String? {
-    var address : String?
+    var address: String?
 
-    // Get list of all interfaces on the local machine:
-    var ifaddr : UnsafeMutablePointer<ifaddrs>?
+    // 获取本地接口列表
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
     guard getifaddrs(&ifaddr) == 0 else { return nil }
     guard let firstAddr = ifaddr else { return nil }
 
-    // For each interface ...
+    // 遍历所有接口
     for ifptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
         let interface = ifptr.pointee
 
-        // Check for IPv4 or IPv6 interface:
-        let addrFamily = interface.ifa_addr.pointee.sa_family
-        if addrFamily == UInt8(AF_INET) { //    just need inet IPv4    }|| addrFamily == UInt8(AF_INET6) {
+        // 检查地址类型（IPv4）
+        guard let ifaAddr = interface.ifa_addr else { continue }
+        let addrFamily = ifaAddr.pointee.sa_family
+        if addrFamily == UInt8(AF_INET) { // 仅需要IPv4地址
 
-            // Check interface name:
-            // wifi = ["en0"]
-            // wired = ["en2", "en3", "en4"]
-            // cellular = ["pdp_ip0","pdp_ip1","pdp_ip2","pdp_ip3"]
-            
+            // 检查接口名称
             let name = String(cString: interface.ifa_name)
-//            if name == "en1" {
-                if  name == "en1" || name == "en0" || name == "en2" || name == "en3" || name == "en4" || name == "pdp_ip0" || name == "pdp_ip1" || name == "pdp_ip2" || name == "pdp_ip3" {
-                
-                // Convert interface address to a human readable string:
+            if name == "en0" || name == "en1" || name == "en2" || name == "en3" || name == "en4" || name.hasPrefix("pdp_ip") {
+
+                // 转换地址为可读字符串
                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
-                            &hostname, socklen_t(hostname.count),
-                            nil, socklen_t(0), NI_NUMERICHOST)
-                address = String(cString: hostname)
+                let result = getnameinfo(ifaAddr,
+                                         socklen_t(ifaAddr.pointee.sa_len),
+                                         &hostname,
+                                         socklen_t(hostname.count),
+                                         nil,
+                                         socklen_t(0),
+                                         NI_NUMERICHOST)
+                if result == 0 {
+                    address = String(cString: hostname)
+                }
             }
         }
     }
@@ -84,6 +86,7 @@ class LayerMinus {
     var CONET_Guardian_NodeInfo_ABI: String!
     var CONET_Guardian_NodeInfo_Contract: EthereumContract!
     var localIpaddress = ""
+    
     func initializeJS() {
         self.javascriptContext.exceptionHandler = { context, exception in
             if let exc = exception {
@@ -170,13 +173,13 @@ class LayerMinus {
         return ""
     }
     
-    init () {
+    init (port: Int) {
         
         self.keystoreManager = KeystoreManager([self.tempKeystore!])
         let account = self.keystoreManager.addresses![0]
         self.walletAddress = account.address.lowercased()
         self.initializeJS()
-        self.miningProcess = MiningProcess(layerMinus: self)
+        self.miningProcess = MiningProcess(layerMinus: self, post: port, message: "test")
         self.readCoNET_nodeInfoABI()
         
         do {
@@ -192,7 +195,7 @@ class LayerMinus {
             self.web3 = try await Web3.new(LayerMinus.rpcUrl)
             web3.addKeystoreManager(self.keystoreManager)
         }
-        self.localIpaddress =  getIPAddress()!
+        //self.localIpaddress =  getIPAddress()!
     }
     
     func makeRequest(host: String, data: String) -> String {
@@ -243,7 +246,7 @@ class LayerMinus {
         }
     }
     
-    func startInVPN (privateKey: String, entryNodes: [Node], egressNodes: [Node]) {
+    func startInVPN (privateKey: String, entryNodes: [Node], egressNodes: [Node], port: Int) {
         let privateKeyData = Data.fromHex(privateKey)!
         
         
@@ -273,9 +276,9 @@ class LayerMinus {
             self.web3 = try await Web3.new(LayerMinus.rpcUrl)
             web3.addKeystoreManager(self.keystoreManager)
         }
-        
-        self.miningProcess.stop(keep: false)
-        self.miningProcess = MiningProcess(layerMinus: self)
+        self.miningProcess.keep = false
+        self.miningProcess.stop(false)
+        self.miningProcess = MiningProcess(layerMinus: self, post: port, message: "from startInVPN")
         self.miningProcess.start()
     }
     

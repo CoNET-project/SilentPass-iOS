@@ -90,10 +90,6 @@ class VPNManager {
         let entryNodesIpAddress = self.layerMinus.entryNodes.map { $0.ip_addr }
         let egressNodesIpAddress = self.layerMinus.egressNodes.map { $0.ip_addr }
         print("activateTunnel \(egressNodesIpAddress) \(entryNodesIpAddress)")
-//        let layer = LayerMinus()
-//        layer.startInVPN(privateKey: privateKeyData, entryNodes: self.layerMinus.entryNodes, egressNodes: self.layerMinus.egressNodes)
-//        let server = Server(port: 8887, layerMinus: layerMinus)
-//        server.start()
            
         
         // 构造 options 字典
@@ -107,7 +103,8 @@ class VPNManager {
         do {
             try manager.connection.startVPNTunnel(options: options)
             NSLog("VPN tunnel started successfully with options.")
-            self.layerMinus.miningProcess.stop(keep: false)
+            self.layerMinus.miningProcess.keep = false
+            self.layerMinus.miningProcess.stop(false)
         } catch {
             NSLog("Failed to start VPN tunnel: \(error.localizedDescription)")
         }

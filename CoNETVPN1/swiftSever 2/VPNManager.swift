@@ -83,19 +83,7 @@ class VPNManager {
         let entryNodes = self.layerMinus.entryNodes_JSON()
         let privateKeyData = self.layerMinus.privateKeyAromed
         
-        let egressNodes_1 = self.layerMinus.nodeJSON(nodeJsonStr: egressNodes)
-        let egressNodesStr_1 = self.layerMinus.nodeJSON(nodeJsonStr: entryNodes)
-        
-        
-        let entryNodesIpAddress = self.layerMinus.entryNodes.map { $0.ip_addr }
-        let egressNodesIpAddress = self.layerMinus.egressNodes.map { $0.ip_addr }
-        print("activateTunnel \(egressNodesIpAddress) \(entryNodesIpAddress)")
-//        let layer = LayerMinus()
-//        layer.startInVPN(privateKey: privateKeyData, entryNodes: self.layerMinus.entryNodes, egressNodes: self.layerMinus.egressNodes)
-//        let server = Server(port: 8887, layerMinus: layerMinus)
-//        server.start()
-           
-        
+       
         // 构造 options 字典
             let options: [String: NSObject] = [
                 "entryNodes": entryNodes as NSObject,
@@ -106,11 +94,14 @@ class VPNManager {
         // 启动 VPN 并传递参数
         do {
             try manager.connection.startVPNTunnel(options: options)
-            NSLog("VPN tunnel started successfully with options.")
-            self.layerMinus.miningProcess.stop(keep: false)
+            NSLog("MiningProcess VPN tunnel started successfully with egressNodes \(self.layerMinus.egressNodes[0].ip_addr)")
+//            self.layerMinus.miningProcess.stop(keep: false)
         } catch {
             NSLog("Failed to start VPN tunnel: \(error.localizedDescription)")
         }
+        
+        
+        
     }
     
     // 关闭 VPN
@@ -137,7 +128,7 @@ class VPNManager {
     private func makeManager() -> NETunnelProviderManager {
         let manager = NETunnelProviderManager()
         manager.localizedDescription = "CoNET VPN"
-        let VirtualIP = "127.0.0.1:8889"
+        let VirtualIP = "127.0.0.1:8888"
         let proto = NETunnelProviderProtocol()
         proto.serverAddress = VirtualIP // 替换为实际服务器地址
 //        proto.includeAllNetworks = true
@@ -146,78 +137,12 @@ class VPNManager {
             proto.excludeLocalNetworks = true
         }
         
-        proto.providerBundleIdentifier = "com.fx168.maxVPN.CoNETVPN.macVPN" // 替换为实际 Bundle ID
+        proto.providerBundleIdentifier = "com.fx168.CoNETVPN1.CoNETVPN1.VPN" // 替换为实际 Bundle ID
         manager.protocolConfiguration = proto
         manager.isEnabled = true
         
         return manager
     }
     
-    @objc private func vpnStatusDidChange() {
-//        guard let connection = manager?.connection else {
-//            print("Failed to access VPN connection.")
-//            return
-//        }
-//        
-//        let statusDescription = statusToString(connection.status)
-//        print("VPN status changed: \(statusDescription)")
-        
-        // Notify the app about status changes
-        
-        
-        
-        getVPNConfigurationStatus()
-        
-    }
-    
-    private func statusToString(_ status: NEVPNStatus) -> String {
-            switch status {
-            case .invalid:
-                return "我的vpn Invalid (VPN configuration is invalid)"
-            case .disconnected:
-                return "我的vpnDisconnected (VPN is not active)"
-            case .connecting:
-                return "我的vpnConnecting (VPN is in the process of connecting)"
-            case .connected:
-                return "我的vpnConnected (VPN is active)"
-            case .reasserting:
-                return "我的vpnReasserting (VPN connection is being re-established)"
-            case .disconnecting:
-                return "我的vpnDisconnecting (VPN is in the process of disconnecting)"
-            @unknown default:
-                return "我的vpnUnknown status (\(status.rawValue))"
-            }
-        }
-    
-    
-    func getVPNConfigurationStatus() {
-        NETunnelProviderManager.loadAllFromPreferences { managers, error in
-            if let error = error {
-                print("Failed to load VPN configurations: \(error.localizedDescription)")
-                return
-            }
-
-            guard let managers = managers else {
-                print("No VPN configurations found")
-                return
-            }
-
-            for manager in managers {
-                print("VPN configuration: \(manager.localizedDescription ?? "Unknown")")
-                print("Status: \(manager.connection.status)")
-                if manager.localizedDescription == "CoNET"
-                {
-                    if manager.connection.status.rawValue == 1 ||   manager.connection.status.rawValue == 3
-                    {
-                        NotificationCenter.default.post(
-                            name: Notification.Name("VPNStatusChanged"),
-                            object: manager.connection.status
-                        )
-                    }
-                    
-                }
-                
-            }
-        }
-    }
+ 
 }

@@ -36,31 +36,38 @@ class ValidatorPost {
                 self.connectionDidFail(error: error)
                 return
             }
-            NSLog("PacketTunnelProvider 挖礦信息，送往出口節點 ValidatorPost send \(self.host) success!")
-            
-            let userInfo: [String: Any] = ["当前通知类型": "允许上网"]
-            NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-            
             self.nextStep()
         }))
     }
     
     private func nextStep() {
         self.validatorEntryNode.receive(minimumIncompleteLength: 1, maximumLength: MTU) {(data, _, isComplete, error) in
+            self.stop(error: nil)
+            
             if let data = data, !data.isEmpty {
+                let header = String(data: data, encoding: .utf8) ?? ""
+                if header.hasPrefix("HTTP/1.1 200 OK") {
+                    NSLog("PacketTunnelProvider receive data \(header)")
+                    let userInfo: [String: Any] = ["当前通知类型": "允许上网"]
+                    NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
+                    
+                }
                 
             }
+            
+            
             if let error = error {
 //                let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
 //                NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
                 NSLog("PacketTunnelProvider receive data ERROR! \(error)")
+                
             }
             
-            self.stop(error: nil)
         }
     }
     
     func stop (error: Error?) {
+        NSLog("PacketTunnelProvider  ValidatorPost STOP!")
         validatorEntryNode.stateUpdateHandler = nil
         validatorEntryNode.cancel()
         if let didStopCallback = didStopCallback {

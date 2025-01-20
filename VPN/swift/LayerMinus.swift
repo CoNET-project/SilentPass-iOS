@@ -179,7 +179,6 @@ class LayerMinus {
         let account = self.keystoreManager.addresses![0]
         self.walletAddress = account.address.lowercased()
         self.initializeJS()
-        self.miningProcess = MiningProcess(layerMinus: self, post: port)
         self.readCoNET_nodeInfoABI()
         
         do {
@@ -189,7 +188,8 @@ class LayerMinus {
             UserDefaults.standard.set(self.privateKey, forKey: "privateKey")
             UserDefaults.standard.synchronize()
         } catch {
-            print ("Error getting private key")
+            print ("LayerMinus Error getting private key!")
+            return
         }
         Task{
             self.web3 = try await Web3.new(LayerMinus.rpcUrl)
@@ -249,7 +249,6 @@ class LayerMinus {
     func startInVPN (privateKey: String, entryNodes: [Node], egressNodes: [Node], port: Int) {
         let privateKeyData = Data.fromHex(privateKey)!
         
-        
         self.tempKeystore = try! EthereumKeystoreV3(privateKey: privateKeyData, password: "")
         self.keystoreManager = KeystoreManager([self.tempKeystore!])
         
@@ -267,7 +266,7 @@ class LayerMinus {
             self.privateKeyAromed = self.privateKey.toHexString()
            
         } catch {
-            print ("PacketTunnelProvider startInVPN private key")
+            return NSLog ("PacketTunnelProvider startInVPN private key ERROR!")
         }
         
         NSLog("PacketTunnelProvider startInVPN privateKey \(self.privateKeyAromed) entryNodes [\(self.entryNodes.count)] egressNodes [\(self.egressNodes.count)]")
@@ -277,8 +276,12 @@ class LayerMinus {
             web3.addKeystoreManager(self.keystoreManager)
         }
         
-        self.miningProcess.stop(keep: false)
-        self.miningProcess = MiningProcess(layerMinus: self, post: port)
+//        if self.miningProcess != nil {
+//            self.miningProcess.keep = false
+//            self.miningProcess.stop(false)
+//            self.miningProcess = nil
+//        }
+        self.miningProcess = MiningProcess(layerMinus: self, post: port, message: "PacketTunnelProvider startInVPN")
         self.miningProcess.start()
     }
     
@@ -324,8 +327,6 @@ class LayerMinus {
             LayerMinus.allNodes =  NodeManager.allNodes
             LayerMinus.country = CountryManager.country
             print("测试1")
-            self.miningProcess.start()
-            print("测试2")
             return self.testRegion()
         }
         
@@ -411,7 +412,7 @@ class LayerMinus {
                     let entryNodesIpAddress = self.entryNodes.map { $0.ip_addr }
                     let egressNodesIpAddress = self.egressNodes.map { $0.ip_addr }
                     print("开始挖矿 入口節點 【\(entryNodesIpAddress)】出口節點【\(egressNodesIpAddress)】")
-                    self.miningProcess.start()
+//                    self.miningProcess.start()
                 }
                 else
                 {

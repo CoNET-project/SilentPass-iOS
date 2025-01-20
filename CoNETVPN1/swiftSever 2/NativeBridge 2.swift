@@ -1,5 +1,10 @@
 import WebKit
 
+struct startVPNFromUI: Codable {
+    var entryNodes: [Node]
+    var privateKey: String
+    var exitNode: [Node]
+}
 
 class NativeBridge: NSObject, WKScriptMessageHandler {
     
@@ -7,6 +12,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler {
     private var callbacks: [String: (Any?) -> Void] = [:]
     private var ready = false
     var viewController: ViewController!
+    
     init(webView: WKWebView, viewController: ViewController) {
         super.init()
         self.webView = webView
@@ -62,9 +68,24 @@ class NativeBridge: NSObject, WKScriptMessageHandler {
         
         //      UI JavaScript console
         if (message.name == "startVPN") {
-            let country: String = message.body as! String
-            self.viewController.layerMinus.setupEgressNodes(country: country)
-            self.viewController.vPNManager.refresh()
+            let base64EncodedString: String = message.body as! String
+            let base64EncodedData = base64EncodedString.data(using: .utf8)!
+            if let jsonText = Data(base64Encoded: base64EncodedData) {
+                let clearText = String(data: jsonText, encoding: .utf8)!
+                print(clearText)
+                let data = clearText.data(using: .utf8)!
+                do {
+                    let _data = try JSONDecoder().decode(startVPNFromUI.self, from: data)
+                    self.viewController.layerMinus.entryNodes = _data.entryNodes
+                    self.viewController.layerMinus.egressNodes = _data.exitNode
+                    self.viewController.layerMinus.privateKeyAromed = _data.privateKey
+                    self.viewController.vPNManager.refresh()
+                } catch {
+                    print(error)
+                }
+                
+            }
+            
             return print("VPN 初始化完成 message from UI JavaScript startVPN \(message.body)")
         }
         

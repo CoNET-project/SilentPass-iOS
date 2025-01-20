@@ -1,0 +1,30 @@
+PODS:
+  - PromiseKit (8.1.2):
+    - PromiseKit/CorePromise (= 8.1.2)
+    - PromiseKit/Foundation (= 8.1.2)
+    - PromiseKit/UIKit (= 8.1.2)
+  - PromiseKit/CorePromise (8.1.2)
+  - PromiseKit/Foundation (8.1.2):
+    - PromiseKit/CorePromise
+  - PromiseKit/UIKit (8.1.2):
+    - PromiseKit/CorePromise
+  - SVProgressHUD (2.3.1):
+    - SVProgressHUD/Core (= 2.3.1)
+  - SVProgressHUD/Core (2.3.1)
+
+DEPENDENCIES:
+  - PromiseKit
+  - SVProgressHUD
+
+SPEC REPOS:
+  trunk:
+    - PromiseKit
+    - SVProgressHUD
+
+SPEC CHECKSUMS:
+  PromiseKit: e057b5b3c0ce9a0145674d633930924234104ee3
+  SVProgressHUD: 4837c74bdfe2e51e8821c397825996a8d7de6e22
+
+PODFILE CHECKSUM: ef46c847674a2e5c36ee7a12f9e5a4f32dbb8026
+
+COCOAPODS: 1.16.2

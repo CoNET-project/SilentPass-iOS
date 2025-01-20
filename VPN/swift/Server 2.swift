@@ -33,7 +33,7 @@ class Server {
     
 
     func start() {
-        print("Local Proxy Server starting on port \(self.port) ...")
+        NSLog("Local Proxy Server starting on port \(self.port) ...")
         listener.stateUpdateHandler = self.stateDidChange(to:)
         listener.newConnectionHandler = self.didAccept(nwConnection:)
         listener.start(queue: .main)
@@ -43,12 +43,12 @@ class Server {
     func stateDidChange(to newState: NWListener.State) {
         switch newState {
         case .ready:
-          print("Server on ready.")
+            NSLog("Local Proxy on ready.")
         case .failed(let error):
-            print("Server failure, error: \(error.localizedDescription)")
+            NSLog("Local Proxy Server failure, error: \(error.localizedDescription)")
             exit(EXIT_FAILURE)
         default:
-            print("Server newState unknown, \(newState)")
+            NSLog("Local Proxy Server newState unknown, \(newState)")
             break
         }
     }
@@ -64,12 +64,12 @@ class Server {
 //        Server.swift
         
         
-        print("server did open connection \(connection.id)")
+        NSLog("Local Proxy server did open connection \(connection.id) TOTAL CONNECTION = \(self.connectionsByID.count)")
     }
 
     private func connectionDidStop(_ connection: ServerConnection) {
         self.connectionsByID.removeValue(forKey: connection.id)
-        print("server did close connection \(connection.id)")
+        NSLog("Local Proxy server did close connection \(connection.id) TOTAL CONNECTION = \(self.connectionsByID.count)")
     }
 
     func stop() {

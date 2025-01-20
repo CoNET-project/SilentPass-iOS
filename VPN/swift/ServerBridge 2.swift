@@ -45,12 +45,12 @@ class ServerBridge {
             if let data = data, !data.isEmpty {
                 self.proxyConnect.connection.send(content: data, completion: .contentProcessed ({ error in
                     if let error = error {
-                        print("ServerBridge Node \(data.count) ---> APP Error!")
+                        NSLog("ServerBridge Node \(data.count) ---> APP Error!")
 //                        let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
 //                        NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
                         return self.stop(error: error)
                     }
-                    print("ServerBridge send Node \(data.count) --->  APP SUCCESS!")
+                    NSLog("ServerBridge send Node \(data.count) --->  APP SUCCESS!")
                     let userInfo: [String: Any] = ["当前通知类型": "允许上网"]
                                 NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
                 }))
@@ -60,7 +60,7 @@ class ServerBridge {
                 self.stop(error: error)
 //                let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
 //                NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-                return print("ServerBridge receive Node data ERROR \(error)!")
+                return NSLog("ServerBridge receive Node data ERROR \(error)!")
             }
             
             if isComplete {
@@ -68,7 +68,7 @@ class ServerBridge {
             }
             
             
-            print("ServerBridge receive Node data \(data?.count ?? 0) isComplete ")
+            NSLog("ServerBridge receive Node data \(data?.count ?? 0) isComplete ")
             self.tcpClientStartReceive ()
             
         }
@@ -81,13 +81,13 @@ class ServerBridge {
                 let re = String(data: data, encoding: .utf8)
                 self.tcpClient.send(content: data, completion: .contentProcessed ({ error in
                     if let error = error {
-                        print("ServerBridge send APP \(data.count) --> Node Error!")
+                        NSLog("ServerBridge send APP \(data.count) --> Node Error!")
 //                        let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
 //                        NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
                         return self.stop(error: error)
                     }
                     
-                    print("ServerBridge send APP \(data.count) --> Node success!")
+                    NSLog("ServerBridge send APP \(data.count) --> Node success!")
                     let userInfo: [String: Any] = ["当前通知类型": "允许上网"]
                                 NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
                 }))
@@ -97,11 +97,11 @@ class ServerBridge {
                 self.stop(error: error)
 //                let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
 //                NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-                return print("ServerBridge receive APP data ERROR \(error)!")
+                return NSLog("ServerBridge receive APP data ERROR \(error)!")
             }
             
             self.proxyConnectStartReceive ()
-            print("ServerBridge receive APP data \(data?.count ?? 0) isComplete ")
+            NSLog("ServerBridge receive APP data \(data?.count ?? 0) isComplete ")
             
         }
     }
@@ -113,11 +113,11 @@ class ServerBridge {
         
         self.tcpClient.send(content: self.sendData, completion: .contentProcessed ({ error in
             if let error = error {
-                print("ServerBridge --> Node Access ERROR!")
+                NSLog("ServerBridge --> Node Access ERROR!")
                 return self.stop(error: error)
             }
             
-            print("ServerBridge firstSend --> Node Access SUCCESS!")
+            NSLog("ServerBridge firstSend --> Node Access SUCCESS!")
             let userInfo: [String: Any] = ["当前通知类型": "允许上网"]
                         NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
             
@@ -125,14 +125,14 @@ class ServerBridge {
     }
     
     private func connectionDidComplete(error: Error?) {
-        print("ServerBridge connection did complete, error: \(String(describing: error))")
+        NSLog("ServerBridge connection did complete, error: \(String(describing: error))")
         stop(error: error)
     }
     
     private func connectionDidFail(error: Error) {
 //        let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
 //        NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-        print("ServerBridge connection did fail, error: \(error)")
+        NSLog("ServerBridge connection did fail, error: \(error)")
         stop(error: error)
     }
     
