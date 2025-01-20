@@ -4,6 +4,8 @@ Silent Pass combines decentralization, fragmentation, and a zero-trust architect
 
 Technology powered by CoNET's [Layer Minus Decentralized Physical Infrastructure Networks](https://conet.network)
 
+[Apple Store Download](https://apps.apple.com/ca/app/silent-pass-vpn/id6740261324)
+
 [White Paper](https://doceng.conet.network/web2-bridging)
 
 [Home Page](https://conet.network/tech/silent-pass/)
