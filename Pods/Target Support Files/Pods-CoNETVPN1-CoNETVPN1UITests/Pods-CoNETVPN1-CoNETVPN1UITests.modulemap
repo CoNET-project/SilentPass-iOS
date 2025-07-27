@@ -1,0 +1,6 @@
+framework module Pods_CoNETVPN1_CoNETVPN1UITests {
+  umbrella header "Pods-CoNETVPN1-CoNETVPN1UITests-umbrella.h"
+
+  export *
+  module * { export * }
+}
