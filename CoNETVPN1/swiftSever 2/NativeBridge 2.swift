@@ -58,7 +58,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         webView.configuration.userContentController.add(self, name: "ReactNativeWebView")
         webView.configuration.userContentController.add(self, name: "nativeBridge")
         webView.configuration.userContentController.add(self, name: "webviewMessage")
-        
+        webView.configuration.userContentController.add(self, name: "updateVPNUI")
         webView.navigationDelegate = self
         
     }
@@ -156,6 +156,28 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         //      JavaScript控制台輸出
         if (message.name == "error") {
             return print("message from JavaScript \(message.body)")
+        }
+        
+        if (message.name == "updateVPNUI") {
+         
+            self.viewController.vPNManager.stopVPN()
+            
+            let alert = UIAlertController(
+                title: "升级成功",
+                message: "请退出app后重新打开",
+                preferredStyle: .alert
+            )
+
+            alert.addAction(UIAlertAction(title: "YES", style: .default, handler: { _ in
+                exit(0) // ⚠️ 仅限调试或企业应用，App Store 拒审
+            }))
+
+            guard let vc = viewController else { return }
+
+            DispatchQueue.main.async {
+                vc.present(alert, animated: true, completion: nil)
+            }
+            
         }
         
         //      UI JavaScript console
