@@ -108,7 +108,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
         
         
         NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(equalTo: view.topAnchor),
+            webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), // ✅ 关键修改
             webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
@@ -305,7 +305,8 @@ class ViewController: UIViewController, WKNavigationDelegate {
         else if self.webServer.server.state == .running {
             
             DispatchQueue.main.async {
-            
+                
+                
                 guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
                     self.webView.load(URLRequest(url: url_cache))
             }
