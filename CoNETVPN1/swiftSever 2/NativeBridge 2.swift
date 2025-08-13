@@ -443,7 +443,15 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         
         SVProgressHUD.dismiss()
-
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            NotificationCenter.default.post(
+                name: Notification.Name("LocalServerStarted"),
+                object: nil,
+                userInfo: ["status": "running"]
+                
+            )
+        }
+        
         
 
                 // 注入 JavaScript 禁用网页缩放

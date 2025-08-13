@@ -185,38 +185,9 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //            
 //        }
         
+       
         
         
-        NotificationCenter.default.addObserver(
-            forName: Notification.Name("VPNStatusChanged"),
-            object: nil,
-            queue: .main
-        ) { notification in
-            if let status = notification.object as? NEVPNStatus {
-                
-                let state = String(status.rawValue)
-                
-                let jsFunction = "appVpnState('\(state)');"
-                print(jsFunction)
-                if (self.webView != nil)
-                {
-                    
-                  self.nativeBridge.callJavaScriptFunction(functionName: "appVpnState", arguments: state) { result in
-                       if let result = result as? Int {
-                               print("JavaScript result: \(result)") // 输出 8
-                            } else {
-                                print("Failed to get a valid result")
-                           }
-                    }
-
-                }
-                
-                
-                
-            }
-        }
-        
-        timer = Timer.scheduledTimer(timeInterval: 2.0, target: self, selector: #selector(getVPNConfigurationStatus), userInfo: nil, repeats: true)
         
         NotificationCenter.default.addObserver(self,
                                                    selector: #selector(handleWebServerStarted(_:)),
@@ -243,6 +214,20 @@ class ViewController: UIViewController, WKNavigationDelegate {
             await self.webServer.prepareAndStart()
         }
         
+        
+        
+        setupVPNStatusListener()
+        
+        
+        // 监听 VPN 状态变化
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(vpnStatusChanged(_:)),
+                name: Notification.Name("VPNStatusChanged"),
+                object: nil
+            )
+        
+        
         // 监听应用即将被终止通知
 //               NotificationCenter.default.addObserver(
 //                   self,
@@ -252,12 +237,85 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //               )
         
     }
+    
+    
+    func setupVPNStatusListener() {
+        NETunnelProviderManager.loadAllFromPreferences { managers, error in
+            guard error == nil, let managers = managers else {
+                print("Failed to load managers: \(error?.localizedDescription ?? "Unknown error")")
+                return
+            }
+
+            for manager in managers {
+                if manager.localizedDescription == "CoNET VPN" {
+                    // 监听 VPN 状态变化通知
+                    NotificationCenter.default.addObserver(
+                        self,
+                        selector: #selector(self.vpnStatusDidChange(_:)),
+                        name: .NEVPNStatusDidChange,
+                        object: manager.connection
+                    )
+
+                    // 初始同步一次状态
+                    self.handleVPNStatus(manager.connection.status)
+                }
+            }
+        }
+    }
+
+    @objc func vpnStatusDidChange(_ notification: Notification) {
+        if let connection = notification.object as? NEVPNConnection {
+            handleVPNStatus(connection.status)
+        }
+    }
+
+    private func handleVPNStatus(_ status: NEVPNStatus) {
+        // 这里处理你的状态回传逻辑，比如给 H5 发
+        NotificationCenter.default.post(
+            name: Notification.Name("VPNStatusChanged"),
+            object: status
+        )
+
+        print("VPN 状态变化：\(status.rawValue)")
+    }
+    
+    @objc func getVPNConfigurationStatus() {
+        NETunnelProviderManager.loadAllFromPreferences { managers, error in
+            if let error = error {
+                print("Failed to load VPN configurations: \(error.localizedDescription)")
+                return
+            }
+
+            guard let managers = managers else {
+                print("No VPN configurations found")
+                return
+            }
+
+            for manager in managers {
+                if manager.localizedDescription == "CoNET VPN" {
+                    let status = manager.connection.status
+                    print("当前 VPN 状态: \(status.rawValue)")
+
+                    // 把状态通知给 H5
+                    NotificationCenter.default.post(
+                        name: Notification.Name("VPNStatusChanged"),
+                        object: status
+                    )
+                    break
+                }
+            }
+        }
+    }
+    
     @objc func handleServerStarted1(_ notification: Notification)   {
         
         self.webServer.server.stop()
         
     }
     @objc func handleServerStarted(_ notification: Notification)   {
+        
+        getVPNConfigurationStatus()
+        
         if let status = notification.userInfo?["status"] as? String {
             print("接收到服务器状态: \(status)")
             // 更新UI或执行其他操作
@@ -306,7 +364,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
             
             DispatchQueue.main.async {
                 
-                
+//                guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
                 guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
                     self.webView.load(URLRequest(url: url_cache))
             }
@@ -341,6 +399,8 @@ class ViewController: UIViewController, WKNavigationDelegate {
             DispatchQueue.main.async {
                 monitor.cancel()
                 guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
+//                guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
+                
                 
                 
                     self.webView.load(URLRequest(url: url_cache))
@@ -352,6 +412,9 @@ class ViewController: UIViewController, WKNavigationDelegate {
                     DispatchQueue.main.async {
                         monitor.cancel()
                         guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
+                        
+//                        guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
+                        
                         self?.webView.load(URLRequest(url: url_cache))
                         
                     }
@@ -360,7 +423,70 @@ class ViewController: UIViewController, WKNavigationDelegate {
         }
         
     }
-   
+    
+    @objc func vpnStatusChanged(_ notification: Notification) {
+        
+        if let status = notification.object as? NEVPNStatus {
+            DispatchQueue.main.async{
+                let responseDict: [String: Any] = [
+                    "event": "native_VPNStatus",
+                    "data": ["VPNStatus": status.rawValue],
+                    "callbackId": "杨旭发给老杨VPN状态"
+                ]
+                // 转换为 JSON 字符串并发送回 H5
+                if let responseData = try? JSONSerialization.data(withJSONObject: responseDict),
+                   let responseString = String(data: responseData, encoding: .utf8) {
+                    DispatchQueue.main.async {
+                        
+//                        let alert = UIAlertController(
+//                            title: "\(status.rawValue)",
+//                            message: "",
+//                            preferredStyle: .alert
+//                        )
+//                        alert.addAction(UIAlertAction(title: "YES", style: .default, handler: { _ in
+//                        }))
+//
+//                        self.present(alert, animated: true, completion: nil)
+                        
+                        
+                        
+                        self.sendToWebView(responseString: responseString)
+                    }
+                }
+            }
+        }
+
+        
+//        if let status = notification.object as? NEVPNStatus {
+//            switch status {
+//            case .connected:
+//                print("VPN 已连接")
+//                
+//
+//                
+//            case .connecting:
+//                print("VPN 正在连接")
+//            case .disconnected:
+//                print("VPN 已断开")
+//            default:
+//                print("VPN 状态变化: \(status.rawValue)")
+//            }
+//        }
+    }
+    // 封装发送 JavaScript 消息的方法
+    private func sendToWebView(responseString: String) {
+        let js = """
+        window.dispatchEvent(new MessageEvent('message', { data: '\(responseString)' }));
+        """
+        print("发送的 js 是：\(js)")
+        self.webView?.evaluateJavaScript(js, completionHandler: { result, error in
+            if let error = error {
+                print("✅ JS 执行失败: \(error)")
+            } else {
+                print("✅ JS 执行成功，返回: \(String(describing: result))")
+            }
+        })
+    }
     
     struct ResponseData: Codable {
         let region: [String]
@@ -372,39 +498,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
     
     
     
-    
-    @objc func getVPNConfigurationStatus() {
-        NETunnelProviderManager.loadAllFromPreferences { managers, error in
-            if let error = error {
-                print("Failed to load VPN configurations: \(error.localizedDescription)")
-                return
-            }
 
-            guard let managers = managers else {
-                print("No VPN configurations found")
-                return
-            }
-
-            for manager in managers {
-//                print("VPN configuration: \(manager.localizedDescription ?? "Unknown")")
-//                print("Status: \(manager.connection.status)")
-                if manager.localizedDescription == "CoNET VPN"
-                {
-                   
-                        NotificationCenter.default.post(
-                            name: Notification.Name("VPNStatusChanged"),
-                            object: manager.connection.status
-                        )
-                    
-                    
-                    
-                }
-                
-                
-                
-            }
-        }
-    }
     
 
     deinit {
