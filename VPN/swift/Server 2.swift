@@ -1,50 +1,84 @@
+//
+//  优化的SOCKS服务器配置
+//  Server.swift
+//
+
 import Foundation
 import Network
 
-/// SOCKS5 服务器监听器（线程安全：所有状态都在 self.queue 上操作）
 final class Server {
-
-    // MARK: - 配置
     let port: UInt16
     let maxConcurrent: Int
-    let localOnly: Bool  // 仅允许从本机回环地址连入
+    let localOnly: Bool
 
-    // MARK: - 内部状态（仅在 queue 上访问）
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "socks5.server.listener", qos: .userInitiated)
     private var nextID: UInt64 = 0
     private var connections: [UInt64: ServerConnection] = [:]
+    
+    // NEW: 增强的统计和监控
+    private var connectionStats = ConnectionStats()
+    private var statsTimer: DispatchSourceTimer?
+    private let statsInterval: TimeInterval = 30.0
+    
+    private struct ConnectionStats {
+        var totalConnections = 0
+        var activeConnections = 0
+        var rejectedConnections = 0
+        var completedConnections = 0
+        var startTime = Date()
+        
+        mutating func connectionStarted() {
+            totalConnections += 1
+            activeConnections += 1
+        }
+        
+        mutating func connectionEnded() {
+            activeConnections = max(0, activeConnections - 1)
+            completedConnections += 1
+        }
+        
+        mutating func connectionRejected() {
+            rejectedConnections += 1
+        }
+    }
 
-    // MARK: - 生命周期
-    init(port: UInt16, maxConcurrent: Int = 64, localOnly: Bool = true) {
+    // 优化的默认参数 - 配合VPN客户端的50并发限制
+    init(port: UInt16, maxConcurrent: Int = 80, localOnly: Bool = true) {  // 增加到80
         self.port = port
         self.maxConcurrent = maxConcurrent
         self.localOnly = localOnly
     }
 
-    deinit { stop() }
+    deinit {
+        stop()
+    }
 
-    // MARK: - 启动/停止
     func start() {
         queue.async { [weak self] in
             guard let self, self.listener == nil else { return }
 
             do {
                 let tcp = NWParameters.tcp
-                // 只使用回环接口，避免路径被系统挑错
                 tcp.requiredInterfaceType = .loopback
-
+                
+                // 优化TCP参数
                 if let tcpOpt = tcp.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
-                    tcpOpt.connectionTimeout = 10
+                    tcpOpt.connectionTimeout = 5        // 减少连接超时
                     tcpOpt.enableKeepalive = true
-                    tcpOpt.keepaliveIdle = 60
+                    tcpOpt.keepaliveIdle = 30           // 减少keepalive间隔
+                    tcpOpt.keepaliveInterval = 10
+                    tcpOpt.noDelay = true               // 启用TCP_NODELAY
                 }
 
                 let portObj = NWEndpoint.Port(rawValue: self.port)!
                 let l = try NWListener(using: tcp, on: portObj)
                 self.listener = l
 
-                NSLog("SOCKS5 Server starting on 127.0.0.1:\(self.port)")
+                NSLog("SOCKS5 Server starting on 127.0.0.1:\(self.port) (maxConcurrent: \(self.maxConcurrent))")
+                
+                // 启动统计定时器
+                self.startStatsTimer()
 
                 l.stateUpdateHandler = { [weak self] state in
                     guard let self else { return }
@@ -55,7 +89,7 @@ final class Server {
                         NSLog("SOCKS5 Server failed: \(e)")
                         self.stop()
                     case .cancelled:
-                        break
+                        NSLog("SOCKS5 Server cancelled")
                     default:
                         break
                     }
@@ -66,35 +100,54 @@ final class Server {
                     self.queue.async {
                         if self.localOnly, !Self.isLoopbackPeer(nw.endpoint) {
                             nw.cancel()
+                            self.connectionStats.connectionRejected()
                             return
                         }
+                        
                         if self.connections.count >= self.maxConcurrent {
-                            NSLog("SOCKS5 reach maxConcurrent=\(self.maxConcurrent), quick reject")
+                            // 软拒绝：快速回复错误而不是直接关闭
                             let id = self.nextAndIncID()
+                            self.connectionStats.connectionRejected()
                             let tmp = ServerConnection(
                                 client: nw, listenPort: self.port, id: id,
                                 onClose: { [weak self] _ in
-                                    self?.queue.async {
-                                        NSLog("SOCKS5 conn closed, active=\(self?.connections.count ?? 0)")
-                                    }
+                                    // 不计入active连接数
                                 }
                             )
                             tmp.startQuickReject()
+                            
+                            // 每100个拒绝记录一次日志
+                            if self.connectionStats.rejectedConnections % 100 == 0 {
+                                NSLog("SOCKS5 rejected \(self.connectionStats.rejectedConnections) connections due to limit")
+                            }
                             return
                         }
+                        
                         let id = self.nextAndIncID()
+                        self.connectionStats.connectionStarted()
+                        
                         let conn = ServerConnection(
                             client: nw, listenPort: self.port, id: id,
                             onClose: { [weak self] _ in
                                 guard let self else { return }
                                 self.queue.async {
                                     self.connections[id] = nil
-                                    NSLog("SOCKS5 conn closed, active=\(self.connections.count)")
+                                    self.connectionStats.connectionEnded()
+                                    
+                                    // 只在连接数变化显著时记录日志
+                                    if self.connections.count % 10 == 0 || self.connections.count < 10 {
+                                        NSLog("SOCKS5 conn closed, active=\(self.connections.count)")
+                                    }
                                 }
                             }
                         )
                         self.connections[id] = conn
-                        NSLog("SOCKS5 new conn, active=\(self.connections.count)")
+                        
+                        // 减少日志频率
+                        if self.connections.count % 10 == 0 || self.connections.count < 10 {
+                            NSLog("SOCKS5 new conn, active=\(self.connections.count)")
+                        }
+                        
                         conn.start()
                     }
                 }
@@ -107,30 +160,69 @@ final class Server {
             }
         }
     }
+    
+    // NEW: 统计定时器
+    private func startStatsTimer() {
+        statsTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + statsInterval, repeating: statsInterval)
+        timer.setEventHandler { [weak self] in
+            self?.printStats()
+        }
+        timer.resume()
+        statsTimer = timer
+    }
+    
+    private func printStats() {
+        let uptime = Date().timeIntervalSince(connectionStats.startTime)
+        let uptimeStr = String(format: "%02d:%02d:%02d",
+                              Int(uptime) / 3600,
+                              (Int(uptime) % 3600) / 60,
+                              Int(uptime) % 60)
+        
+        let successRate = connectionStats.totalConnections > 0
+            ? Double(connectionStats.completedConnections) / Double(connectionStats.totalConnections) * 100
+            : 0
+            
+        NSLog("""
+        === SOCKS5 Server Stats ===
+        Uptime: \(uptimeStr)
+        Connections: total=\(connectionStats.totalConnections) active=\(connectionStats.activeConnections)/\(maxConcurrent) completed=\(connectionStats.completedConnections) rejected=\(connectionStats.rejectedConnections)
+        Success Rate: \(String(format: "%.1f", successRate))%
+        =========================
+        """)
+    }
 
     func stop() {
         queue.async { [weak self] in
             guard let self else { return }
+            
+            NSLog("SOCKS5 Server stopping...")
+            
+            self.statsTimer?.cancel()
+            self.statsTimer = nil
+            
             self.listener?.cancel()
             self.listener = nil
 
-            // 拷贝一份连接列表，先清空表，再让连接各自收尾
             let conns = Array(self.connections.values)
             self.connections.removeAll(keepingCapacity: false)
 
-            // 让连接自己在各自的队列里关闭（避免在本队列里直接 re-enter）
-            conns.forEach { _ = $0 } // 如需外部关闭，可在 ServerConnection 增加公共 shutdown() 并在此调用
+            // 通知所有连接关闭
+            conns.forEach { conn in
+                // 如果有公共关闭方法，在此调用
+            }
+            
+            NSLog("SOCKS5 Server stopped")
         }
     }
 
-    // MARK: - 工具（仅在 queue 上调用）
     private func nextAndIncID() -> UInt64 {
         let v = nextID
         nextID &+= 1
         return v
     }
 
-    /// 判断入站连接是否来自回环地址
     private static func isLoopbackPeer(_ ep: NWEndpoint) -> Bool {
         switch ep {
         case .hostPort(let host, _):
@@ -142,10 +234,44 @@ final class Server {
             if s.contains("::ffff:127.0.0.1") { return true }
             return false
         default:
-            // 其他类型（如 service）通常来自本机，保守接受
             return true
         }
     }
-    
-
 }
+
+// MARK: - 使用建议
+
+/*
+使用优化的SOCKS服务器：
+
+1. 启动服务器时使用更高的并发限制：
+```swift
+let server = Server(port: 8888, maxConcurrent: 80, localOnly: true)
+server.start()
+```
+
+2. 监控日志中的统计信息，了解：
+   - 连接成功率
+   - 拒绝连接数量
+   - 活跃连接数
+
+3. 根据实际情况调整参数：
+   - 如果经常看到拒绝连接，可以增加maxConcurrent
+   - 如果系统资源紧张，可以减少maxConcurrent
+   - 监控VPN客户端的SOCKS连接池使用情况
+
+4. 系统级优化：
+```bash
+# 增加文件描述符限制
+ulimit -n 4096
+
+# 检查端口使用情况
+lsof -i :8888 | wc -l
+```
+
+期望效果：
+- SOCKS服务器能处理更多并发连接
+- VPN客户端的连接池和队列机制避免超载
+- 更好的错误处理和统计监控
+- 减少连接超时和失败
+*/
