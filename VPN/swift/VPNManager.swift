@@ -2,18 +2,7 @@ import NetworkExtension
 
 class VPNManager {
     
-    let layerMinus: LayerMinus!
-//    private var manager: NEVPNManager?
-    init(layerMinus: LayerMinus) {
-        self.layerMinus = layerMinus
-//        manager = NEVPNManager.shared()
-//                NotificationCenter.default.addObserver(
-//                    self,
-//                    selector: #selector(vpnStatusDidChange),
-//                    name: .NEVPNStatusDidChange,
-//                    object: nil
-//                )
-    }
+
     
     // 刷新配置，启动 VPN
     func refresh() {
@@ -79,35 +68,7 @@ class VPNManager {
     // 激活 VPN
     private func activateTunnel(_ manager: NETunnelProviderManager) {
         
-        let egressNodes = self.layerMinus.egressNodes_JSON()
-        let entryNodes = self.layerMinus.entryNodes_JSON()
-        let privateKeyData = self.layerMinus.privateKeyAromed
-        
-        let egressNodes_1 = self.layerMinus.nodeJSON(nodeJsonStr: egressNodes)
-        let egressNodesStr_1 = self.layerMinus.nodeJSON(nodeJsonStr: entryNodes)
-        
-        
-        let entryNodesIpAddress = self.layerMinus.entryNodes.map { $0.ip_addr }
-        let egressNodesIpAddress = self.layerMinus.egressNodes.map { $0.ip_addr }
-        print("activateTunnel \(egressNodesIpAddress) \(entryNodesIpAddress)")
-           
-        
-        // 构造 options 字典
-            let options: [String: NSObject] = [
-                "entryNodes": entryNodes as NSObject,
-                "egressNodes": egressNodes as NSObject,
-                "privateKey": privateKeyData as NSObject
-            ]
 
-        // 启动 VPN 并传递参数
-        do {
-            try manager.connection.startVPNTunnel(options: options)
-            NSLog("VPN tunnel started successfully with options.")
-            self.layerMinus.miningProcess.keep = false
-            self.layerMinus.miningProcess.stop(false)
-        } catch {
-            NSLog("Failed to start VPN tunnel: \(error.localizedDescription)")
-        }
     }
     
     // 关闭 VPN

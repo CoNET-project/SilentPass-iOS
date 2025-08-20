@@ -8,14 +8,16 @@
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
             uuid = "62831B4E-E9C4-4937-9EFA-49E990D04763"
-            shouldBeEnabled = "Yes"
+            shouldBeEnabled = "No"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
             filePath = "CoNETVPN1/ViewController.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "487"
-            endingLineNumber = "487">
+            endingLineNumber = "487"
+            landmarkName = "sendToWebView(responseString:)"
+            landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
       <BreakpointProxy
@@ -238,8 +240,8 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "254"
             endingLineNumber = "254"
-            landmarkName = "NativeBridge"
-            landmarkType = "3">
+            landmarkName = "userContentController(_:didReceive:)"
+            landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
       <BreakpointProxy
@@ -254,7 +256,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "263"
             endingLineNumber = "263"
-            landmarkName = "postToAPIServer(_:)"
+            landmarkName = "userContentController(_:didReceive:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
@@ -320,36 +322,6 @@
             endingLineNumber = "552"
             landmarkName = "handleEvent(event:data:callbackId:)"
             landmarkType = "7">
-            <Locations>
-               <Location
-                  uuid = "65F729D9-CDA4-490C-ACEB-60B7B3184A69 - 5dd2db24498ba83d"
-                  shouldBeEnabled = "Yes"
-                  ignoreCount = "0"
-                  continueAfterRunningActions = "No"
-                  symbolName = "(1) suspend resume partial function for closure #2 () async -&gt; Swift.Bool in CoNETVPN1.NativeBridge.handleEvent(event: Swift.String, data: Swift.Dictionary&lt;Swift.String, Any&gt;, callbackId: Swift.Optional&lt;Swift.String&gt;) -&gt; ()"
-                  moduleName = "CoNETVPN1.debug.dylib"
-                  usesParentBreakpointCondition = "Yes"
-                  urlString = "file:///Users/peter/Downloads/SilentPass-iOS-main/CoNETVPN1/swiftSever%202/NativeBridge%202.swift"
-                  startingColumnNumber = "9223372036854775807"
-                  endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "552"
-                  endingLineNumber = "552">
-               </Location>
-               <Location
-                  uuid = "65F729D9-CDA4-490C-ACEB-60B7B3184A69 - 72b63d002e6cec3b"
-                  shouldBeEnabled = "Yes"
-                  ignoreCount = "0"
-                  continueAfterRunningActions = "No"
-                  symbolName = "(3) suspend resume partial function for closure #2 () async -&gt; Swift.Bool in CoNETVPN1.NativeBridge.handleEvent(event: Swift.String, data: Swift.Dictionary&lt;Swift.String, Any&gt;, callbackId: Swift.Optional&lt;Swift.String&gt;) -&gt; ()"
-                  moduleName = "CoNETVPN1.debug.dylib"
-                  usesParentBreakpointCondition = "Yes"
-                  urlString = "file:///Users/peter/Downloads/SilentPass-iOS-main/CoNETVPN1/swiftSever%202/NativeBridge%202.swift"
-                  startingColumnNumber = "9223372036854775807"
-                  endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "552"
-                  endingLineNumber = "552">
-               </Location>
-            </Locations>
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>

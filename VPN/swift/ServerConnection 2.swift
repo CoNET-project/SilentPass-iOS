@@ -1,391 +1,525 @@
-//
-//  ServerConnection.swift
-//  tq-proxy-ios
-//
-//  Created by peter on 2024-11-14.
-//
-
 import Foundation
 import Network
 
+/// 单个 SOCKS5 会话（直连上游）
+final class ServerConnection {
 
-class ServerConnection {
-    //The TCP maximum package size is 64K 65536
-    let MTU = 65536
+    // MARK: - 基本属性
+    private let client: NWConnection
+    private let listenPort: UInt16
+    private let id: UInt64
+    private let onClose: ((ServerConnection) -> Void)?
+
+    private let queue: DispatchQueue
+    private var closed = false
+
+    // 上游直连
+    private var upstream: NWConnection?
+
+    // 握手/转发状态
+    private var clientReadEOF = false
+    private var upstreamReadEOF = false
+    private var didReplySuccess = false
+
+    // MARK: - 超时
+    private let connectTimeoutSec: TimeInterval = 10
+    private let idleTimeoutSec: TimeInterval = 60
+    private var connectDeadline: DispatchSourceTimer?
+    private var idleTimer: DispatchSourceTimer?
+
+    // 目的端口白名单
+    private let allowedPorts: Set<UInt16>? = nil
+
+    // MARK: - DNS 直连解析器（过滤 198.18/15 与私网）
+    enum DirectDNSError: Error { case timeout, badResponse }
     
-    private static var nextID: Int = 0
-    let  connection: NWConnection
-    let id: Int
-    let layerMinus: LayerMinus
-    let port: UInt16
-    var serverBridge: ServerBridge!
-    var excludeIP: [String]
-    init(nwConnection: NWConnection, _layerMinus: LayerMinus, port: UInt16) {
+    
+    var connectTitle = ""
+    struct DirectDNSResolver {
+        /// 解析首个可路由的 IPv4 地址
+        static func resolveIPv4(
+            host: String,
+            serverIPv4: String = "1.1.1.1",
+            timeout: TimeInterval = 2.0
+        ) async throws -> IPv4Address {
 
-        connection = nwConnection
-        id = ServerConnection.nextID
-        ServerConnection.nextID += 1
-        layerMinus = _layerMinus
-        self.port = port
-        self.excludeIP = layerMinus.entryNodes.map{$0.ip_addr}
-        self.excludeIP.append(contentsOf: layerMinus.egressNodes.map{$0.ip_addr})
-        
+            // 构造 DNS 报文: Header(12) + Question
+            let txid = UInt16.random(in: 0...UInt16.max)
+            var q = Data()
+            q.append(contentsOf: [UInt8(txid >> 8), UInt8(txid & 0xFF)]) // ID
+            q.append(0x01); q.append(0x00) // RD=1
+            q.append(0x00); q.append(0x01) // QDCOUNT=1
+            q.append(0x00); q.append(0x00) // ANCOUNT=0
+            q.append(0x00); q.append(0x00) // NSCOUNT=0
+            q.append(0x00); q.append(0x00) // ARCOUNT=0
+            for label in host.split(separator: ".") {
+                guard let lb = label.data(using: .utf8), lb.count > 0, lb.count < 64 else {
+                    throw DirectDNSError.badResponse
+                }
+                q.append(UInt8(lb.count)); q.append(lb)
+            }
+            q.append(0x00)
+            q.append(0x00); q.append(0x01) // QTYPE=A
+            q.append(0x00); q.append(0x01) // QCLASS=IN
+
+            let params = makeDirectUDPParameters()
+            let conn = NWConnection(host: NWEndpoint.Host(serverIPv4), port: 53, using: params)
+
+            // ready
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                conn.stateUpdateHandler = { st in
+                    switch st {
+                    case .ready: cont.resume()
+                    case .failed(let e): cont.resume(throwing: e)
+                    case .waiting(let e): cont.resume(throwing: e)
+                    default: break
+                    }
+                }
+                conn.start(queue: .global(qos: .userInitiated))
+            }
+
+            // 发送
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                conn.send(content: q, completion: .contentProcessed { e in
+                    if let e { cont.resume(throwing: e) } else { cont.resume() }
+                })
+            }
+
+            // 接收
+            let data = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+                conn.receiveMessage { data, _, _, error in
+                    if let error { cont.resume(throwing: error); return }
+                    guard let data else { cont.resume(throwing: DirectDNSError.timeout); return }
+                    cont.resume(returning: data)
+                }
+            }
+            conn.cancel()
+
+            // 解析应答
+            guard data.count >= 12 else { throw DirectDNSError.badResponse }
+            let rxid = (UInt16(data[0]) << 8) | UInt16(data[1])
+            guard rxid == txid else { throw DirectDNSError.badResponse }
+            let rcode = data[3] & 0x0F
+            guard rcode == 0 else { throw DirectDNSError.badResponse }
+
+            let qd = (Int(data[4]) << 8) | Int(data[5])
+            var an = (Int(data[6]) << 8) | Int(data[7])
+            var i = 12
+
+            // 跳过 Question
+            for _ in 0..<qd {
+                guard i < data.count else { throw DirectDNSError.badResponse }
+                while i < data.count, data[i] != 0 {
+                    let l = Int(data[i]); i += 1 + l
+                }
+                i += 1 /*root*/ + 4 /*QTYPE/QCLASS*/
+            }
+
+            // 读取 Answers
+            while an > 0, i + 12 <= data.count {
+                let type = (Int(data[i+2]) << 8) | Int(data[i+3])
+                let cls  = (Int(data[i+4]) << 8) | Int(data[i+5])
+                let rdlen = (Int(data[i+10]) << 8) | Int(data[i+11])
+                i += 12
+                guard i + rdlen <= data.count else { throw DirectDNSError.badResponse }
+                if type == 1, cls == 1, rdlen == 4 {
+                    let a = IPv4Address(data[i..<(i+4)])!
+                    if isRoutablePublicIPv4(a) { return a }
+                }
+                i += rdlen
+                an -= 1
+            }
+            throw DirectDNSError.badResponse
+        }
+
+        private static func isRoutablePublicIPv4(_ ip: IPv4Address) -> Bool {
+            let b = [UInt8](ip.rawValue)
+            let isPrivate =
+                b[0] == 10 || (b[0] == 172 && (b[1] >= 16 && b[1] <= 31)) ||
+                (b[0] == 192 && b[1] == 168)
+            let isLoopback = b[0] == 127
+            let isLinkLocal = (b[0] == 169 && b[1] == 254)
+            let isBenchmark = (b[0] == 198 && (b[1] & 0xFE) == 18) // 198.18/15
+            let isTestNet =
+                (b[0] == 192 && b[1] == 0 && b[2] == 2) ||
+                (b[0] == 198 && b[1] == 51 && b[2] == 100) ||
+                (b[0] == 203 && b[1] == 0 && b[2] == 113)
+            let isMulticast = (b[0] >= 224 && b[0] <= 239)
+            let isReservedHi = (b[0] >= 240)
+            return !(isPrivate || isLoopback || isLinkLocal || isBenchmark || isTestNet || isMulticast || isReservedHi)
+        }
+
+        private static func makeDirectUDPParameters() -> NWParameters {
+            let p = NWParameters.udp
+            // 允许所有接口类型，让系统选择最佳路径
+            // 不设置 prohibitedInterfaceTypes
+            if #available(iOS 15.0, macOS 12.0, *) {
+                p.preferNoProxies = true
+            }
+            return p
+        }
     }
 
-    var didStopCallback: ((Error?) -> Void)? = nil
+    // MARK: - 生命周期
+    init(client: NWConnection, listenPort: UInt16, id: UInt64, onClose: ((ServerConnection) -> Void)? = nil) {
+        self.client = client
+        self.listenPort = listenPort
+        self.id = id
+        self.onClose = onClose
+        self.queue = DispatchQueue(label: "socks5.connection.\(id)", qos: .userInitiated)
+    }
 
+    deinit { NSLog("Socks5Connection deinit") }
+
+    // MARK: - 启动
     func start() {
-        NSLog("Local Proxy \(self.port) connection \(id) will start")
-        connection.stateUpdateHandler = self.stateDidChange(to:)
-        setupReceive()
-        connection.start(queue: .main)
-    }
-
-
-    private func stateDidChange(to state: NWConnection.State) {
-        switch state {
-        case .waiting(let error):
-            connectionDidFail(error: error)
-        case .ready:
-            print("Local Proxy \(self.port) connection \(id) ready")
-        case .failed(let error):
-            connectionDidFail(error: error)
-        default:
-            break
-        }
-    }
-    
-    let proxyServerFirstResponse = "HTTP/1.1 200 Connection Established\r\n\r\n"
-    let proxyServerFirstResponse_Error = "HTTP/1.1 503 no server was available\r\n\r\n"
-
-    func retPac (socks5: Bool, excludeIP: [String]) -> String {
-        var resIpaddress = "127.0.0.1"
-//        switch(self.connection.endpoint) {
-//            case .hostPort(let host, _):
-//                let remoteHost = "\(host)"
-//                if remoteHost != "127.0.0.1" {
-//                    resIpaddress = self.layerMinus.localIpaddress
-//                }
-//                
-//            default:
-//                break
-//        }
-        var sockString = socks5 ? "socks5" : "socks"
-        var _excludeIP = ""
-        for ip in excludeIP {
-            _excludeIP += "   isInNet( dnsResolve( host ), \"\(ip)\", \"255.255.255.255\" ) ||\n"
-        }
-        var ret = "function FindProxyForURL ( url, host ) {\n"
-                + "if (isInNet ( dnsResolve( host ), \"0.0.0.0\", \"255.0.0.0\") ||\n"
-                + "   isInNet( dnsResolve( host ), \"172.16.0.0\", \"255.240.255.0\") ||\n"
-                + "   isInNet( dnsResolve( host ), \"127.0.0.0\", \"255.255.255.0\") ||\n"
-                + "   isInNet ( dnsResolve( host ), \"192.168.0.0\", \"255.255.0.0\" ) ||\n"
-                + "   isInNet ( dnsResolve( host ), \"10.0.0.0\", \"255.0.0.0\" ) ||\n"
-                + "   \(_excludeIP)"
-                //+ "   dnsDomainIs( host, \"conet.network\") ||\n"
-                + "   dnsDomainIs( host, \".apple-mapkit.com\") ||\n"
-                + "   dnsDomainIs( host, \".firefox.com\") ||\n"
-                + "   dnsDomainIs( host, \".mozilla.com\") ||\n"
-                + "   dnsDomainIs( host, \".icloud.com\") ||\n"
-                + "   dnsDomainIs( host, \".icloud-content.com\") ||\n"
-                + "   dnsDomainIs( host, \".apple.com\") ||\n"
-                + "   dnsDomainIs( host, \".aplle.com\")) {\n"
-                + "   dnsDomainIs( host, \".cn\")) {\n"
-                + "   dnsDomainIs( host, \".qq.com\")) {\n"
-                + "   dnsDomainIs( host, \".cdn-apple.com\") ||\n"
-                + "   dnsDomainIs( host, \".apple.news\") ||\n"
-        
-                + "   dnsDomainIs( host, \".local\")) {\n"
-                //+ "   dnsDomainIs( host, \".openpgp.online\")) {\n"
-                + "       return \"DIRECT\";\n"
-                + "};\n"
-        + "return \"\(sockString) \(resIpaddress):\(self.port)\";\n}"
-        return ret
-    }
-    
-    func responseHttp(body: String) -> String {
-        let response = "HTTP/1.1 200 OK\r\nContent-Length:\(body.count)\r\n\r\n\(body)"
-        return response
-    }
-    
-    private func setupReceive() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: MTU) {(data, _, _, error) in
-            if let data = data, !data.isEmpty {
-                //      Try http & https Proxy Protocol
-                let header = String(data: data, encoding: .utf8) ?? ""
-                NSLog(header)
-                if header.hasPrefix("CONNECT ") {
-                    self.connection.receive(minimumIncompleteLength: 1, maximumLength: self.MTU) {(data1, _, isComplete, error) in
-                        if let data1 = data1, !data1.isEmpty {
-                            let body = data1.base64EncodedString()
-                            return self.makeHttpProxyConnect(header: header, body: body)
-                        }
-                    }
-                    return self.send(data: self.proxyServerFirstResponse)
-                }
-                
-                if header.hasPrefix("GET /pac HTTP/") {
-                    var splitLine = header.components(separatedBy: "\r")
-                    NSLog("Local Proxy /pac" + splitLine.joined(separator: "\n"))
-                    return self.send(data: self.responseHttp(body: self.retPac(socks5: false, excludeIP: self.excludeIP)))
-                }
-                
-                
-                //      Try Socks Protocol
-                let hexStr = data.hexString
-                if hexStr.hasPrefix("04") {
-                    let connect = Socks4(client: self, data: data)
-                    return NSLog("Local Proxy \(self.port) received Socks v4 data \(hexStr)")
-                }
-                
-                if hexStr.hasPrefix("05") {
-                    let connect = Socks5(client: self)
-                    return self.serverBridge = connect.serverBridge
-                }
-                
-                
-                var newData = data
-                var newDataString = ""
-                var targetHost: String?      // 声明一个变量来存储目标主机
-                var targetPort: Int?         // ✅ 1. 声明一个变量来存储目标端口
-
-                if var text = String(data: data, encoding: .utf8),
-                   let range = text.range(of: "\r\n") {
-                    let requestLine = String(text[..<range.lowerBound])      // 第一行
-                    let remaining = String(text[range.upperBound...])        // 剩余部分
-
-                    let parts = requestLine.components(separatedBy: " ")
-                    if parts.count == 3, let url = URL(string: parts[1]) {
-                        
-                        // 从解析出的 URL 对象中获取 host 和 port
-                        targetHost = url.host
-                        targetPort = url.port // ✅ 2. 从 URL 对象中获取 port
-                        
-                        // --- 以下为路径替换逻辑，保持不变 ---
-                        let path = url.path.isEmpty ? "/" : url.path
-                        let query = url.query.map { "?\($0)" } ?? ""
-                        let newRequestLine = "\(parts[0]) \(path + query) \(parts[2])"
-                        let finalRequest = newRequestLine + "\r\n" + remaining
-                        
-                        if let finalData = finalRequest.data(using: .utf8) {
-                            newData = finalData
-                            newDataString = finalRequest
-                        }
-                    }
-                }
-
-                // 打印日志部分保持不变...
-                if let host = targetHost {
-                    if let port = targetPort {
-                        NSLog("Local Proxy makeHttpProxyConnect ✅ 成功提取到目标主机: \(host)，端口: \(port)")
-                    } else {
-                        NSLog("Local Proxy makeHttpProxyConnect ✅ 成功提取到目标主机: \(host)，端口: 未指定 (将使用默认端口)")
-                    }
-                } else {
-                    NSLog("Local Proxy makeHttpProxyConnect ⚠️ 未能从请求中提取到主机名。")
-                }
-
-
-                // 用修改后的 newData 生成 base64 body
-                // ✅ 记录 header 和修改后的 newData 内容
-                // NSLog("Local Proxy makeHttpProxyConnect header:\n%@", header) // header变量在此上下文中未定义
-                NSLog("Local Proxy makeHttpProxyConnect newData:\n%@", newDataString)
-
-
-                if let host = targetHost, host.isIPAddress {
-                    let port = UInt16(targetPort ?? 80)
-                    NSLog("Local Proxy makeHttpProxyConnect ✅ 目标是IP地址，执行直接隧道连接...\(host):\(port)")
-
-                    self.directTunnel(to: host, port: port, initialData: newData) { remoteConnection in
-                        guard let remote = remoteConnection else {
-                            // 连接失败处理，例如关闭当前客户端连接
-                            self.connection.cancel()
-                            return
-                        }
-
-                        // 建立 pipe 双向传输
-                        self.pipe(from: self.connection, to: remote, label: "\(host):\(port)")
-                    }
-
-                    return  // ✅ 不再继续同步处理，等待异步完成
-                }
-
-
-                // 如果上面的 if 条件不满足（不是IP或主机为nil），则执行以下逻辑
-                let body = newData.base64EncodedString()
-                return self.makeHttpProxyConnect(header: header, body: body)
-            }
-            
-            
-            if let error = error {
-                NSLog("Local Proxy \(self.port) connection \(self.id) error")
-                self.connectionDidFail(error: error)
-            }
-        }
-        
-    }
-    
-    
-    func directTunnel(to host: String, port: UInt16, initialData: Data? = nil, completion: @escaping (NWConnection?) -> Void) {
-        let nwEndpoint = NWEndpoint.Host(host)
-        let nwPort = NWEndpoint.Port(rawValue: port)!
-
-        let connection = NWConnection(host: nwEndpoint, port: nwPort, using: .tcp)
-
-        connection.stateUpdateHandler = { state in
+        NSLog("SOCKS5 \(listenPort) connection \(id) will start")
+        client.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
             switch state {
             case .ready:
-                NSLog("✅ directTunnel connected to \(host):\(port)")
-                if let data = initialData {
-                    connection.send(content: data, completion: .contentProcessed({ _ in }))
-                }
-                completion(connection)
-            case .failed(let error):
-                NSLog("❌ directTunnel connection failed: \(error)")
-                connection.cancel()
-                completion(nil)
+                NSLog("SOCKS5 \(self.listenPort) connection \(self.id) ready")
+                self.bumpIdle()
+                self.readHandshake()
+            case .failed(let e):
+                self.logNWError(prefix: "client failed", e)
+                self.close()
+            case .cancelled:
+                self.close()
             default:
                 break
             }
         }
-
-        connection.start(queue: .global())
+        client.start(queue: queue)
     }
-    
-    func pipe(from src: NWConnection, to dst: NWConnection, label: String) {
-        func forward(from source: NWConnection, to destination: NWConnection, direction: String) {
-            source.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, isComplete, error in
-                if let data = data, !data.isEmpty {
-                    destination.send(content: data, completion: .contentProcessed({ _ in }))
-                    forward(from: source, to: destination, direction: direction)
-                } else if let error = error {
-                    NSLog("⚠️ Local Proxy makeHttpProxyConnect \(label) pipe error (\(direction)): \(error)")
-                    source.cancel()
-                    destination.cancel()
-                } else if isComplete {
-                    NSLog("⛔️ Local Proxy makeHttpProxyConnect\(label) pipe completed (\(direction))")
-                    source.cancel()
-                    destination.cancel()
-                }
-            }
-        }
 
-        forward(from: src, to: dst, direction: "src→dst")
-        forward(from: dst, to: src, direction: "dst→src")
+    /// 并发超限时用于快速拒绝
+    func startQuickReject() {
+        client.start(queue: queue)
+        client.receive(minimumIncompleteLength: 2, maximumLength: 2) { [weak self] _, _, _, _ in
+            guard let self else { return }
+            self.client.send(content: Data([0x05, 0xFF]), completion: .contentProcessed { _ in
+                self.close()
+            })
+        }
     }
-    
-    func makeHttpProxyConnect(header: String, body: String) {
-        let _egressNode = self.layerMinus.getRandomEgressNodes()
-        let _entryNode = self.layerMinus.getRandomEntryNodes()
 
-        if (_egressNode.ip_addr == "" || _entryNode.ip_addr == "") {
-            return self.proxyServerError()
-        }
-        
-        let entryNode = _entryNode.ip_addr
-        
-        if let callFun1 = self.layerMinus.javascriptContext.objectForKeyedSubscript("makeRequest") {
-            
-            if let ret1 = callFun1.call(withArguments: [header,body,self.layerMinus.walletAddress]) {
-                let message = ret1.toString()!
-                print(message)
-                let messageData = message.data(using: .utf8)!
-                let account = self.layerMinus.keystoreManager.addresses![0]
-                Task {
-                    let signMessage = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
-                    if let callFun2 = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message") {
-                        if let ret2 = callFun2.call(withArguments: [message, "0x\(signMessage.toHexString())"]) {
-                            let cmd = ret2.toString()!
-                            let pre_request = self.layerMinus.createValidatorData(node: _egressNode, responseData: cmd)
-                            let request = self.layerMinus.makeRequest(host: entryNode, data: pre_request)
-                            let port = NWEndpoint.Port(rawValue: 80)!
-                            let host = NWEndpoint.Host(entryNode)
-                            NSLog("Local Proxy \(self.id) http protocol Target :[\(message)] ")
-                            self.serverBridge = ServerBridge(sendData: request.data(using: .utf8)!, host: host, port: port, proxyConnect: self)
-//                            NSLog("Proxy connect started entry node:[ \(entryNode):\(_entryNode.ip_addr) ] egress node:[ \(egressNode):\(_egressNode.ip_addr) ] request:[ \(request) ]")
-                            return self.serverBridge.start()
-                        }
-                    }
-                }
+    // MARK: - SOCKS 握手
+    private func readHandshake() {
+        // 读 VER + NMETHODS
+        client.receive(minimumIncompleteLength: 2, maximumLength: 2) { [weak self] head, _, _, err in
+            guard let self else { return }
+            self.bumpIdle()
+            if let err { self.fail(err); return }
+            guard let h = head, h.count == 2, h[0] == 0x05 else { self.close(); return }
+            let n = Int(h[1])
+
+            // 读 METHODS
+            self.client.receive(minimumIncompleteLength: n, maximumLength: n) { [weak self] methods, _, _, err in
+                guard let self else { return }
+                self.bumpIdle()
+                if let err { self.fail(err); return }
+                guard methods?.count == n else { self.close(); return }
+
+                // 选择无认证
+                self.client.send(content: Data([0x05, 0x00]), completion: .contentProcessed { sendErr in
+                    if let sendErr { self.fail(sendErr); return }
+                    NSLog("SOCKS5 handshake ok, no-auth selected")
+                    self.readRequest()
+                })
             }
         }
     }
-    
-    func proxyServerError() {
-        let sendData = proxyServerFirstResponse_Error.data(using: .utf8)!
-        self.connection.send(content: sendData, completion: .contentProcessed( { error in
-            if let _ = error {
+
+    // MARK: - 解析请求
+    private func readRequest() {
+        // VER/CMD/RSV/ATYP
+        client.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] header, _, _, err in
+            guard let self else { return }
+            self.bumpIdle()
+            if let err { self.fail(err); return }
+            guard let h = header, h.count == 4, h[0] == 0x05 else { self.close(); return }
+
+            let cmd = h[1]
+            let atyp = h[3]
+
+            guard cmd == 0x01 else { // CONNECT only
+                self.reply(rep: 0x07)
+                self.close()
                 return
             }
-            let userInfo: [String: Any] = ["当前通知类型": "网络连接失败","重试": "需重试"]
-            NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-            NSLog("Local Proxy \(self.port) hasn't EgressNodes yet Error!")
-            self.stop(error: nil)
-        }))
+            self.readDst(atyp: atyp)
+        }
     }
 
-
-    func send(data: String) {
-        let sendData = data.data(using: .utf8)!
-        self.connection.send(content: sendData, completion: .contentProcessed( { error in
-            if let error = error {
-                return self.stop(error: error)
+    private func readDst(atyp: UInt8) {
+        switch atyp {
+        case 0x01: // IPv4 + PORT
+            client.receive(minimumIncompleteLength: 6, maximumLength: 6) { [weak self] d, _, _, err in
+                guard let self else { return }
+                self.bumpIdle()
+                if let err { self.fail(err); return }
+                guard let d, d.count == 6 else { self.close(); return }
+                let host = d[0...3].map { String($0) }.joined(separator: ".")
+                let port = UInt16(d[4]) << 8 | UInt16(d[5])
+                self.connectTitle = "Connect to \(host):\(port)"
+                self.handleConnect(host: host, port: port, isDomain: false)
             }
-            NSLog("Local Proxy \(self.port) connection \(self.id) did send, data: \(data)")
-        }))
-    }
 
+        case 0x03: // DOMAIN: LEN + NAME + PORT
+            client.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] lenD, _, _, err in
+                guard let self else { return }
+                self.bumpIdle()
+                if let err { self.fail(err); return }
+                guard let lenD, lenD.count == 1 else { self.close(); return }
+                let n = Int(lenD[0])
 
-    func connectionDidFail(error: Error) {
-        NSLog("Local Proxy \(self.port) connection \(id) did fail, error: \(error)")
-        stop(error: error)
-    }
+                self.client.receive(minimumIncompleteLength: n + 2, maximumLength: n + 2) { [weak self] rest, _, _, err in
+                    guard let self else { return }
+                    self.bumpIdle()
+                    if let err { self.fail(err); return }
+                    guard let rest, rest.count == n + 2 else { self.close(); return }
+                    let name = String(decoding: rest[0..<n], as: UTF8.self)
+                    let port = UInt16(rest[n]) << 8 | UInt16(rest[n+1])
+                    self.connectTitle = "Connect to \(name):\(port)"
+                    self.handleConnect(host: name, port: port, isDomain: true)
+                }
+            }
 
-    private func connectionDidEnd() {
-        NSLog("Local Proxy \(self.port) connection \(id) did end")
-        stop(error: nil)
-    }
+        case 0x04: // IPv6 + PORT
+            client.receive(minimumIncompleteLength: 18, maximumLength: 18) { [weak self] d, _, _, err in
+                guard let self else { return }
+                self.bumpIdle()
+                if let err { self.fail(err); return }
+                guard let d, d.count == 18 else { self.close(); return }
+                let ip6 = Self.ipv6String(from: Array(d[0..<16]))
+                let port = UInt16(d[16]) << 8 | UInt16(d[17])
+                self.handleConnect(host: ip6, port: port, isDomain: false)
+            }
 
-    func stop(error: Error?) {
-        if self.connection.stateUpdateHandler != nil {
-            self.connection.stateUpdateHandler = nil
-            
+        default:
+            reply(rep: 0x08) // Address type not supported
+            close()
         }
+    }
+
+    private func handleConnect(host: String, port: UInt16, isDomain: Bool) {
+        NSLog("SOCKS5 CONNECT to \(host):\(port)")
+        guardPortOrReject(port) {
+            // Simply use system resolver for all connections
+            // This avoids potential issues with custom DNS resolution
+            connectUpstream(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!)
+        }
+    }
+
+    private func guardPortOrReject(_ port: UInt16, _ cont: () -> Void) {
+        if let allow = allowedPorts {
+            if allow.contains(port) { cont() } else { reply(rep: 0x07); close() }
+        } else {
+            cont() // 不限端口
+        }
+    }
+
+    // MARK: - 建立上游连接（先回 0x00 再开始转发）
+    private func connectUpstream(host: NWEndpoint.Host, port: NWEndpoint.Port) {
+        let params = Self.makeDirectTCPParameters()
+        let up = NWConnection(host: host, port: port, using: params)
+        self.upstream = up
+
+        startConnectDeadline()
+
+        up.stateUpdateHandler = { [weak self] st in
+            guard let self = self else { return }
+            switch st {
+            case .ready:
+                self.cancelConnectDeadline()
+                NSLog("SOCKS5 \(self.connectTitle) Upstream ready -> reply 0x00 then begin relay")
+                self.replyOKAndStartRelay()   // 先回成功
+            case .failed(let err):
+                self.fail(err, at: "up.state.failed")
+            case .cancelled:
+                self.close(reason: "up.cancelled")
+            default:
+                break
+            }
+        }
+        // 与 client 使用同队列，简化串行化
+        up.start(queue: self.queue)
+    }
+
+    private func replyOKAndStartRelay() {
+        // VER=5, REP=0, RSV=0, ATYP=IPv4, BND=0.0.0.0:0
+        let resp = Data([0x05, 0x00, 0x00, 0x01, 0,0,0,0, 0,0])
+        didReplySuccess = true
+        client.send(content: resp, completion: .contentProcessed { [weak self] _ in
+            self?.beginRelay()
+        })
+    }
+
+    private static func makeDirectTCPParameters() -> NWParameters {
+        let p = NWParameters.tcp
+        if let tcp = p.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcp.connectionTimeout = 10
+            tcp.enableKeepalive = true
+            tcp.keepaliveIdle = 60
+        }
+        // 重要：不设置任何接口限制，让系统选择最佳路径
+        // 不设置 prohibitedInterfaceTypes
+        // 不设置 requiredInterfaceType
         
-        
-        if self.serverBridge != nil {
-            self.serverBridge.stop(error: error)
-            self.serverBridge = nil
+        // 在 macOS 12+ 和 iOS 15+ 上，确保不走系统代理
+        if #available(iOS 15.0, macOS 12.0, *) {
+            p.preferNoProxies = true
         }
-        self.connection.cancel()
-        if let didStopCallback = didStopCallback {
-            self.didStopCallback = nil
-            didStopCallback(error)
+        return p
+    }
+
+    // MARK: - 开始双向转发
+    private func beginRelay() {
+        readFromClient()
+        readFromUpstream()
+    }
+
+    // 上游 -> 客户端
+    private func readFromUpstream() {
+        guard let up = upstream else { close(reason: "no-upstream"); return }
+
+        up.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+            if let error = error {
+                self.fail(error, at: "up.receive")
+                return
+            }
+            if let data, !data.isEmpty {
+                self.bumpIdle()
+                self.client.send(content: data, completion: .contentProcessed { [weak self] sendErr in
+                    if let sendErr { self?.fail(sendErr, at: "client.send(up->client)") }
+                })
+            }
+            if isComplete {
+                self.upstreamReadEOF = true
+                // 告知客户端写端结束
+                self.client.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .idempotent)
+                self.maybeClose()
+                return
+            }
+            self.readFromUpstream()
         }
     }
-    
 
-}
+    // 客户端 -> 上游
+    private func readFromClient() {
+        guard let up = upstream else { close(reason: "no-upstream"); return }
 
-extension Data {
-    var hexString : String {
-        return self.reduce("") { (a : String, v : UInt8) -> String in
-            return a + String(format: "%02x", v)
+        client.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+            if let error = error {
+                self.fail(error, at: "client.receive")
+                return
+            }
+            if let data, !data.isEmpty {
+                self.bumpIdle()
+                up.send(content: data, completion: .contentProcessed { [weak self] sendErr in
+                    if let sendErr { self?.fail(sendErr, at: "up.send(client->up)") }
+                })
+            }
+            if isComplete {
+                self.clientReadEOF = true
+                up.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .idempotent)
+                self.maybeClose()
+                return
+            }
+            self.readFromClient()
         }
     }
-}
 
-extension String {
-    /// 判断字符串是否为有效的IPv4或IPv6地址
-    var isIPAddress: Bool {
-        // 尝试初始化为IPv4地址，如果不为nil，则是有效的IPv4地址
-        if IPv4Address(self) != nil {
-            return true
+    // MARK: - 定时器
+    private func startConnectDeadline() {
+        cancelConnectDeadline()
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + connectTimeoutSec)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            NSLog("SOCKS5 \(self.connectTitle) connect timeout")
+            if !self.didReplySuccess { self.reply(rep: 0x05) }
+            self.close()
         }
-        // 尝试初始化为IPv6地址，如果不为nil，则是有效的IPv6地址
-        if IPv6Address(self) != nil {
-            return true
+        t.resume()
+        connectDeadline = t
+    }
+
+    private func cancelConnectDeadline() {
+        connectDeadline?.cancel()
+        connectDeadline = nil
+    }
+
+    private func bumpIdle() {
+        idleTimer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + idleTimeoutSec)
+        t.setEventHandler { [weak self] in self?.close() }
+        t.resume()
+        idleTimer = t
+    }
+
+    // MARK: - 工具
+    private func reply(rep: UInt8) {
+        var resp = Data([0x05, rep, 0x00, 0x01])
+        resp.append(contentsOf: [0,0,0,0, 0,0])
+        client.send(content: resp, completion: .contentProcessed { _ in })
+    }
+
+    private func fail(_ err: Error) {
+        NSLog("SOCKS5 \(self.connectTitle) error: \(err)")
+        if !didReplySuccess { reply(rep: 0x05) }
+        close()
+    }
+
+    private func fail(_ err: Error, at site: String) {
+        NSLog("SOCKS5 \(self.connectTitle) error @\(site): \(err)")
+        if !didReplySuccess { reply(rep: 0x05) }
+        close(reason: "fail:\(site)")
+    }
+
+    private func logNWError(prefix: String, _ err: NWError) {
+        switch err {
+        case .posix(let code) where code == .ECANCELED:
+            NSLog("SOCKS5 \(self.connectTitle) \(prefix): ECANCELED")
+        case .posix(let code) where code.rawValue == 54:
+            NSLog("SOCKS5 \(self.connectTitle) \(prefix): Connection reset by peer")
+        default:
+            NSLog("SOCKS5 \(self.connectTitle) \(prefix): \(err)")
         }
-        return false
+    }
+
+    private static func ipv6String(from bytes: [UInt8]) -> String {
+        var s = ""
+        for i in stride(from: 0, to: 16, by: 2) {
+            let part = UInt16(bytes[i]) << 8 | UInt16(bytes[i+1])
+            s += String(format: "%x", part)
+            if i < 14 { s += ":" }
+        }
+        return s
+    }
+
+    private func maybeClose() {
+        if clientReadEOF && upstreamReadEOF {
+            close(reason: "both-EOF")
+        }
+    }
+
+    private func close() {
+        close(reason: "normal")
+    }
+
+    private func close(reason: String) {
+        if closed { return }
+        closed = true
+        NSLog("SOCKS5 \(self.connectTitle) close: \(reason)")
+        idleTimer?.cancel(); idleTimer = nil
+        connectDeadline?.cancel(); connectDeadline = nil
+        upstream?.cancel(); upstream = nil
+        client.cancel()
+        onClose?(self)
     }
 }

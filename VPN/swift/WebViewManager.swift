@@ -10,7 +10,7 @@ import WebKit
 
 class WebViewManager {
     static let shared = WebViewManager()
-    var layerMinus: LayerMinus!
+
     private init() {
      
         

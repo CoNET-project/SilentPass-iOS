@@ -1,162 +1,184 @@
-//
-//  ProxyBridge.swift
-//  CoNETVPN
-//
-//  Created by peter on 2024-12-03.
-//
-
-import Network
 import Foundation
+import Network
+import NetworkExtension
+import os.log
 
-class ServerBridge {
-    var sendData: Data
-    var tcpClient: NWConnection
-    var proxyConnect: ServerConnection
-    var proxyConnectStoped: Bool = false
-    //The TCP maximum package size is 64K 65536
-    let MTU = 65536
-    
-    private func stateDidChange(to state: NWConnection.State) {
-        switch state {
-        case .waiting(let error):
-            connectionDidFail(error: error)
-        case .ready:
-            firstSend()
-        case .failed(let error):
-            connectionDidFail(error: error)
-        default:
-            break
-        }
-    }
-    
-    init(sendData: Data, host: NWEndpoint.Host, port: NWEndpoint.Port, proxyConnect: ServerConnection) {
-        self.proxyConnect = proxyConnect
+final class ServerBridge {
+
+    // === 入参（与现有保持一致） ===
+    let sendData: Data
+    let host: String
+    let port: Int
+    unowned let proxyConnect: ServerConnection
+    let remoteHost: String
+    let remotePort: Int
+    let header: String
+    let base64Body: String
+    let directConnect: Bool
+
+    // === 运行时 ===
+    private var uplink: NWTCPConnection?
+    private let mtu = 64 * 1024
+    private var isStopped = false
+
+    // 由 PacketTunnelProvider 注入
+    static weak var packetProvider: NEPacketTunnelProvider?
+
+    init(sendData: Data,
+         host: String, port: Int,
+         proxyConnect: ServerConnection,
+         remoteHost: String, remotePort: Int,
+         header: String, base64Body: String,
+         directConnect: Bool)
+    {
         self.sendData = sendData
-        self.tcpClient = NWConnection(host: host, port: port, using: .tcp)
+        self.host = host
+        self.port = port
+        self.proxyConnect = proxyConnect
+        self.remoteHost = remoteHost
+        self.remotePort = remotePort
+        self.header = header
+        self.base64Body = base64Body
+        self.directConnect = directConnect
     }
-    
+
+    deinit { stop(error: nil) }
+
+    // 由 PacketTunnelProvider 注入
+    static func configure(with provider: NEPacketTunnelProvider) {
+        ServerBridge.packetProvider = provider
+        NSLog("ServerBridge configured provider = \(provider)")
+    }
+
     func start() {
-        self.tcpClient.stateUpdateHandler = stateDidChange(to:)
-        self.tcpClient.start(queue: .main)
+        if directConnect {
+            startDirect()
+        } else {
+            startViaEntryNode()
+        }
     }
-    
-    private func tcpClientStartReceive() {
-        self.tcpClient.receive(minimumIncompleteLength: 1, maximumLength: MTU) {(data, _, isComplete, error) in
-            if let data = data, !data.isEmpty {
-                self.proxyConnect.connection.send(content: data, completion: .contentProcessed ({ error in
-                    if let error = error {
-                        NSLog("ServerBridge Node \(data.count) ---> APP Error!")
-//                        let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
-//                        NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-                        return self.stop(error: error)
-                    }
-                    NSLog("ServerBridge send Node \(data.count) --->  APP SUCCESS!")
-                    let userInfo: [String: Any] = ["当前通知类型": "允许上网"]
-                                NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-                }))
+
+    // MARK: - 直连：用于调试
+    private func startDirect() {
+        NSLog("ServerBridge call start() DIRECT \(remoteHost):\(remotePort)")
+
+        guard let provider = ServerBridge.packetProvider else {
+            NSLog("ServerBridge DIRECT error: packetProvider is nil")
+            stop(error: nil)
+            return
+        }
+
+        let ep = NWHostEndpoint(hostname: remoteHost, port: "\(remotePort)")
+        // App 侧已经 TLS，因此这里必须 enableTLS=false
+        let conn = provider.createTCPConnection(to: ep, enableTLS: false, tlsParameters: nil, delegate: nil)
+        self.uplink = conn
+
+        // 1) 先把“首包”(如 TLS ClientHello) 排队写出；失败会回调错误
+        if let first = Data(base64Encoded: base64Body, options: [.ignoreUnknownCharacters]), !first.isEmpty {
+            conn.write(first) { [weak self] err in
+                if let err = err {
+                    NSLog("ServerBridge DIRECT write-first error: \(err)")
+                    self?.stop(error: err)
+                } else {
+                    NSLog("ServerBridge DIRECT wrote first: \(first.count) bytes")
+                }
             }
-            
-            if let error = error {
-                self.stop(error: error)
-//                let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
-//                NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-                return NSLog("ServerBridge receive Node data ERROR \(error)!")
+        }
+
+        // 2) 立刻启动“双向泵”；连接尚未建立时系统会排队，连上后回调触发
+        pumpDownToUp()
+        pumpUpToDown()
+    }
+
+    // MARK: - 入口节点（预留给 LayerMinus；当前直接发 sendData）
+    private func startViaEntryNode() {
+        NSLog("ServerBridge call start() VIA ENTRY \(host):\(port)")
+
+        guard let provider = ServerBridge.packetProvider else {
+            NSLog("ServerBridge ENTRY error: packetProvider is nil")
+            stop(error: nil)
+            return
+        }
+
+        let ep = NWHostEndpoint(hostname: host, port: "\(port)")
+        let conn = provider.createTCPConnection(to: ep, enableTLS: false, tlsParameters: nil, delegate: nil)
+        self.uplink = conn
+
+        if !sendData.isEmpty {
+            conn.write(sendData) { [weak self] err in
+                if let err = err {
+                    NSLog("ServerBridge ENTRY write-first error: \(err)")
+                    self?.stop(error: err)
+                } else {
+                    NSLog("ServerBridge ENTRY wrote first: \(self?.sendData.count ?? 0) bytes")
+                }
             }
-            
+        }
+
+        pumpDownToUp()
+        pumpUpToDown()
+    }
+
+    // MARK: - 泵：远端 -> 客户端
+    private func pumpUpToDown() {
+        guard let up = uplink, !isStopped else { return }
+        up.readMinimumLength(1, maximumLength: mtu) { [weak self] data, err in
+            guard let self = self else { return }
+            if let err = err {
+                NSLog("ServerBridge up→down read error: \(err)")
+                self.stop(error: err)
+                return
+            }
+            guard let d = data, !d.isEmpty else {
+                // EOF
+                self.stop(error: nil)
+                return
+            }
+            self.proxyConnect.connection.send(content: d, completion: .contentProcessed { _ in })
+            self.pumpUpToDown()
+        }
+    }
+
+    // MARK: - 泵：客户端 -> 远端
+    private func pumpDownToUp() {
+        guard !isStopped else { return }
+        proxyConnect.connection.receive(minimumIncompleteLength: 1, maximumLength: mtu) { [weak self] data, _, isComplete, err in
+            guard let self = self else { return }
+            if let err = err {
+                NSLog("ServerBridge down→up recv error: \(err)")
+                self.stop(error: err)
+                return
+            }
             if isComplete {
-                return self.stop(error: nil)
+                self.stop(error: nil)
+                return
             }
-            
-            
-            NSLog("ServerBridge receive Node data \(data?.count ?? 0) isComplete ")
-            self.tcpClientStartReceive ()
-            
-        }
-        
-    }
-    
-    private func proxyConnectStartReceive () {
-        self.proxyConnect.connection.receive(minimumIncompleteLength: 1, maximumLength: self.MTU) {(data, _, isComplete, error) in
-            if let data = data, !data.isEmpty {
-                let re = String(data: data, encoding: .utf8)
-                self.tcpClient.send(content: data, completion: .contentProcessed ({ error in
-                    if let error = error {
-                        NSLog("ServerBridge send APP \(data.count) --> Node Error!")
-//                        let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
-//                        NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-                        return self.stop(error: error)
-                    }
-                    
-                    NSLog("ServerBridge send APP \(data.count) --> Node success!")
-                    let userInfo: [String: Any] = ["当前通知类型": "允许上网"]
-                                NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-                }))
+            guard let d = data, !d.isEmpty else {
+                self.pumpDownToUp()
+                return
             }
-            
-            if let error = error {
-                self.stop(error: error)
-//                let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
-//                NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-                return NSLog("ServerBridge receive APP data ERROR \(error)!")
+            self.uplink?.write(d) { [weak self] werr in
+                if let werr = werr {
+                    NSLog("ServerBridge down→up write error: \(werr)")
+                    self?.stop(error: werr)
+                    return
+                }
+                self?.pumpDownToUp()
             }
-            
-            self.proxyConnectStartReceive ()
-            NSLog("ServerBridge receive APP data \(data?.count ?? 0) isComplete ")
-            
         }
     }
-    
-    func firstSend() {
-        
-        proxyConnectStartReceive()
-        tcpClientStartReceive()
-        
-        self.tcpClient.send(content: self.sendData, completion: .contentProcessed ({ error in
-            if let error = error {
-                NSLog("ServerBridge --> Node Access ERROR!")
-                return self.stop(error: error)
-            }
-            
-            NSLog("ServerBridge firstSend --> Node Access SUCCESS!")
-            let userInfo: [String: Any] = ["当前通知类型": "允许上网"]
-                        NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-            
-        }))
-    }
-    
-    private func connectionDidComplete(error: Error?) {
-        NSLog("ServerBridge connection did complete, error: \(String(describing: error))")
-        stop(error: error)
-    }
-    
-    private func connectionDidFail(error: Error) {
-//        let userInfo: [String: Any] = ["当前通知类型": "网络连接失败"]
-//        NotificationCenter.default.post(name: .didUpdateConnectionNodes, object: nil, userInfo:userInfo)
-        NSLog("ServerBridge connection did fail, error: \(error)")
-        stop(error: error)
-    }
-    
+
+    // MARK: - 停止
     func stop(error: Error?) {
-        
-        if tcpClient.stateUpdateHandler != nil {
-            tcpClient.stateUpdateHandler = nil
-            tcpClient.cancel()
+        guard !isStopped else { return }
+        isStopped = true
+        if let err = error {
+            NSLog("ServerBridge stop with error: \(err)")
+        } else {
+            NSLog("ServerBridge stop")
         }
-        
-        if !proxyConnectStoped {
-            proxyConnectStoped = true
-            proxyConnect.stop(error: error)
-        }
-        
-        
-        
-        
-        if let didStopCallback = didStopCallback {
-            self.didStopCallback = nil
-            didStopCallback(error)
-            
-        }
+        uplink?.cancel()
+        uplink = nil
+        // 不主动关闭 proxyConnect.connection；交给上层 ServerConnection
     }
-    
-    var didStopCallback: ((Error?) -> Void)? = nil
 }
