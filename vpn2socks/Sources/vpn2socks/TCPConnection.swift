@@ -18,44 +18,6 @@ final actor TCPConnection {
     // 新增：定义最大段大小 (MTU 1400 - IP Header 20 - TCP Header 20 = 1360)
     private let MSS: Int = 1360
 
-    // === ACK 策略 ===
-    // SOCKS 未建立前：Quick ACK（立即回 ACK）
-    // SOCKS 建立后：短延迟 ACK（默认 30ms），可被数据 piggyback 替代
-    private var quickAckPhase: Bool = true
-    private var ackTimer: DispatchSourceTimer?
-    private let delayedAckMillis: Int = 30
-    private func cancelAckTimer() {
-        ackTimer?.cancel()
-        ackTimer = nil
-    }
-    private func sendAckImmediately() {
-        cancelAckTimer()
-        sendPureAck()
-    }
-    private func scheduleDelayedAck(ms: Int = 30) {
-        // Quick ACK 阶段或已关闭时，直接发
-        if quickAckPhase || socksState == .closed {
-            sendAckImmediately()
-            return
-        }
-        if ackTimer == nil {
-            let t = DispatchSource.makeTimerSource(queue: self.queue)
-            t.setEventHandler { [weak self] in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    await self.sendPureAck()
-                    await self.log("Delayed ACK sent")
-                    await self.cancelAckTimer()
-                }
-            }
-            t.schedule(deadline: .now() + .milliseconds(ms))
-            t.resume()
-            ackTimer = t
-        } else {
-            ackTimer?.schedule(deadline: .now() + .milliseconds(ms))
-        }
-    }
-
     // 新增：客户端 SYN 选项信息
     private struct SynOptionInfo {
         var mss: UInt16? = nil
@@ -240,19 +202,13 @@ final actor TCPConnection {
 
     // === Actor 内新增：封装好的 actor 方法（只在 actor 内部读写属性）===
     @inline(__always)
-    private func markUpstreamEOF() {
-        upstreamEOF = true
-    }
+    private func markUpstreamEOF() { upstreamEOF = true }
 
     @inline(__always)
-    private func clearUpstreamEOF() {
-        upstreamEOF = false
-    }
+    private func clearUpstreamEOF() { upstreamEOF = false }
 
     @inline(__always)
-    private func isUpstreamEOF() -> Bool {
-        upstreamEOF
-    }
+    private func isUpstreamEOF() -> Bool { upstreamEOF }
     
     // SOCKS 读取错误
     private enum SocksReadError: Error { case closed }
@@ -279,12 +235,9 @@ final actor TCPConnection {
     /// 动态生成的连接标识符，用于日志记录。
     private var dynamicLogKey: String {
         let domainName: String?
-
-        // 1. 优先使用 SOCKS 连接最终选择的域名（chosenTarget），因为它最准确。
         if case .domain(let host, _) = chosenTarget {
             domainName = host
         } else {
-            // 2. 回退到初始化时传入的域名（destinationHost），并确保其非空。
             if let host = destinationHost, !host.isEmpty {
                 domainName = host
             } else {
@@ -295,7 +248,6 @@ final actor TCPConnection {
         let sourceString = "\(sourceIP):\(sourcePort)"
         var destinationString = "\(destIP)"
 
-        // 使用全角括号（）包含域名
         if let domain = domainName {
             destinationString += "（\(domain)）"
         }
@@ -306,7 +258,6 @@ final actor TCPConnection {
 
     // 读取至多 max 字节（至少 1 字节，除非对端关闭）
     private func receiveChunk(max: Int) async throws -> Data {
-        // 防止 socksConnection 已被置空导致挂起
         guard let conn = socksConnection else { throw SocksReadError.closed }
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
             conn.receive(minimumIncompleteLength: 1, maximumLength: max) { data, _, isComplete, error in
@@ -347,13 +298,12 @@ final actor TCPConnection {
               !pendingClientBytes.isEmpty else { return }
 
         var dropped = 0
-        let idx = 1 // 保留第 0 段
+        var idx = 1 // 保留第 0 段
         while pendingBytesTotal > TCPConnection.pendingSoftCapBytes && idx < pendingClientBytes.count {
             let sz = pendingClientBytes[idx].count
             pendingClientBytes.remove(at: idx)
             pendingBytesTotal &-= sz
             dropped &+= sz
-            // 不递增 idx，因为移除了当前位置，下一段自动顶上来
         }
         if dropped > 0 {
             log("Pending buffer capped at \(TCPConnection.pendingSoftCapBytes)B; dropped \(dropped)B; now \(pendingBytesTotal)B.")
@@ -361,7 +311,7 @@ final actor TCPConnection {
     }
 
     // MARK: - Init
-    
+
     init(
         key: String,
         packetFlow: SendablePacketFlow,
@@ -421,7 +371,7 @@ final actor TCPConnection {
     /// 幂等的发送 SYN-ACK（只做一次），并推进我方 SEQ
     public func sendSynAckIfNeeded() async {
         guard !synAckSent else { return }
-        await sendSynAckWithOptions()   // ← 改成带 SACK-Permitted 的版本
+        await sendSynAckWithOptions()   // ← 带 SACK-Permitted 与正确的 MSS
     }
 
     /// 关闭并清理连接
@@ -431,7 +381,7 @@ final actor TCPConnection {
         
         // 取消所有定时器
         cancelRetransmitTimer()
-        cancelAckTimer()
+        cancelDelayedAckTimer()
         
         // 清理缓存
         if !outOfOrderPackets.isEmpty {
@@ -462,47 +412,89 @@ final actor TCPConnection {
         - SOCKS state: \(socksState)
         """
     }
-
+    
     // MARK: - NWConnection State (actor-safe)
     
     private func generateSackBlocks() -> [(UInt32, UInt32)] {
         guard !outOfOrderPackets.isEmpty else { return [] }
-                
+        
         var blocks: [(UInt32, UInt32)] = []
         var currentStart: UInt32?
-        var lastEnd: UInt32?
+        var currentEnd: UInt32?
         
         for packet in outOfOrderPackets {
             let packetEnd = packet.seq &+ UInt32(packet.data.count)
             
-            if let start = currentStart, let end = lastEnd {
+            if let start = currentStart, let end = currentEnd {
+                // 检查是否可以合并
                 if packet.seq == end {
-                    lastEnd = packetEnd
+                    // 连续，扩展当前块
+                    currentEnd = packetEnd
                 } else {
+                    // 不连续，保存当前块并开始新块
                     blocks.append((start, end))
+                    if blocks.count >= 4 { break } // 最多4个SACK块
                     currentStart = packet.seq
-                    lastEnd = packetEnd
+                    currentEnd = packetEnd
                 }
             } else {
+                // 第一个块
                 currentStart = packet.seq
-                lastEnd = packetEnd
+                currentEnd = packetEnd
             }
         }
         
-        if let start = currentStart, let end = lastEnd {
+        // 添加最后一个块
+        if let start = currentStart, let end = currentEnd, blocks.count < 4 {
             blocks.append((start, end))
-        }
-        
-        // TCP 最多 4 个 SACK 块
-        if blocks.count > 4 {
-            blocks = Array(blocks.prefix(4))
         }
         
         return blocks
     }
     
-    // MARK: - 定时器方法（使用新名称）
-    private var retransmitTimer: DispatchSourceTimer?  // 使用不同的名字避免冲突
+    // 7. 添加诊断方法
+    private func diagnosePacketLoss() -> String {
+        var diagnosis = "Packet Loss Diagnosis:\n"
+        
+        if outOfOrderPackets.isEmpty {
+            diagnosis += "  - No buffered packets\n"
+        } else {
+            diagnosis += "  - Buffered packets: \(outOfOrderPackets.count)\n"
+            diagnosis += "  - Expected seq: \(nextExpectedSequence)\n"
+            
+            if let first = outOfOrderPackets.first {
+                let gap = first.seq - nextExpectedSequence
+                diagnosis += "  - First buffered seq: \(first.seq)\n"
+                diagnosis += "  - Gap size: \(gap) bytes\n"
+                
+                if gap > 0 {
+                    diagnosis += "  - Missing sequence range: \(nextExpectedSequence)-\(first.seq - 1)\n"
+                }
+            }
+            
+            // 检查缓冲包的连续性
+            var hasGaps = false
+            for i in 1..<outOfOrderPackets.count {
+                let prev = outOfOrderPackets[i-1]
+                let curr = outOfOrderPackets[i]
+                let prevEnd = prev.seq &+ UInt32(prev.data.count)
+                if curr.seq != prevEnd {
+                    hasGaps = true
+                    let gapSize = curr.seq - prevEnd
+                    diagnosis += "  - Gap in buffer: \(gapSize) bytes between seq \(prevEnd) and \(curr.seq)\n"
+                }
+            }
+            
+            if !hasGaps && outOfOrderPackets.count > 1 {
+                diagnosis += "  - Buffered packets are contiguous\n"
+            }
+        }
+        
+        return diagnosis
+    }
+    
+    // MARK: - 定时器方法（重传）
+    private var retransmitTimer: DispatchSourceTimer?
     private var retransmitRetries = 0
     private let maxRetransmitRetries = 3
     
@@ -514,22 +506,43 @@ final actor TCPConnection {
     
     private func handleRetransmitTimeout() async {
         retransmitRetries += 1
+            
+        log("Retransmit timeout #\(retransmitRetries) for seq: \(nextExpectedSequence), buffered: \(outOfOrderPackets.count)")
+        
         if retransmitRetries > maxRetransmitRetries {
-            log("Maximum retries reached for seq: \(nextExpectedSequence)")
+            log("Max retries reached, checking for buffered packets...")
+            
+            // 检查是否有可以跳过的小gap
             if let firstBuffered = outOfOrderPackets.first {
-                nextExpectedSequence = firstBuffered.seq
-                processBufferedPackets()
+                let gap = firstBuffered.seq - nextExpectedSequence
+                if gap <= 1460 { // 小于一个MSS的gap
+                    log("Small gap detected (\(gap) bytes), skipping to seq \(firstBuffered.seq)")
+                    nextExpectedSequence = firstBuffered.seq
+                    processBufferedPackets()
+                }
             }
             cancelRetransmitTimer()
             return
         }
-
-        log("Retransmit timeout #\(retransmitRetries) for seq: \(nextExpectedSequence)")
-        for _ in 0..<3 { sackEnabled && peerSupportsSack ? sendAckWithSack() : sendDuplicateAck() }
-
-        // 仅重设时间，不再新建 timer
-        let nextTimeoutMs = 200 * (1 << retransmitRetries)
+        
+        // 发送重复ACK触发快速重传
+        if sackEnabled && peerSupportsSack {
+            // 发送3个带SACK的ACK
+            for i in 0..<3 {
+                sendAckWithSack()
+                log("Sent duplicate ACK with SACK #\(i+1)")
+            }
+        } else {
+            // 发送3个普通重复ACK
+            for i in 0..<3 {
+                sendDuplicateAck()
+            }
+        }
+        
+        // 指数退避
+        let nextTimeoutMs = 200 * (1 << min(retransmitRetries, 4))
         retransmitTimer?.schedule(deadline: .now() + .milliseconds(nextTimeoutMs))
+        log("Next retry in \(nextTimeoutMs)ms")
     }
     
     private var diagTask: Task<Void, Never>?
@@ -545,48 +558,83 @@ final actor TCPConnection {
     
     private func startRetransmitTimer() {
         cancelRetransmitTimer()
-                
-        // 使用实例的 queue
         let timer = DispatchSource.makeTimerSource(queue: self.queue)
         let timeoutMs: UInt64 = 200
-        
         timer.schedule(deadline: .now() + .milliseconds(Int(timeoutMs)))
-        
         timer.setEventHandler { [weak self] in
             Task { [weak self] in
                 guard let self = self else { return }
                 await self.handleRetransmitTimeout()
             }
         }
-        
         timer.resume()
         retransmitTimer = timer
-        
         log("Started retransmit timer for seq: \(nextExpectedSequence)")
     }
     
+    // MARK: - Delayed ACK（新增）
+    private var delayedAckTimer: DispatchSourceTimer?
+    private var delayedAckPacketsSinceLast: Int = 0
+    private let delayedAckTimeoutMs: Int = 40
+
+    private func cancelDelayedAckTimer() {
+        delayedAckTimer?.cancel()
+        delayedAckTimer = nil
+        delayedAckPacketsSinceLast = 0
+    }
+
+    private func scheduleDelayedAck() {
+        delayedAckPacketsSinceLast += 1
+            
+        // 每2个段或40ms发送ACK
+        if delayedAckPacketsSinceLast >= 2 {
+            sendPureAck()
+            log("Immediate ACK (2 segments received)")
+            cancelDelayedAckTimer()
+            return
+        }
+        
+        // 启动延迟定时器（如果还没有）
+        if delayedAckTimer == nil {
+            let timer = DispatchSource.makeTimerSource(queue: self.queue)
+            timer.schedule(deadline: .now() + .milliseconds(delayedAckTimeoutMs))
+            timer.setEventHandler { [weak self] in
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    await self.sendPureAck()
+                    await self.log("Delayed ACK timeout (40ms)")
+                    await self.cancelDelayedAckTimer()
+                }
+            }
+            timer.resume()
+            delayedAckTimer = timer
+        }
+    }
+
+    // MARK: - State updates
+
     private func handleStateUpdate(_ newState: NWConnection.State) async {
         switch newState {
-        case .ready:
-            log("TCP connection to proxy is ready. Starting SOCKS handshake.")
-            await setSocksState(.greetingSent)
-            await performSocksHandshake()
+            case .ready:
+                log("TCP connection to proxy is ready. Starting SOCKS handshake.")
+                await setSocksState(.greetingSent)
+                await performSocksHandshake()
 
-        case .waiting(let err):
-            log("NWConnection waiting: \(err.localizedDescription)")
+            case .waiting(let err):
+                log("NWConnection waiting: \(err.localizedDescription)")
 
-        case .preparing:
-            log("NWConnection preparing...")
+            case .preparing:
+                log("NWConnection preparing...")
 
-        case .failed(let err):
-            log("NWConnection failed: \(err.localizedDescription)")
-            close()
+            case .failed(let err):
+                log("NWConnection failed: \(err.localizedDescription)")
+                close()
 
-        case .cancelled:
-            close()
+            case .cancelled:
+                close()
 
-        default:
-            break
+            default:
+                break
         }
     }
 
@@ -633,14 +681,13 @@ final actor TCPConnection {
 
                 await self.log("Step 1: Handshake response received. Server accepted 'No Auth'.")
                 await self.setSocksState(.methodOK)
-                await self.sendSocksConnectRequest()  // 这里内部会先统一决策目标
+                await self.sendSocksConnectRequest()
             }
         }
     }
 
-    /// 统一决策：本次 SOCKS CONNECT 用 IP 还是 DOMAIN（目的：最大化命中“假IP→域名”并支持 SNI 回退）
+    /// 统一决策：本次 SOCKS CONNECT 用 IP 还是 DOMAIN
     private func decideSocksTarget() async -> SocksTarget {
-        // 1) 优先使用上层已经给的域名（例如 ConnectionManager 已截获到域）
         if let host = destinationHost, !host.isEmpty {
             if isFakeIP(destIP) {
                 await DNSInterceptor.shared.registerMapping(fakeIP: destIP, domain: host.lowercased())
@@ -648,39 +695,30 @@ final actor TCPConnection {
             log("[TCP] Use destinationHost=\(host) as DOMAIN target.")
             return .domain(host, port: destPort)
         }
-
-        // 2) 假 IP → 查 DNSInterceptor 的映射
         if isFakeIP(destIP) {
             if let mapped = await DNSInterceptor.shared.getDomain(forFakeIP: destIP) {
                 log("[TCP] FakeIP \(destIP) matched domain \(mapped).")
                 return .domain(mapped, port: destPort)
             }
-            // 3) 未命中：尝试从首段缓存解析 TLS SNI
             if let hello = firstBufferedPayload(), let sni = parseSNIHost(from: hello) {
                 await DNSInterceptor.shared.registerMapping(fakeIP: destIP, domain: sni)
                 log("[TCP] FakeIP \(destIP) no map; recovered SNI=\(sni).")
                 return .domain(sni, port: destPort)
             }
-            // 4) 仍然失败：退回 IP（Local Proxy 会因假 IP 失败，但让路径自洽）
             log("[TCP] FakeIP \(destIP) no map & no SNI. Fallback to IP.")
             return .ip(destIP, port: destPort)
         }
-
-        // 真实 IP：可选 SNI 优先（有些上游需要域名握手）
         if let hello = firstBufferedPayload(), let sni = parseSNIHost(from: hello) {
             log("[TCP] Real IP \(destIP) but SNI=\(sni) found. Prefer DOMAIN.")
             return .domain(sni, port: destPort)
         }
-
-        // 否则就直接用 IP
         return .ip(destIP, port: destPort)
     }
 
-    /// 步骤 2：发送 CONNECT 请求（优先域名）。内部会调用统一决策。
+    /// 步骤 2：发送 CONNECT 请求
     private func sendSocksConnectRequest() async {
         guard let connection = socksConnection else { return }
 
-        // 如果还没选过，先做一次统一决策；否则复用上次决策
         let target: SocksTarget
         if let chosen = self.chosenTarget {
             target = chosen
@@ -727,57 +765,34 @@ final actor TCPConnection {
         }))
     }
 
-    /// 步骤 2 的应答（0x05 0x00 …）
+    /// 步骤 2 的应答
     private func receiveConnectResponse() async {
         guard socksConnection != nil else { return }
 
         do {
-            // 固定头 4B：VER, REP, RSV, ATYP
             let head = try await receiveExactly(4)
             let ver = head[0], rep = head[1], atyp = head[3]
 
-            guard ver == 0x05 else {
-                log("SOCKS Step 2: Bad VER \(ver)")
-                close(); return
-            }
-            guard rep == 0x00 else {
-                log("SOCKS Step 2: Connect rejected. REP=\(String(format:"0x%02x", rep))")
-                close(); return
-            }
+            guard ver == 0x05 else { log("SOCKS Step 2: Bad VER \(ver)"); close(); return }
+            guard rep == 0x00 else { log("SOCKS Step 2: Connect rejected. REP=\(String(format:"0x%02x", rep))"); close(); return }
 
-            // 读取 BND.ADDR
             switch atyp {
-            case 0x01: // IPv4
-                _ = try await receiveExactly(4)
-            case 0x04: // IPv6
-                _ = try await receiveExactly(16)
-            case 0x03: // Domain
+            case 0x01: _ = try await receiveExactly(4)  // IPv4
+            case 0x04: _ = try await receiveExactly(16) // IPv6
+            case 0x03:
                 let len = try await receiveExactly(1)[0]
                 if len > 0 { _ = try await receiveExactly(Int(len)) }
             default:
-                log("SOCKS Step 2: Unknown ATYP \(String(format:"0x%02x", atyp))")
-                close(); return
+                log("SOCKS Step 2: Unknown ATYP \(String(format:"0x%02x", atyp))"); close(); return
             }
-
-            // 读取 BND.PORT
-            _ = try await receiveExactly(2)
+            _ = try await receiveExactly(2) // BND.PORT
 
             await setSocksState(.established)
             log("SOCKS Step 2: Connect response consumed. SOCKS tunnel established!")
 
-            // 退出 Quick ACK，进入短延迟 ACK 模式
-            quickAckPhase = false
-            log("QuickACK phase disabled; using delayed ACK (\(delayedAckMillis)ms).")
-
-            // 再保险地确保 SYN-ACK 已发
             await sendSynAckIfNeeded()
-
-            // 冲刷缓存
             await onSocksEstablishedAndFlush()
-
-            // 开始转发上游数据
             await readFromSocks()
-
         } catch {
             log("SOCKS Step 2: Connect response receive error: \(error)")
             close()
@@ -786,24 +801,23 @@ final actor TCPConnection {
     
     // 处理有序包
     private func processInOrderPacket(payload: Data, sequenceNumber: UInt32) {
+        // 更新期望序列号
+        let oldNext = nextExpectedSequence
         nextExpectedSequence = sequenceNumber &+ UInt32(payload.count)
-        self.clientSequenceNumber = nextExpectedSequence
+        clientSequenceNumber = nextExpectedSequence
         
         log("In-order packet: seq=\(sequenceNumber), len=\(payload.count), next=\(nextExpectedSequence)")
         
-        // ACK 策略：SOCKS 未建立 → 立即 ACK；已建立 → 短延迟 ACK（可被后续数据 piggyback）
-        if socksState != .established {
-            sendAckImmediately()
-        } else {
-            scheduleDelayedAck(ms: delayedAckMillis)
-        }
-        
+        // 转发数据
         if socksState != .established {
             appendToPending(payload)
             log("Buffering \(payload.count) bytes (SOCKS not ready)")
         } else {
             sendRawToSocks(payload)
         }
+        
+        // 有序包使用延迟ACK
+        scheduleDelayedAck()
     }
 
     // MARK: - Data forwarding (App -> SOCKS)
@@ -813,39 +827,22 @@ final actor TCPConnection {
     // 统计
     private var duplicateAckCount = 0
     private var lastAckedSequence: UInt32 = 0
-    private var duplicatePacketLogCount = 0
     
     // 缓存乱序包
     private func bufferOutOfOrderPacket(payload: Data, sequenceNumber: UInt32) {
-        // 检查是否已经缓存过
         if outOfOrderPackets.contains(where: { $0.seq == sequenceNumber }) {
             log("Out-of-order packet already buffered, seq: \(sequenceNumber)")
             return
         }
-        
-        // 添加到缓存，保持排序
         let packet = (seq: sequenceNumber, data: payload)
-        
-        // 二分查找插入位置，保持序列号有序
-        var left = 0
-        var right = outOfOrderPackets.count
-        
+        var left = 0, right = outOfOrderPackets.count
         while left < right {
             let mid = (left + right) / 2
-            if outOfOrderPackets[mid].seq < sequenceNumber {
-                left = mid + 1
-            } else {
-                right = mid
-            }
+            if outOfOrderPackets[mid].seq < sequenceNumber { left = mid + 1 } else { right = mid }
         }
-        
         outOfOrderPackets.insert(packet, at: left)
-        
         log("Buffered out-of-order packet, seq: \(sequenceNumber), len: \(payload.count), total buffered: \(outOfOrderPackets.count)")
-        
-        // 防止内存泄漏
         if outOfOrderPackets.count > maxOutOfOrderPackets {
-            // 移除最旧的包
             let removed = outOfOrderPackets.removeFirst()
             log("WARNING: Dropped old out-of-order packet due to buffer limit, seq: \(removed.seq)")
         }
@@ -853,46 +850,45 @@ final actor TCPConnection {
     
     private func processBufferedPackets() {
         var processed = 0
-        
+            
         while !outOfOrderPackets.isEmpty {
             let packet = outOfOrderPackets[0]
             
             if packet.seq == nextExpectedSequence {
+                // 这个包现在可以处理了
                 outOfOrderPackets.removeFirst()
                 
                 nextExpectedSequence = packet.seq &+ UInt32(packet.data.count)
-                self.clientSequenceNumber = nextExpectedSequence
+                clientSequenceNumber = nextExpectedSequence
                 
-                log("Processing buffered: seq=\(packet.seq), len=\(packet.data.count)")
+                log("Processing buffered packet: seq=\(packet.seq), len=\(packet.data.count), new next=\(nextExpectedSequence)")
                 
                 if socksState != .established {
                     appendToPending(packet.data)
                 } else {
                     sendRawToSocks(packet.data)
                 }
-                
                 processed += 1
                 
             } else if packet.seq < nextExpectedSequence {
+                // 过期的包，丢弃
+                let overlap = nextExpectedSequence - packet.seq
+                log("Dropping outdated buffered packet: seq=\(packet.seq), overlap=\(overlap)")
                 outOfOrderPackets.removeFirst()
-                log("Dropping outdated buffered packet: seq=\(packet.seq)")
                 
             } else {
+                // 还有gap，停止处理
                 break
             }
         }
         
         if processed > 0 {
-            // ACK：与 in-order 相同策略
-            if socksState != .established {
-                sendAckImmediately()
-            } else {
-                scheduleDelayedAck(ms: delayedAckMillis)
-            }
             log("Processed \(processed) buffered packets, remaining: \(outOfOrderPackets.count)")
+            // 处理完立即ACK
+            sendPureAck()
+            cancelDelayedAckTimer()
         }
     }
-    
 
     /// 处理从 VPN 隧道来的 TCP 负载，发往 SOCKS（未建立则缓冲）
     func handlePacket(payload: Data, sequenceNumber: UInt32) {
@@ -902,137 +898,108 @@ final actor TCPConnection {
             Task { await self.start() }
         }
         
-        // 初始化序列号追踪
+        // 修复：正确初始化序列号追踪
         if !handshakeAcked {
             handshakeAcked = true
+            // 初始数据包的序列号就是下一个期望的序列号
             nextExpectedSequence = sequenceNumber
+            clientSequenceNumber = sequenceNumber  // 不要加1
             lastAckedSequence = sequenceNumber
-            log("Handshake completed, initial data seq: \(sequenceNumber)")
+            log("Handshake completed (ACK: \(sequenceNumber + 1))")
         }
 
         // 处理不同序列号的情况
         if sequenceNumber == nextExpectedSequence {
-            // 情况1: 正好是期望的包
+            // 有序包
             processInOrderPacket(payload: payload, sequenceNumber: sequenceNumber)
-            
-            // 取消超时定时器（因为收到了期望的包）
             cancelRetransmitTimer()
-            
-            // 重置重复 ACK 计数
             duplicateAckCount = 0
-            
-            // 检查是否有后续的乱序包可以处理
             processBufferedPackets()
             
         } else if sequenceNumber > nextExpectedSequence {
-            // 情况2: 未来的包（乱序）
+            // 未来的包（乱序）
+            let gap = sequenceNumber - nextExpectedSequence
+            log("Out-of-order packet: seq=\(sequenceNumber), expected=\(nextExpectedSequence), gap=\(gap)")
+            
             bufferOutOfOrderPacket(payload: payload, sequenceNumber: sequenceNumber)
             
-            // 发送带 SACK 的 ACK（立即）
+            // 立即发送ACK（带SACK）
+            cancelDelayedAckTimer()
             if sackEnabled && peerSupportsSack {
-                sendAckWithSack()   // 立即 ACK
+                sendAckWithSack()
             } else {
-                sendDuplicateAck()  // 立即 ACK
+                sendDuplicateAck()
             }
             
-            // 启动或重置丢包定时器
-            startRetransmitTimer()
+            // 只在首次出现gap时启动重传定时器
+            if retransmitTimer == nil {
+                startRetransmitTimer()
+            }
             
         } else {
-            // 情况3: 重复的包（已经接收过）
-            duplicatePacketLogCount &+= 1
-            if (duplicatePacketLogCount % 16) == 1 {
-                log("Duplicate packet received, seq: \(sequenceNumber), expected: \(nextExpectedSequence) [x\(duplicatePacketLogCount)]")
-            }
-            // 仍然发送 ACK 确认（立即）
-            sendAckImmediately()
+            // 重复的包
+            let behind = nextExpectedSequence - sequenceNumber
+            log("Duplicate packet: seq=\(sequenceNumber), expected=\(nextExpectedSequence), behind by \(behind)")
+            
+            // 可能是对端没收到我们的ACK，立即重发ACK
+            cancelDelayedAckTimer()
+            sendPureAck()
         }
     }
     
     /// 发送带 SACK 选项的 ACK
     private func sendAckWithSack() {
-        cancelAckTimer() // 将要发送 ACK，取消延迟 ACK
         let sackBlocks = generateSackBlocks()
         if sackBlocks.isEmpty {
             sendPureAck()
             return
         }
-                
-        // 创建带 SACK 选项的 TCP 头
         let ackNumber = self.clientSequenceNumber
-                
-        // 计算 TCP 选项长度
+        
         let sackOptionLength = 2 + (sackBlocks.count * 8)
         let tcpOptionsLength = 2 + sackOptionLength  // 2 个 NOP + SACK
         let tcpHeaderLength = 20 + tcpOptionsLength
-                
-        // 确保 4 字节对齐
         let paddedLength = ((tcpHeaderLength + 3) / 4) * 4
         let paddingNeeded = paddedLength - tcpHeaderLength
                 
         var tcp = Data(count: paddedLength)
-                
-        // 基本 TCP 头
         tcp[0] = UInt8(destPort >> 8); tcp[1] = UInt8(destPort & 0xFF)
         tcp[2] = UInt8(sourcePort >> 8); tcp[3] = UInt8(sourcePort & 0xFF)
-                
         withUnsafeBytes(of: serverSequenceNumber.bigEndian) { tcp.replaceSubrange(4..<8, with: $0) }
         withUnsafeBytes(of: ackNumber.bigEndian) { tcp.replaceSubrange(8..<12, with: $0) }
-                
         tcp[12] = UInt8((paddedLength / 4) << 4)  // Data offset
         tcp[13] = TCPFlags.ack.rawValue
-        tcp[14] = 0xFF; tcp[15] = 0xFF  // Window size
-        tcp[16] = 0; tcp[17] = 0        // Checksum (placeholder)
-        tcp[18] = 0; tcp[19] = 0        // Urgent pointer
-                
-        // TCP 选项
+        tcp[14] = 0xFF; tcp[15] = 0xFF  // Window
+        tcp[16] = 0; tcp[17] = 0        // Checksum
+        tcp[18] = 0; tcp[19] = 0        // Urgent
+        
         var optionOffset = 20
-                
-        // NOP + NOP (用于对齐)
-        tcp[optionOffset] = 0x01; optionOffset += 1
-        tcp[optionOffset] = 0x01; optionOffset += 1
-                
-        // SACK 选项
-        tcp[optionOffset] = 0x05  // SACK option kind
-        tcp[optionOffset + 1] = UInt8(sackOptionLength)  // Length
+        tcp[optionOffset] = 0x01; optionOffset += 1 // NOP
+        tcp[optionOffset] = 0x01; optionOffset += 1 // NOP
+        
+        tcp[optionOffset] = 0x05
+        tcp[optionOffset + 1] = UInt8(sackOptionLength)
         optionOffset += 2
-                
-        // SACK 块
         for block in sackBlocks {
-            withUnsafeBytes(of: block.0.bigEndian) { // start
-                tcp.replaceSubrange(optionOffset..<(optionOffset+4), with: $0)
-            }
+            withUnsafeBytes(of: block.0.bigEndian) { tcp.replaceSubrange(optionOffset..<(optionOffset+4), with: $0) }
             optionOffset += 4
-            withUnsafeBytes(of: block.1.bigEndian) { // end
-                tcp.replaceSubrange(optionOffset..<(optionOffset+4), with: $0)
-            }
+            withUnsafeBytes(of: block.1.bigEndian) { tcp.replaceSubrange(optionOffset..<(optionOffset+4), with: $0) }
             optionOffset += 4
         }
-                
-        // 填充（如果需要）
-        for _ in 0..<paddingNeeded {
-            tcp[optionOffset] = 0x00  // End of options
-            optionOffset += 1
-        }
-                
-        // 创建 IP 头并发送
+        for _ in 0..<paddingNeeded { tcp[optionOffset] = 0x00; optionOffset += 1 }
+
         var ip = createIPv4Header(payloadLength: tcp.count)
-                
         let tcpCsum = tcpChecksum(ipHeader: ip, tcpHeader: tcp, payload: Data())
-        tcp[16] = UInt8(tcpCsum >> 8)
-        tcp[17] = UInt8(tcpCsum & 0xFF)
-                
+        tcp[16] = UInt8(tcpCsum >> 8); tcp[17] = UInt8(tcpCsum & 0xFF)
         let ipCsum = ipChecksum(&ip)
-        ip[10] = UInt8(ipCsum >> 8)
-        ip[11] = UInt8(ipCsum & 0xFF)
-                
+        ip[10] = UInt8(ipCsum >> 8); ip[11] = UInt8(ipCsum & 0xFF)
         packetFlow.writePackets([ip + tcp], withProtocols: [AF_INET as NSNumber])
-                
+        
         let blockDescriptions = sackBlocks.map { "[\($0.0)-\($0.1)]" }.joined(separator: ", ")
         log("Sent ACK with SACK: ACK=\(ackNumber), blocks: \(blockDescriptions)")
     }
     
-    /// 在 SYN-ACK 中添加 SACK-Permitted 选项
+    /// 在 SYN-ACK 中添加选项（MSS 按常量，含 SACK-Permitted）
     private func sendSynAckWithOptions() async {
         guard !synAckSent else { return }
         synAckSent = true
@@ -1040,66 +1007,52 @@ final actor TCPConnection {
         let seq = serverInitialSequenceNumber
         let ackNumber = initialClientSequenceNumber &+ 1
         
-        // 创建带选项的 TCP 头
-        // MSS(4) + SACK-Permitted(2) + NOP(若干对齐) → 40 字节 TCP 头
         var tcp = Data(count: 40)  // 20 基本 + 20 选项
-        
-        // 基本 TCP 头
         tcp[0] = UInt8(destPort >> 8); tcp[1] = UInt8(destPort & 0xFF)
         tcp[2] = UInt8(sourcePort >> 8); tcp[3] = UInt8(sourcePort & 0xFF)
         
         withUnsafeBytes(of: seq.bigEndian) { tcp.replaceSubrange(4..<8, with: $0) }
         withUnsafeBytes(of: ackNumber.bigEndian) { tcp.replaceSubrange(8..<12, with: $0) }
         
-        tcp[12] = 0xA0  // Data offset = 10 (40 bytes / 4)
+        tcp[12] = 0xA0  // data offset=10 (40 bytes)
         tcp[13] = TCPFlags([.syn, .ack]).rawValue
         tcp[14] = 0xFF; tcp[15] = 0xFF  // Window
         tcp[16] = 0; tcp[17] = 0        // Checksum
         tcp[18] = 0; tcp[19] = 0        // Urgent
         
-        // TCP 选项
         var offset = 20
         
-        // MSS 选项 (1460)
+        // MSS 选项（使用常量 1360）
+        let mss = UInt16(MSS)
         tcp[offset] = 0x02; tcp[offset+1] = 0x04
-        tcp[offset+2] = 0x05; tcp[offset+3] = 0xB4
+        tcp[offset+2] = UInt8(mss >> 8)
+        tcp[offset+3] = UInt8(mss & 0xFF)
         offset += 4
         
-        // SACK-Permitted 选项
+        // SACK-Permitted
         tcp[offset] = 0x04; tcp[offset+1] = 0x02
         offset += 2
         
-        // 填充 NOP 到对齐
-        while offset < 40 {
-            tcp[offset] = 0x01  // NOP
-            offset += 1
-        }
+        // 其余填充 NOP
+        while offset < 40 { tcp[offset] = 0x01; offset += 1 }
         
-        // 发送
         var ip = createIPv4Header(payloadLength: tcp.count)
-        
         let tcpCsum = tcpChecksum(ipHeader: ip, tcpHeader: tcp, payload: Data())
-        tcp[16] = UInt8(tcpCsum >> 8)
-        tcp[17] = UInt8(tcpCsum & 0xFF)
-        
+        tcp[16] = UInt8(tcpCsum >> 8); tcp[17] = UInt8(tcpCsum & 0xFF)
         let ipCsum = ipChecksum(&ip)
-        ip[10] = UInt8(ipCsum >> 8)
-        ip[11] = UInt8(ipCsum & 0xFF)
-        
+        ip[10] = UInt8(ipCsum >> 8); ip[11] = UInt8(ipCsum & 0xFF)
         packetFlow.writePackets([ip + tcp], withProtocols: [AF_INET as NSNumber])
         
-        // 更新序列号
         self.serverSequenceNumber = seq &+ 1
         self.clientSequenceNumber = self.initialClientSequenceNumber &+ 1
         
-        log("Sent SYN-ACK with SACK-Permitted option")
+        log("Sent SYN-ACK with SACK-Permitted option (MSS=\(MSS))")
     }
     
     /// 获取连接统计信息
     func getDetailedStats() -> String {
         let sackBlocks = generateSackBlocks()
         let blockDescriptions = sackBlocks.map { "[\($0.0)-\($0.1)]" }.joined(separator: ", ")
-        
         return """
         === TCP Connection Stats ===
         Sequence Numbers:
@@ -1115,12 +1068,10 @@ final actor TCPConnection {
         Timers:
           - Retransmit timer: \(retransmitTimer != nil ? "Active" : "Inactive")
           - Retries: \(retransmitRetries)/\(maxRetransmitRetries)
-          - Delayed ACK: \(ackTimer != nil ? "Armed" : "Idle")
         
         Features:
           - SACK enabled: \(sackEnabled)
           - Peer supports SACK: \(peerSupportsSack)
-          - QuickACK phase: \(quickAckPhase)
         
         SOCKS State: \(socksState)
         """
@@ -1129,20 +1080,15 @@ final actor TCPConnection {
     // 定期打印统计（用于调试）
     private func startDiagnostics() {
         Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
-            Task {
-                await self.log(self.getDetailedStats())
-            }
+            Task { await self.log(self.getDetailedStats()) }
         }
     }
     
     // 发送重复ACK（用于快速重传）
     private func sendDuplicateAck() {
-        cancelAckTimer() // 立即发 ACK
         duplicateAckCount += 1
         log("Duplicate ACK #\(duplicateAckCount) for seq: \(clientSequenceNumber)")
-        if duplicateAckCount >= 3 {
-            log("Fast retransmit triggered")
-        }
+        if duplicateAckCount >= 3 { log("Fast retransmit triggered") }
         sendPureAck()
     }
 
@@ -1154,9 +1100,7 @@ final actor TCPConnection {
         let totalBuffered = pendingBytesTotal
         log("Flushing \(totalBuffered) bytes buffered before SOCKS established.")
 
-        for chunk in pendingClientBytes {
-            sendRawToSocks(chunk)
-        }
+        for chunk in pendingClientBytes { sendRawToSocks(chunk) }
         pendingClientBytes.removeAll(keepingCapacity: false)
         pendingBytesTotal = 0
     }
@@ -1215,7 +1159,6 @@ final actor TCPConnection {
     /// 持续从 SOCKS 读取数据，写回隧道
     private func readFromSocks() async {
         socksConnection?.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, isComplete, error in
-            // 回调不是在 actor 上 ⇒ 先 hop 回 actor
             Task { [weak self] in
                 guard let self else { return }
 
@@ -1234,30 +1177,25 @@ final actor TCPConnection {
                 }
 
                 if let data, !data.isEmpty {
+                    // 我们会带 ACK 回去，因此可以取消 pending 的延迟 ACK
+                    await self.cancelDelayedAckTimer()
                     await self.log("Received \(data.count) bytes from SOCKS, writing to tunnel.")
-                    // 写回 App 时会带 ACK（PSH,ACK），视为 piggyback，取消延迟 ACK
-                    await self.cancelAckTimer()
                     await self.writeToTunnel(payload: data)
                 }
 
-                await self.readFromSocks() // 递归下一轮读取（actor 方法）
+                await self.readFromSocks()
             }
         }
     }
 
     // MARK: - TCP 发送：SYN-ACK / FIN-ACK / data
 
-    /// 第一次真正发出 SYN-ACK（内部），并推进本端序号
+    /// 第一次真正发出 SYN-ACK（保留以备需要）
     private func sendSynAck() async {
         guard !synAckSent else { return }
         synAckSent = true
-
         sendSynAckCore(seq: serverInitialSequenceNumber, logPrefix: "Sending SYN-ACK to client.")
-
-        // SYN 消耗一个序号
         self.serverSequenceNumber = serverInitialSequenceNumber &+ 1
-        
-        // 初始化客户端序列号追踪
         self.clientSequenceNumber = self.initialClientSequenceNumber &+ 1
         self.nextExpectedSequence = self.initialClientSequenceNumber &+ 1
     }
@@ -1265,7 +1203,6 @@ final actor TCPConnection {
     /// 用固定 ISS 发送（重发用，不改变任何状态）
     public func retransmitSynAckDueToDuplicateSyn() async {
         guard !handshakeAcked else { return }
-        // 重发带 SACK-Permitted 的 SYN-ACK，但不改 synAckSent/serverSequenceNumber 等状态
         let seq = serverInitialSequenceNumber
         let ackNumber = initialClientSequenceNumber &+ 1
 
@@ -1277,9 +1214,10 @@ final actor TCPConnection {
         tcp[12] = 0xA0
         tcp[13] = TCPFlags([.syn, .ack]).rawValue
         tcp[14] = 0xFF; tcp[15] = 0xFF
-        // MSS + SACK-Permitted + NOP 填充
+        // MSS + SACK-Permitted + NOP 填充（MSS 使用常量）
         var off = 20
-        tcp[off] = 0x02; tcp[off+1] = 0x04; tcp[off+2] = 0x05; tcp[off+3] = 0xB4; off += 4
+        let mss = UInt16(MSS)
+        tcp[off] = 0x02; tcp[off+1] = 0x04; tcp[off+2] = UInt8(mss >> 8); tcp[off+3] = UInt8(mss & 0xFF); off += 4
         tcp[off] = 0x04; tcp[off+1] = 0x02; off += 2
         while off < 40 { tcp[off] = 0x01; off += 1 }
 
@@ -1290,7 +1228,7 @@ final actor TCPConnection {
         ip[10] = UInt8(ics >> 8); ip[11] = UInt8(ics & 0xFF)
         packetFlow.writePackets([ip + tcp], withProtocols: [AF_INET as NSNumber])
 
-        log("Retransmitted SYN-ACK (dup SYN) with options")
+        log("Retransmitted SYN-ACK (dup SYN) with options (MSS=\(MSS))")
     }
 
     private func sendSynAckCore(seq: UInt32, logPrefix: String) {
@@ -1326,8 +1264,7 @@ final actor TCPConnection {
             if ackNumber >= expected {
                 handshakeAcked = true
                 nextExpectedSequence = initialClientSequenceNumber &+ 1
-                // 乐观认为对端支持 SACK（后续如实现 SYN 选项解析，再改为真实值）
-                peerSupportsSack = true
+                // 不再乐观启用 SACK，保持由 SYN 解析结果决定
                 log("Handshake completed (ACK: \(ackNumber))")
             }
         }
@@ -1343,15 +1280,11 @@ final actor TCPConnection {
             acknowledgementNumber: ackNumber
         )
         var ip = createIPv4Header(payloadLength: tcp.count)
-
         let csum = tcpChecksum(ipHeader: ip, tcpHeader: tcp, payload: Data())
         tcp[16] = UInt8(csum >> 8); tcp[17] = UInt8(csum & 0xFF)
         let ipcsum = ipChecksum(&ip)
         ip[10] = UInt8(ipcsum >> 8); ip[11] = UInt8(ipcsum & 0xFF)
-
         packetFlow.writePackets([ip + tcp], withProtocols: [AF_INET as NSNumber])
-
-        // FIN 消耗一个序号
         self.serverSequenceNumber &+= 1
     }
 
@@ -1359,35 +1292,28 @@ final actor TCPConnection {
     private func writeToTunnel(payload: Data) async {
         let ackNumber = self.clientSequenceNumber
         var currentSeq = self.serverSequenceNumber
-        var remainingData = payload
+        var remainingData = payload[...]
         var packets: [Data] = []
 
-        // 循环直到所有数据都被分段
+        // 发送前：取消 pending 的延迟 ACK（我们会在数据包里带 ACK）
+        cancelDelayedAckTimer()
+
         while !remainingData.isEmpty {
-            // 1. 确定当前段的大小（不超过MSS）
             let segmentSize = min(remainingData.count, MSS)
-            // 使用 prefix 和 dropFirst 进行高效的数据切片
             let segment = remainingData.prefix(segmentSize)
             remainingData = remainingData.dropFirst(segmentSize)
 
-            // 2. 设置TCP标志。ACK必须设置。
             var flags: TCPFlags = [.ack]
-            // 实践中常在所有或最后一个分段设置 PSH (Push) 标志
             flags.insert(.psh)
 
-            // 3. 创建TCP头
             var tcp = createTCPHeader(
                 payloadLen: segment.count,
                 flags: flags,
                 sequenceNumber: currentSeq,
                 acknowledgementNumber: ackNumber
             )
-            
-            // 4. 创建IP头
             var ip  = createIPv4Header(payloadLength: tcp.count + segment.count)
 
-            // 5. 计算校验和
-            // 注意：segment 是 Data.SubSequence，需要转换为 Data 以便计算校验和
             let payloadData = Data(segment)
             let tcpCsum = tcpChecksum(ipHeader: ip, tcpHeader: tcp, payload: payloadData)
             tcp[16] = UInt8(tcpCsum >> 8)
@@ -1397,24 +1323,14 @@ final actor TCPConnection {
             ip[10] = UInt8(ipCsum >> 8)
             ip[11] = UInt8(ipCsum & 0xFF)
 
-            // 将完整的数据包添加到批处理列表
             packets.append(ip + tcp + segment)
-
-            // 6. 更新下一个段的序列号
             currentSeq &+= UInt32(segment.count)
         }
 
         if !packets.isEmpty {
-            // 7. 一次性写入所有分段的数据包
-            // 关键：必须为 packets 数组中的每个包提供对应的协议
             let protocols = Array(repeating: AF_INET as NSNumber, count: packets.count)
             packetFlow.writePackets(packets, withProtocols: protocols)
-
-            // 8. 最终更新我方的序列号
             self.serverSequenceNumber = currentSeq
-
-            // 已 piggyback ACK，取消可能挂起的延迟 ACK
-            cancelAckTimer()
         }
     }
 
@@ -1433,7 +1349,8 @@ final actor TCPConnection {
     // MARK: - Logging
 
     private func log(_ message: String) {
-        NSLog("[TCPConnection \(dynamicLogKey)] \(message)")
+        let context = socksState == .established ? "[EST]" : "[PRE]"
+        NSLog("[TCPConnection \(dynamicLogKey)] \(context) \(message)")
     }
 
     // MARK: - Packet builders & checksums (简化版)
@@ -1460,18 +1377,14 @@ final actor TCPConnection {
     }
     
     private var availableWindow: UInt16 = 65535
-    
     private var outOfOrderPackets: [(seq: UInt32, data: Data)] = []
 
     private func createTCPHeader(payloadLen: Int, flags: TCPFlags, sequenceNumber: UInt32, acknowledgementNumber: UInt32) -> Data {
         var h = Data(count: 20)
-        // 方向：源端口=远端(伪服务器)端口；目的端口=客户端(app)端口
-        h[0] = UInt8(destPort >> 8);   h[1] = UInt8(destPort & 0xFF)     // Source Port
-        h[2] = UInt8(sourcePort >> 8); h[3] = UInt8(sourcePort & 0xFF)   // Destination Port
-
+        h[0] = UInt8(destPort >> 8);   h[1] = UInt8(destPort & 0xFF)     // Source Port (server->client)
+        h[2] = UInt8(sourcePort >> 8); h[3] = UInt8(sourcePort & 0xFF)   // Destination Port (client)
         withUnsafeBytes(of: sequenceNumber.bigEndian) { h.replaceSubrange(4..<8,  with: $0) }
         withUnsafeBytes(of: acknowledgementNumber.bigEndian) { h.replaceSubrange(8..<12, with: $0) }
-
         h[12] = 0x50                       // Data offset = 5
         h[13] = flags.rawValue
         h[14] = UInt8(availableWindow >> 8)
@@ -1483,7 +1396,6 @@ final actor TCPConnection {
 
     private func tcpChecksum(ipHeader ip: Data, tcpHeader tcp: Data, payload: Data) -> UInt16 {
         var pseudo = Data()
-        // 源/目的（与 IP 头一致）
         pseudo.append(ip[12...15]); pseudo.append(ip[16...19])
         pseudo.append(0)              // reserved
         pseudo.append(6)              // TCP
@@ -1539,11 +1451,9 @@ private func parseSNIHost(from clientHello: Data) -> String? {
     guard clientHello.count >= 5 else { return nil }
     let contentType = clientHello[0]        // 0x16 = handshake
     guard contentType == 0x16 else { return nil }
-    // total TLS record length
     let recLen = Int(clientHello[3]) << 8 | Int(clientHello[4])
     guard clientHello.count >= 5 + recLen else { return nil }
 
-    // Handshake header starts at 5
     var i = 5
     guard i + 4 <= clientHello.count else { return nil }
     let hsType = clientHello[i]             // 0x01 = ClientHello
@@ -1552,29 +1462,24 @@ private func parseSNIHost(from clientHello: Data) -> String? {
     i += 4
     guard i + hsLen <= clientHello.count else { return nil }
 
-    // client_version(2) + random(32)
     guard i + 2 + 32 <= clientHello.count else { return nil }
     i += 2 + 32
 
-    // session_id
     guard i + 1 <= clientHello.count else { return nil }
     let sidLen = Int(clientHello[i]); i += 1
     guard i + sidLen <= clientHello.count else { return nil }
     i += sidLen
 
-    // cipher_suites
     guard i + 2 <= clientHello.count else { return nil }
     let csLen = Int(clientHello[i]) << 8 | Int(clientHello[i+1]); i += 2
     guard i + csLen <= clientHello.count else { return nil }
     i += csLen
 
-    // compression_methods
     guard i + 1 <= clientHello.count else { return nil }
     let compLen = Int(clientHello[i]); i += 1
     guard i + compLen <= clientHello.count else { return nil }
     i += compLen
 
-    // extensions
     guard i + 2 <= clientHello.count else { return nil }
     let extTotal = Int(clientHello[i]) << 8 | Int(clientHello[i+1]); i += 2
     guard i + extTotal <= clientHello.count else { return nil }
@@ -1591,7 +1496,6 @@ private func parseSNIHost(from clientHello: Data) -> String? {
             guard j + 2 <= i + extLen else { return nil }
             let listLen = Int(clientHello[j]) << 8 | Int(clientHello[j+1]); j += 2
             guard j + listLen <= i + extLen else { return nil }
-            // 只取第一个
             guard j + 3 <= i + extLen else { return nil }
             let nameType = clientHello[j]; j += 1 // 0x00 = host_name
             guard nameType == 0x00 else { return nil }
