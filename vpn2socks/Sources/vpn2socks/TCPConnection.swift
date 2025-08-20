@@ -16,9 +16,46 @@ import Foundation
 final actor TCPConnection {
     
     // 新增：定义最大段大小 (MTU 1400 - IP Header 20 - TCP Header 20 = 1360)
-        private let MSS: Int = 1360
+    private let MSS: Int = 1360
 
-    
+    // === ACK 策略 ===
+    // SOCKS 未建立前：Quick ACK（立即回 ACK）
+    // SOCKS 建立后：短延迟 ACK（默认 30ms），可被数据 piggyback 替代
+    private var quickAckPhase: Bool = true
+    private var ackTimer: DispatchSourceTimer?
+    private let delayedAckMillis: Int = 30
+    private func cancelAckTimer() {
+        ackTimer?.cancel()
+        ackTimer = nil
+    }
+    private func sendAckImmediately() {
+        cancelAckTimer()
+        sendPureAck()
+    }
+    private func scheduleDelayedAck(ms: Int = 30) {
+        // Quick ACK 阶段或已关闭时，直接发
+        if quickAckPhase || socksState == .closed {
+            sendAckImmediately()
+            return
+        }
+        if ackTimer == nil {
+            let t = DispatchSource.makeTimerSource(queue: self.queue)
+            t.setEventHandler { [weak self] in
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    await self.sendPureAck()
+                    await self.log("Delayed ACK sent")
+                    await self.cancelAckTimer()
+                }
+            }
+            t.schedule(deadline: .now() + .milliseconds(ms))
+            t.resume()
+            ackTimer = t
+        } else {
+            ackTimer?.schedule(deadline: .now() + .milliseconds(ms))
+        }
+    }
+
     // 新增：客户端 SYN 选项信息
     private struct SynOptionInfo {
         var mss: UInt16? = nil
@@ -108,8 +145,6 @@ final actor TCPConnection {
         return info
     }
 
-    
-    
     public func acceptClientSyn(tcpHeaderAndOptions tcpSlice: Data) async {
         // 解析 TCP 选项，自动设置 peerSupportsSack 等
         noteClientSyn(tcpHeaderAndOptions: tcpSlice)
@@ -155,14 +190,12 @@ final actor TCPConnection {
 
     private var nextExpectedSequence: UInt32 = 0  // 期望接收的下一个序列号
 
-
     private static let socksHost = NWEndpoint.Host("127.0.0.1")
     private static let socksPort = NWEndpoint.Port(integerLiteral: 8888)
 
     /// 未建立 SOCKS 之前的入站缓冲软上限（字节）
     private static let pendingSoftCapBytes = 64 * 1024
 
-    
     // MARK: - Identity
 
     let key: String
@@ -243,7 +276,7 @@ final actor TCPConnection {
         return p
     }
     
-/// 动态生成的连接标识符，用于日志记录。
+    /// 动态生成的连接标识符，用于日志记录。
     private var dynamicLogKey: String {
         let domainName: String?
 
@@ -271,8 +304,6 @@ final actor TCPConnection {
         return "\(sourceString)->\(destinationString)"
     }
 
-    
-    
     // 读取至多 max 字节（至少 1 字节，除非对端关闭）
     private func receiveChunk(max: Int) async throws -> Data {
         // 防止 socksConnection 已被置空导致挂起
@@ -331,8 +362,6 @@ final actor TCPConnection {
 
     // MARK: - Init
     
-    
-
     init(
         key: String,
         packetFlow: SendablePacketFlow,
@@ -365,7 +394,6 @@ final actor TCPConnection {
         let initialKey = "\(source)->\(destination)"
 
         NSLog("[TCPConnection \(initialKey)] Initialized. InitialClientSeq: \(initialSequenceNumber)")
-        
     }
 
     // MARK: - Lifecycle
@@ -373,21 +401,21 @@ final actor TCPConnection {
     /// 启动到本地 SOCKS5 服务器的连接。挂起直到连接关闭才返回。
     func start() async {
         guard socksConnection == nil else { return }
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                self.closeContinuation = continuation
-                let conn = NWConnection(
-                    host: TCPConnection.socksHost,  // 127.0.0.1
-                    port: TCPConnection.socksPort,  // 8888
-                    using: TCPConnection.loopParams()
-                )
-                self.socksConnection = conn
-                self.socksState = .connecting
-                conn.stateUpdateHandler = { [weak self] st in
-                    Task { await self?.handleStateUpdate(st) }
-                }
-                self.log("Starting connection to SOCKS proxy...")
-                conn.start(queue: .global(qos: .userInitiated))
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.closeContinuation = continuation
+            let conn = NWConnection(
+                host: TCPConnection.socksHost,  // 127.0.0.1
+                port: TCPConnection.socksPort,  // 8888
+                using: TCPConnection.loopParams()
+            )
+            self.socksConnection = conn
+            self.socksState = .connecting
+            conn.stateUpdateHandler = { [weak self] st in
+                Task { await self?.handleStateUpdate(st) }
             }
+            self.log("Starting connection to SOCKS proxy...")
+            conn.start(queue: .global(qos: .userInitiated))
+        }
     }
 
     /// 幂等的发送 SYN-ACK（只做一次），并推进我方 SEQ
@@ -403,6 +431,7 @@ final actor TCPConnection {
         
         // 取消所有定时器
         cancelRetransmitTimer()
+        cancelAckTimer()
         
         // 清理缓存
         if !outOfOrderPackets.isEmpty {
@@ -433,13 +462,9 @@ final actor TCPConnection {
         - SOCKS state: \(socksState)
         """
     }
-    
-    
-    
 
     // MARK: - NWConnection State (actor-safe)
     
-
     private func generateSackBlocks() -> [(UInt32, UInt32)] {
         guard !outOfOrderPackets.isEmpty else { return [] }
                 
@@ -476,11 +501,10 @@ final actor TCPConnection {
         return blocks
     }
     
-    
     // MARK: - 定时器方法（使用新名称）
     private var retransmitTimer: DispatchSourceTimer?  // 使用不同的名字避免冲突
-        private var retransmitRetries = 0
-        private let maxRetransmitRetries = 3
+    private var retransmitRetries = 0
+    private let maxRetransmitRetries = 3
     
     private func cancelRetransmitTimer() {
         retransmitTimer?.cancel()
@@ -541,34 +565,29 @@ final actor TCPConnection {
         log("Started retransmit timer for seq: \(nextExpectedSequence)")
     }
     
-    
-
-    
-
     private func handleStateUpdate(_ newState: NWConnection.State) async {
         switch newState {
-            case .ready:
-                log("TCP connection to proxy is ready. Starting SOCKS handshake.")
-                await setSocksState(.greetingSent)
-                await performSocksHandshake()
+        case .ready:
+            log("TCP connection to proxy is ready. Starting SOCKS handshake.")
+            await setSocksState(.greetingSent)
+            await performSocksHandshake()
 
-            case .waiting(let err):
-                log("NWConnection waiting: \(err.localizedDescription)")
-                // 常见为 prohibited / no route —— 多半没排除 127.0.0.0/8 或没走 loopback
+        case .waiting(let err):
+            log("NWConnection waiting: \(err.localizedDescription)")
 
-            case .preparing:
-                log("NWConnection preparing...")
+        case .preparing:
+            log("NWConnection preparing...")
 
-            case .failed(let err):
-                log("NWConnection failed: \(err.localizedDescription)")
-                close()
+        case .failed(let err):
+            log("NWConnection failed: \(err.localizedDescription)")
+            close()
 
-            case .cancelled:
-                close()
+        case .cancelled:
+            close()
 
-            default:
-                break
-            }
+        default:
+            break
+        }
     }
 
     // MARK: - SOCKS5 Handshake
@@ -746,6 +765,10 @@ final actor TCPConnection {
             await setSocksState(.established)
             log("SOCKS Step 2: Connect response consumed. SOCKS tunnel established!")
 
+            // 退出 Quick ACK，进入短延迟 ACK 模式
+            quickAckPhase = false
+            log("QuickACK phase disabled; using delayed ACK (\(delayedAckMillis)ms).")
+
             // 再保险地确保 SYN-ACK 已发
             await sendSynAckIfNeeded()
 
@@ -768,7 +791,12 @@ final actor TCPConnection {
         
         log("In-order packet: seq=\(sequenceNumber), len=\(payload.count), next=\(nextExpectedSequence)")
         
-        sendPureAck()
+        // ACK 策略：SOCKS 未建立 → 立即 ACK；已建立 → 短延迟 ACK（可被后续数据 piggyback）
+        if socksState != .established {
+            sendAckImmediately()
+        } else {
+            scheduleDelayedAck(ms: delayedAckMillis)
+        }
         
         if socksState != .established {
             appendToPending(payload)
@@ -778,16 +806,14 @@ final actor TCPConnection {
         }
     }
 
-
     // MARK: - Data forwarding (App -> SOCKS)
-
 
     private let maxOutOfOrderPackets = 100  // 防止内存泄漏的上限
     
     // 统计
     private var duplicateAckCount = 0
     private var lastAckedSequence: UInt32 = 0
-    
+    private var duplicatePacketLogCount = 0
     
     // 缓存乱序包
     private func bufferOutOfOrderPacket(payload: Data, sequenceNumber: UInt32) {
@@ -857,8 +883,13 @@ final actor TCPConnection {
         }
         
         if processed > 0 {
+            // ACK：与 in-order 相同策略
+            if socksState != .established {
+                sendAckImmediately()
+            } else {
+                scheduleDelayedAck(ms: delayedAckMillis)
+            }
             log("Processed \(processed) buffered packets, remaining: \(outOfOrderPackets.count)")
-            sendPureAck()
         }
     }
     
@@ -897,11 +928,11 @@ final actor TCPConnection {
             // 情况2: 未来的包（乱序）
             bufferOutOfOrderPacket(payload: payload, sequenceNumber: sequenceNumber)
             
-            // 发送带 SACK 的 ACK
+            // 发送带 SACK 的 ACK（立即）
             if sackEnabled && peerSupportsSack {
-                sendAckWithSack()
+                sendAckWithSack()   // 立即 ACK
             } else {
-                sendDuplicateAck()
+                sendDuplicateAck()  // 立即 ACK
             }
             
             // 启动或重置丢包定时器
@@ -909,98 +940,96 @@ final actor TCPConnection {
             
         } else {
             // 情况3: 重复的包（已经接收过）
-            log("Duplicate packet received, seq: \(sequenceNumber), expected: \(nextExpectedSequence)")
-            
-            // 仍然发送 ACK 确认（可能是对端没收到我们的 ACK）
-            sendPureAck()
+            duplicatePacketLogCount &+= 1
+            if (duplicatePacketLogCount % 16) == 1 {
+                log("Duplicate packet received, seq: \(sequenceNumber), expected: \(nextExpectedSequence) [x\(duplicatePacketLogCount)]")
+            }
+            // 仍然发送 ACK 确认（立即）
+            sendAckImmediately()
         }
     }
     
     /// 发送带 SACK 选项的 ACK
     private func sendAckWithSack() {
+        cancelAckTimer() // 将要发送 ACK，取消延迟 ACK
         let sackBlocks = generateSackBlocks()
+        if sackBlocks.isEmpty {
+            sendPureAck()
+            return
+        }
                 
-                if sackBlocks.isEmpty {
-                    sendPureAck()
-                    return
-                }
+        // 创建带 SACK 选项的 TCP 头
+        let ackNumber = self.clientSequenceNumber
                 
-                // 创建带 SACK 选项的 TCP 头
-                let ackNumber = self.clientSequenceNumber
+        // 计算 TCP 选项长度
+        let sackOptionLength = 2 + (sackBlocks.count * 8)
+        let tcpOptionsLength = 2 + sackOptionLength  // 2 个 NOP + SACK
+        let tcpHeaderLength = 20 + tcpOptionsLength
                 
-                // 计算 TCP 选项长度
-                let sackOptionLength = 2 + (sackBlocks.count * 8)
-                let tcpOptionsLength = 2 + sackOptionLength  // 2 个 NOP + SACK
-                let tcpHeaderLength = 20 + tcpOptionsLength
+        // 确保 4 字节对齐
+        let paddedLength = ((tcpHeaderLength + 3) / 4) * 4
+        let paddingNeeded = paddedLength - tcpHeaderLength
                 
-                // 确保 4 字节对齐
-                let paddedLength = ((tcpHeaderLength + 3) / 4) * 4
-                let paddingNeeded = paddedLength - tcpHeaderLength
+        var tcp = Data(count: paddedLength)
                 
-                var tcp = Data(count: paddedLength)
+        // 基本 TCP 头
+        tcp[0] = UInt8(destPort >> 8); tcp[1] = UInt8(destPort & 0xFF)
+        tcp[2] = UInt8(sourcePort >> 8); tcp[3] = UInt8(sourcePort & 0xFF)
                 
-                // 基本 TCP 头
-                tcp[0] = UInt8(destPort >> 8); tcp[1] = UInt8(destPort & 0xFF)
-                tcp[2] = UInt8(sourcePort >> 8); tcp[3] = UInt8(sourcePort & 0xFF)
+        withUnsafeBytes(of: serverSequenceNumber.bigEndian) { tcp.replaceSubrange(4..<8, with: $0) }
+        withUnsafeBytes(of: ackNumber.bigEndian) { tcp.replaceSubrange(8..<12, with: $0) }
                 
-                withUnsafeBytes(of: serverSequenceNumber.bigEndian) { tcp.replaceSubrange(4..<8, with: $0) }
-                withUnsafeBytes(of: ackNumber.bigEndian) { tcp.replaceSubrange(8..<12, with: $0) }
+        tcp[12] = UInt8((paddedLength / 4) << 4)  // Data offset
+        tcp[13] = TCPFlags.ack.rawValue
+        tcp[14] = 0xFF; tcp[15] = 0xFF  // Window size
+        tcp[16] = 0; tcp[17] = 0        // Checksum (placeholder)
+        tcp[18] = 0; tcp[19] = 0        // Urgent pointer
                 
-                tcp[12] = UInt8((paddedLength / 4) << 4)  // Data offset
-                tcp[13] = TCPFlags.ack.rawValue
-                tcp[14] = 0xFF; tcp[15] = 0xFF  // Window size
-                tcp[16] = 0; tcp[17] = 0        // Checksum (placeholder)
-                tcp[18] = 0; tcp[19] = 0        // Urgent pointer
+        // TCP 选项
+        var optionOffset = 20
                 
-                // TCP 选项
-                var optionOffset = 20
+        // NOP + NOP (用于对齐)
+        tcp[optionOffset] = 0x01; optionOffset += 1
+        tcp[optionOffset] = 0x01; optionOffset += 1
                 
-                // NOP + NOP (用于对齐)
-                tcp[optionOffset] = 0x01; optionOffset += 1
-                tcp[optionOffset] = 0x01; optionOffset += 1
+        // SACK 选项
+        tcp[optionOffset] = 0x05  // SACK option kind
+        tcp[optionOffset + 1] = UInt8(sackOptionLength)  // Length
+        optionOffset += 2
                 
-                // SACK 选项
-                tcp[optionOffset] = 0x05  // SACK option kind
-                tcp[optionOffset + 1] = UInt8(sackOptionLength)  // Length
-                optionOffset += 2
+        // SACK 块
+        for block in sackBlocks {
+            withUnsafeBytes(of: block.0.bigEndian) { // start
+                tcp.replaceSubrange(optionOffset..<(optionOffset+4), with: $0)
+            }
+            optionOffset += 4
+            withUnsafeBytes(of: block.1.bigEndian) { // end
+                tcp.replaceSubrange(optionOffset..<(optionOffset+4), with: $0)
+            }
+            optionOffset += 4
+        }
                 
-                // SACK 块 - 修复：正确访问元组成员
-                for block in sackBlocks {
-                    // 访问元组的第一个元素 (start)
-                    withUnsafeBytes(of: block.0.bigEndian) {
-                        tcp.replaceSubrange(optionOffset..<(optionOffset+4), with: $0)
-                    }
-                    optionOffset += 4
-                    
-                    // 访问元组的第二个元素 (end)
-                    withUnsafeBytes(of: block.1.bigEndian) {
-                        tcp.replaceSubrange(optionOffset..<(optionOffset+4), with: $0)
-                    }
-                    optionOffset += 4
-                }
+        // 填充（如果需要）
+        for _ in 0..<paddingNeeded {
+            tcp[optionOffset] = 0x00  // End of options
+            optionOffset += 1
+        }
                 
-                // 填充（如果需要）
-                for _ in 0..<paddingNeeded {
-                    tcp[optionOffset] = 0x00  // End of options
-                    optionOffset += 1
-                }
+        // 创建 IP 头并发送
+        var ip = createIPv4Header(payloadLength: tcp.count)
                 
-                // 创建 IP 头并发送
-                var ip = createIPv4Header(payloadLength: tcp.count)
+        let tcpCsum = tcpChecksum(ipHeader: ip, tcpHeader: tcp, payload: Data())
+        tcp[16] = UInt8(tcpCsum >> 8)
+        tcp[17] = UInt8(tcpCsum & 0xFF)
                 
-                let tcpCsum = tcpChecksum(ipHeader: ip, tcpHeader: tcp, payload: Data())
-                tcp[16] = UInt8(tcpCsum >> 8)
-                tcp[17] = UInt8(tcpCsum & 0xFF)
+        let ipCsum = ipChecksum(&ip)
+        ip[10] = UInt8(ipCsum >> 8)
+        ip[11] = UInt8(ipCsum & 0xFF)
                 
-                let ipCsum = ipChecksum(&ip)
-                ip[10] = UInt8(ipCsum >> 8)
-                ip[11] = UInt8(ipCsum & 0xFF)
+        packetFlow.writePackets([ip + tcp], withProtocols: [AF_INET as NSNumber])
                 
-                packetFlow.writePackets([ip + tcp], withProtocols: [AF_INET as NSNumber])
-                
-                // 修复：使用元组索引访问
-                let blockDescriptions = sackBlocks.map { "[\($0.0)-\($0.1)]" }.joined(separator: ", ")
-                log("Sent ACK with SACK: ACK=\(ackNumber), blocks: \(blockDescriptions)")
+        let blockDescriptions = sackBlocks.map { "[\($0.0)-\($0.1)]" }.joined(separator: ", ")
+        log("Sent ACK with SACK: ACK=\(ackNumber), blocks: \(blockDescriptions)")
     }
     
     /// 在 SYN-ACK 中添加 SACK-Permitted 选项
@@ -1012,8 +1041,7 @@ final actor TCPConnection {
         let ackNumber = initialClientSequenceNumber &+ 1
         
         // 创建带选项的 TCP 头
-        // MSS(4) + SACK-Permitted(2) + NOP(1) + NOP(1) + Timestamp(10) = 18 bytes
-        // 对齐到 20 bytes (加 2 个 NOP)
+        // MSS(4) + SACK-Permitted(2) + NOP(若干对齐) → 40 字节 TCP 头
         var tcp = Data(count: 40)  // 20 基本 + 20 选项
         
         // 基本 TCP 头
@@ -1032,13 +1060,13 @@ final actor TCPConnection {
         // TCP 选项
         var offset = 20
         
-        // MSS 选项
-        tcp[offset] = 0x02; tcp[offset+1] = 0x04  // MSS option
-        tcp[offset+2] = 0x05; tcp[offset+3] = 0xB4  // 1460
+        // MSS 选项 (1460)
+        tcp[offset] = 0x02; tcp[offset+1] = 0x04
+        tcp[offset+2] = 0x05; tcp[offset+3] = 0xB4
         offset += 4
         
         // SACK-Permitted 选项
-        tcp[offset] = 0x04; tcp[offset+1] = 0x02  // SACK-Permitted
+        tcp[offset] = 0x04; tcp[offset+1] = 0x02
         offset += 2
         
         // 填充 NOP 到对齐
@@ -1070,8 +1098,6 @@ final actor TCPConnection {
     /// 获取连接统计信息
     func getDetailedStats() -> String {
         let sackBlocks = generateSackBlocks()
-                
-        // 修复：使用元组索引
         let blockDescriptions = sackBlocks.map { "[\($0.0)-\($0.1)]" }.joined(separator: ", ")
         
         return """
@@ -1089,10 +1115,12 @@ final actor TCPConnection {
         Timers:
           - Retransmit timer: \(retransmitTimer != nil ? "Active" : "Inactive")
           - Retries: \(retransmitRetries)/\(maxRetransmitRetries)
+          - Delayed ACK: \(ackTimer != nil ? "Armed" : "Idle")
         
         Features:
           - SACK enabled: \(sackEnabled)
           - Peer supports SACK: \(peerSupportsSack)
+          - QuickACK phase: \(quickAckPhase)
         
         SOCKS State: \(socksState)
         """
@@ -1107,19 +1135,16 @@ final actor TCPConnection {
         }
     }
     
-    
-    
     // 发送重复ACK（用于快速重传）
     private func sendDuplicateAck() {
+        cancelAckTimer() // 立即发 ACK
         duplicateAckCount += 1
-            log("Duplicate ACK #\(duplicateAckCount) for seq: \(clientSequenceNumber)")
-        
+        log("Duplicate ACK #\(duplicateAckCount) for seq: \(clientSequenceNumber)")
         if duplicateAckCount >= 3 {
             log("Fast retransmit triggered")
         }
-        
         sendPureAck()
-}
+    }
 
     /// SOCKS 刚建立：冲刷缓冲数据
     private func onSocksEstablishedAndFlush() async {
@@ -1202,7 +1227,6 @@ final actor TCPConnection {
                 }
 
                 if isComplete {
-                    // 这些都是 actor 方法 ⇒ 安全
                     await self.sendFinToClient()
                     await self.markUpstreamEOF()
                     await self.ensureLingerAndMaybeClose()
@@ -1211,6 +1235,8 @@ final actor TCPConnection {
 
                 if let data, !data.isEmpty {
                     await self.log("Received \(data.count) bytes from SOCKS, writing to tunnel.")
+                    // 写回 App 时会带 ACK（PSH,ACK），视为 piggyback，取消延迟 ACK
+                    await self.cancelAckTimer()
                     await self.writeToTunnel(payload: data)
                 }
 
@@ -1386,6 +1412,9 @@ final actor TCPConnection {
 
             // 8. 最终更新我方的序列号
             self.serverSequenceNumber = currentSeq
+
+            // 已 piggyback ACK，取消可能挂起的延迟 ACK
+            cancelAckTimer()
         }
     }
 
