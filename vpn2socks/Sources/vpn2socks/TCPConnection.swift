@@ -680,7 +680,8 @@ final actor TCPConnection {
             }
         }
     }
-    
+    // 添加日志级别控制
+    private var verboseLogging = false
     private func sendSocksConnectRequest() async {
         guard let connection = socksConnection else { return }
         
