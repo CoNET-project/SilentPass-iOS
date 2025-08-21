@@ -353,6 +353,13 @@ final actor ConnectionManager {
         )
 
         tcpConnections[key] = newConn
+        await newConn.setOnBytesBackToTunnel { [weak self] n in
+            guard let self = self else { return }
+            let mss = max(536, newConn.tunnelMTU - 40)
+            let segs = (n + mss - 1) / mss
+            let estimatedBytes = n + segs * 40
+            Task { await self.bumpSentBytes(estimatedBytes) }
+        }
         pendingSyns.remove(key)
         stats.totalConnections += 1
         stats.activeConnections = tcpConnections.count
@@ -365,6 +372,15 @@ final actor ConnectionManager {
             await newConn.start()
             await self.finishAndCleanup(key: key, dstIP: dstIP)
         }
+    }
+    
+    private func addSentBytes(_ n: Int) {
+        stats.bytesSent += n
+    }
+    
+    func bumpSentBytes(_ n: Int) async {
+        guard n > 0 else { return }
+        stats.bytesSent &+= n
     }
 
     private func handleConnectionClose(key: String) async {

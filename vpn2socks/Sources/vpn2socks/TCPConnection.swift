@@ -12,7 +12,7 @@ import Foundation
 final actor TCPConnection {
 
     // MARK: - Constants
-    private let tunnelMTU: Int
+    public let tunnelMTU: Int
     private var mss: Int { max(536, tunnelMTU - 40) } // 40 = IPv4+TCP 基础头
     private let MAX_WINDOW_SIZE: UInt16 = 65535
     private let DELAYED_ACK_TIMEOUT_MS: Int = 25
@@ -93,6 +93,12 @@ final actor TCPConnection {
     private let recvBufferLimit: Int
     // NEW: remember last advertised window to decide whether to send a Window Update
     private var lastAdvertisedWindow: UInt16 = 0
+    
+    public var onBytesBackToTunnel: ((Int) -> Void)?
+    
+    func setOnBytesBackToTunnel(_ cb: @escaping (Int) -> Void) {
+        self.onBytesBackToTunnel = cb
+    }
 
     // MARK: - Initialization
     init(
@@ -105,7 +111,8 @@ final actor TCPConnection {
         destinationHost: String?,
         initialSequenceNumber: UInt32,
         tunnelMTU: Int = 1400,
-        recvBufferLimit: Int = 60 * 1024 // NEW: 动态窗口的软上限
+        recvBufferLimit: Int = 60 * 1024, // NEW: 动态窗口的软上限
+        onBytesBackToTunnel: ((Int) -> Void)? = nil
     ) {
         self.key = key
         self.packetFlow = packetFlow
@@ -127,6 +134,7 @@ final actor TCPConnection {
         self.availableWindow = UInt16(cap)
         self.lastAdvertisedWindow = self.availableWindow
         NSLog("[TCPConnection \(key)] Initialized. InitialClientSeq: \(initialSequenceNumber)")
+        self.onBytesBackToTunnel = onBytesBackToTunnel
     }
 
     // NEW: 当前用于接收重组的已占用字节数
@@ -643,6 +651,7 @@ final actor TCPConnection {
 
     // MARK: - Data Forwarding (Optimized)
     private func writeToTunnel(payload: Data) async {
+        
         updateAdvertisedWindow() // NEW
         let ackNumber = self.clientSequenceNumber
         var currentSeq = self.serverSequenceNumber
@@ -674,11 +683,17 @@ final actor TCPConnection {
             packets.append(ip + tcp + Data(segment))
             currentSeq &+= UInt32(segmentSize)
             offset += segmentSize
+            
         }
 
         if !packets.isEmpty {
             let protocols = Array(repeating: AF_INET as NSNumber, count: packets.count)
             packetFlow.writePackets(packets, withProtocols: protocols)
+
+            // 精确统计：所有 IP+TCP+payload 的总字节
+            let total = packets.reduce(0) { $0 + $1.count }
+            onBytesBackToTunnel?(total)
+
             self.serverSequenceNumber = currentSeq
             lastAdvertisedWindow = availableWindow
         }
