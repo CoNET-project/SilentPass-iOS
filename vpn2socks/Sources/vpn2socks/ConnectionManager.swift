@@ -264,8 +264,16 @@ final actor ConnectionManager {
         // 处理不同类型的 TCP 包
         if tcpSegment.isSYN && !tcpSegment.isACK {
             await handleSYN(ipPacket: ipPacket, tcpSegment: tcpSegment, key: connectionKey)
-        } else if tcpSegment.isFIN || tcpSegment.isRST {
+        } else if tcpSegment.isRST {
+            
             await handleConnectionClose(key: connectionKey)
+        } else if tcpSegment.isFIN {
+            if let connection = tcpConnections[connectionKey] {
+                await connection.onInboundFin(seq: tcpSegment.sequenceNumber)
+            } else {
+                // 如果找不到连接，仍旧不强制关闭，防止误判
+                // 可选：记录孤儿 FIN
+            }
         } else if let connection = tcpConnections[connectionKey] {
             await handleEstablishedConnection(
                 connection: connection,
