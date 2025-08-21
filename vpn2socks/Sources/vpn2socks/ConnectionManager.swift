@@ -82,7 +82,9 @@ final actor ConnectionManager {
         statsTimer?.cancel()
         statsTimer = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(30 * 1_000_000_000))
+                let shedding = await self?.shedding ?? false
+                let interval: Int = shedding ? 60 : 30
+                try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
                 guard let self = self else { break }
                 await self.printStats()
             }
@@ -168,21 +170,24 @@ final actor ConnectionManager {
     
     private func readPackets() async {
         while true {
-            let (datas, protos) = await packetFlow.readPackets()
-            
-            for (i, packetData) in datas.enumerated() {
-                let af = protos[i].int32Value
-                
-                switch af {
-                case AF_INET:
-                    await handleIPv4Packet(packetData)
-                    
-                case AF_INET6:
-                    // 暂不处理 IPv6
-                    break
-                    
-                default:
-                    NSLog("[ConnectionManager] Unknown AF=\(af) len=\(packetData.count)")
+            // 止血暂停读取：小睡一会儿，避免忙等
+            if pausedReads {
+                try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+                continue
+            }
+
+            let (datas, _) = await packetFlow.readPackets()
+            let batch = datas.prefix(64)
+
+            for packetData in batch {
+                autoreleasepool {
+                    if let ipPacket = IPv4Packet(data: packetData) {
+                        switch ipPacket.protocol {
+                        case 6: Task { await self.handleTCPPacket(ipPacket) }
+                        case 17: Task { await self.handleUDPPacket(ipPacket) }
+                        default: break
+                        }
+                    }
                 }
             }
         }
@@ -206,6 +211,84 @@ final actor ConnectionManager {
             break
         }
     }
+    
+    // ===== 在 ConnectionManager 内新增状态与参数 =====
+    private var shedding = false                 // 是否处于止血中
+    private var pausedReads = false              // 暂停读取数据包
+    private var dropNewConnections = false       // 拒绝新连接（丢弃SYN）
+    private var logSampleN = 1                   // 日志采样：1=每条都打
+    private let rssHighMB: UInt64 = 40           // 进入止血阈值
+    private let rssLowMB:  UInt64 = 34           // 退出止血阈值（滞后）
+    private let maxConnsDuringShedding = 60      // 止血期保留的连接上限
+    private var lastTrimTime = Date.distantPast  // 上次裁剪时间
+    private let trimCooldown: TimeInterval = 3.0 // 裁剪冷却，避免过于频繁
+
+    
+    // ===== 完整实现 handleRSS =====
+    private func handleRSS(_ rssMB: UInt64) {
+        // 进入止血
+        if !shedding && rssMB >= rssHighMB {
+            shedding = true
+            pausedReads = true
+            dropNewConnections = true
+            logSampleN = 8 // 降低日志量：每8条打1条
+
+            NSLog("[ConnectionManager] RSS=\(rssMB)MB ≥ \(rssHighMB)MB，进入止血：暂停读取、拒绝新连接、降采样日志（1/\(logSampleN)）")
+
+            // 优先做一次裁剪
+            maybeTrimConnections(targetMax: maxConnsDuringShedding)
+
+            return
+        }
+
+        // 止血维持期（高于低阈值）：轻量动作即可
+        if shedding && rssMB > rssLowMB {
+            // 每隔一段时间再尝试轻量裁剪，防止反弹
+            maybeTrimConnections(targetMax: maxConnsDuringShedding)
+            return
+        }
+
+        // 退出止血
+        if shedding && rssMB <= rssLowMB {
+            shedding = false
+            pausedReads = false
+            dropNewConnections = false
+            logSampleN = 1 // 恢复正常日志
+
+            NSLog("[ConnectionManager]  RSS=\(rssMB)MB ≤ \(rssLowMB)MB，退出止血：恢复读取与建连，日志采样恢复")
+        }
+    }
+    
+    // ===== 连接裁剪（按字典序近似“最老优先”）=====
+    private func maybeTrimConnections(targetMax: Int) {
+        let now = Date()
+        guard now.timeIntervalSince(lastTrimTime) >= trimCooldown else { return }
+        lastTrimTime = now
+
+        let current = tcpConnections.count
+        guard current > targetMax else { return }
+
+        let needClose = current - targetMax
+        // 没有 lastActivity 时间戳时，用 key 的稳定顺序近似“旧连接”
+        let victims = tcpConnections.keys.sorted().prefix(needClose)
+
+        var closed = 0
+        for key in victims {
+            if let conn = tcpConnections[key] {
+                Task { await conn.close() }
+                if let _ = tcpConnections.removeValue(forKey: key) {
+                    closed += 1
+                    recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+                }
+                
+            }
+        }
+        stats.activeConnections = tcpConnections.count
+        NSLog("[ConnectionManager] Shedding: 关闭 \(closed) 条连接（剩余 \(tcpConnections.count)）以降内存")
+    }
+    
+
+    
     
     // MARK: - UDP/DNS Handling
     
@@ -241,13 +324,7 @@ final actor ConnectionManager {
         
         NSLog("[ConnectionManager] DNS Reply to \(ipPacket.sourceAddress):\(udp.sourcePort) qtype=\(qtypeName(qtype)) len=\(result.response.count)")
     }
-    
-    private func logUDPPacket(ipPacket: IPv4Packet, udp: UDPDatagram) {
-        // 只记录 QUIC (UDP 443) 或其他重要端口
-        if udp.destinationPort == 443 || udp.destinationPort == 80 {
-            NSLog("[ConnectionManager] UDP to \(ipPacket.destinationAddress):\(udp.destinationPort) len=\(udp.payload.count) (possibly QUIC)")
-        }
-    }
+
     
     // MARK: - TCP Handling
     
@@ -301,13 +378,22 @@ final actor ConnectionManager {
             return
         }
         
+        if dropNewConnections {
+            stats.failedConnections += 1
+            // 这里选择“丢弃”而非主动 RST，以最小开销止血
+            if (stats.failedConnections % logSampleN) == 0 {
+                NSLog("[ConnectionManager] Shedding: 拒绝新连接 \(key)")
+            }
+            return
+        }
+        
         // 检查连接数限制
         if tcpConnections.count >= maxConnections {
             NSLog("[ConnectionManager] Connection limit reached (\(maxConnections)), rejecting \(key)")
-            // 可以发送 RST 或简单丢弃
-            stats.failedConnections += 1
             return
         }
+        
+        
         
         // 标记为正在处理
         pendingSyns.insert(key)
@@ -442,6 +528,7 @@ final actor ConnectionManager {
     
     private func removeConnection(key: String) async {
         if tcpConnections.removeValue(forKey: key) != nil {
+            recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
             stats.activeConnections = tcpConnections.count
             NSLog("[ConnectionManager] Removed connection: \(key) (active: \(tcpConnections.count))")
         }
@@ -597,4 +684,66 @@ final actor ConnectionManager {
         let result = ~UInt16(sum & 0xFFFF)
         return result == 0 ? 0xFFFF : result
     }
+    
+    private var lastICMPReply: [String: Date] = [:]
+    private let icmpReplyInterval: TimeInterval = 1.0   // 每个 flow 最少 1 秒回一次
+
+    // 计数器与其保护队列
+    private let logCounterQueue = DispatchQueue(label: "connmgr.log.counter.q")
+    private var logCounter: UInt64 = 0
+    
+    private func logUDPPacket(ipPacket: IPv4Packet, udp: UDPDatagram) {
+        let dstPort = udp.destinationPort
+
+        // 针对 QUIC/HTTP3 (UDP 443) 或 80，直接丢弃，避免 storm
+        if dstPort == 443 || dstPort == 80 {
+            // 采样打印，使用串行队列保护的计数器，避免数据竞争
+            let n: UInt64 = logCounterQueue.sync {
+                logCounter &+= 1
+                return logCounter
+            }
+            if (n % UInt64(max(1, logSampleN))) == 0 {
+                NSLog("[ConnectionManager] Dropping QUIC/UDP packet to \(ipPacket.destinationAddress):\(dstPort) len=\(udp.payload.count)")
+            }
+            return
+        }
+
+        
+        let flowKey = "\(ipPacket.sourceAddress):\(udp.sourcePort)->\(ipPacket.destinationAddress):\(dstPort)"
+        let now = Date()
+
+        if let last = lastICMPReply[flowKey], now.timeIntervalSince(last) < icmpReplyInterval {
+            return
+        }
+
+        lastICMPReply[flowKey] = now
+
+        let icmp = ICMPPacket.unreachable(for: ipPacket)
+        packetFlow.writePackets([icmp.data], withProtocols: [NSNumber(value: AF_INET)])
+
+        NSLog("[ConnectionManager] ICMP Unreachable sent for UDP \(flowKey)")
+    }
+    
+    private let cleanupInterval: TimeInterval = 60.0   // 每 60 秒清理一次
+    private func startCleaner() {
+        Task.detached { [weak self] in
+            while let strongSelf = self {
+                try? await Task.sleep(nanoseconds: UInt64(strongSelf.cleanupInterval * 1_000_000_000))
+
+                await strongSelf.cleanExpiredICMPReplies()
+            }
+        }
+    }
+    
+    private func cleanExpiredICMPReplies() {
+        let now = Date()
+        lastICMPReply = lastICMPReply.filter { now.timeIntervalSince($0.value) < cleanupInterval }
+        NSLog("[ConnectionManager] Cleaned up expired ICMP entries, left=\(lastICMPReply.count)")
+    }
+    
+
+    //private var tcpConnections: [String: TCPConnection] = [:]
+    private var recentlyClosed: [String: Date] = [:]    // flowKey -> expiresAt（墓碑表）
+    private let tombstoneTTL: TimeInterval = 3.0        // 3 秒足够吃掉多数尾包
+    
 }

@@ -61,6 +61,7 @@
 		D0D33D5F2E298A9000E849BC /* LocalServerFirstSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */; };
 		D0D33D612E298AB500E849BC /* CacheManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D602E298AB400E849BC /* CacheManager.swift */; };
 		D0D33D632E298BCE00E849BC /* CodableCachedData.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D622E298BCD00E849BC /* CodableCachedData.swift */; };
+		D0E605702E56DA2300167745 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0E6056F2E56DA2300167745 /* vpn2socks */; };
 		DC54A9FB02AA54E897847413 /* Pods_CoNETVPN1Tests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64B0E3B87885C6C17DD36CB4 /* Pods_CoNETVPN1Tests.framework */; };
 /* End PBXBuildFile section */
 
@@ -174,6 +175,7 @@
 			files = (
 				D0850B2E2E52CC4C00BC1BF4 /* vpn2socks in Frameworks */,
 				765B0EAE2CE47577007ACC57 /* NetworkExtension.framework in Frameworks */,
+				D0E605702E56DA2300167745 /* vpn2socks in Frameworks */,
 				D0850B2A2E52C1D700BC1BF4 /* vpn2socks in Frameworks */,
 				761109802D19862C00B7677B /* ObjectivePGP in Frameworks */,
 				7611097E2D19862800B7677B /* web3swift in Frameworks */,
@@ -1292,6 +1294,10 @@
 			productName = vpn2socks;
 		};
 		D0850B2F2E52CCC900BC1BF4 /* vpn2socks */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = vpn2socks;
+		};
+		D0E6056F2E56DA2300167745 /* vpn2socks */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = vpn2socks;
 		};

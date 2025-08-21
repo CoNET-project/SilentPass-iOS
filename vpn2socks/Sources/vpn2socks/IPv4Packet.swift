@@ -12,6 +12,7 @@ struct IPv4Packet {
     var destinationAddress: IPv4Address
     var `protocol`: UInt8
     var payload: Data
+    let rawData: Data   // 原始 IP 数据
 
     init?(data: Data) {
         guard data.count >= 20 else { return nil }
@@ -24,6 +25,13 @@ struct IPv4Packet {
         self.sourceAddress = IPv4Address(Data(data[12...15]))!
         self.destinationAddress = IPv4Address(Data(data[16...19]))!
         self.payload = data.subdata(in: ihl..<data.count)
+        self.rawData = data
+    }
+
+    /// 返回 IP header 长度 (bytes)
+    var headerLength: Int {
+        let ihl = Int(rawData[0] & 0x0F)
+        return ihl * 4
     }
 }
 
