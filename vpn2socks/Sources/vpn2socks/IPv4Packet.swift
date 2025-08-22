@@ -35,3 +35,15 @@ struct IPv4Packet {
     }
 }
 
+public extension IPv4Address {
+    init?(_ value: UInt32) {
+        var v = value.bigEndian
+        let data = Data(bytes: &v, count: 4)
+        self.init(data)
+    }
+
+    var u32: UInt32 {
+        let b = self.rawValue
+        return (UInt32(b[0]) << 24) | (UInt32(b[1]) << 16) | (UInt32(b[2]) << 8) | UInt32(b[3])
+    }
+}

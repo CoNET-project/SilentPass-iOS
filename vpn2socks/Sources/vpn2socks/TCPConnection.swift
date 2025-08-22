@@ -16,7 +16,7 @@ final actor TCPConnection {
     private var mss: Int { max(536, tunnelMTU - 40) } // 40 = IPv4+TCP 基础头
     private let MAX_WINDOW_SIZE: UInt16 = 65535
     private let DELAYED_ACK_TIMEOUT_MS: Int = 25
-    private let MAX_BUFFERED_PACKETS = 100
+    private let MAX_BUFFERED_PACKETS = 24
     private let RETRANSMIT_TIMEOUT_MS: Int = 200
     private let MAX_RETRANSMIT_RETRIES = 3
 
@@ -56,7 +56,7 @@ final actor TCPConnection {
     private var outOfOrderPackets: [(seq: UInt32, data: Data)] = []
     private var pendingClientBytes: [Data] = []
     private var pendingBytesTotal: Int = 0
-    private static let pendingSoftCapBytes = 64 * 1024
+    private static let pendingSoftCapBytes = 32 * 1024 //64 * 1024
 
     // MARK: - SOCKS State
     private enum SocksState {
@@ -90,7 +90,7 @@ final actor TCPConnection {
     private var slowStartThreshold: UInt32 = 65535
 
     // NEW: advertised receive buffer cap (no window scale, so <= 65535)
-    private let recvBufferLimit: Int
+    public var recvBufferLimit: Int
     // NEW: remember last advertised window to decide whether to send a Window Update
     private var lastAdvertisedWindow: UInt16 = 0
     
@@ -111,7 +111,7 @@ final actor TCPConnection {
         destinationHost: String?,
         initialSequenceNumber: UInt32,
         tunnelMTU: Int = 1400,
-        recvBufferLimit: Int = 60 * 1024, // NEW: 动态窗口的软上限
+        recvBufferLimit: Int = 16 * 1024, //   60 * 1024, // NEW: 动态窗口的软上限
         onBytesBackToTunnel: ((Int) -> Void)? = nil
     ) {
         self.key = key
@@ -202,19 +202,17 @@ final actor TCPConnection {
 
     func close() {
         guard socksState != .closed else { return }
+      
         socksState = .closed
-
-        cancelAllTimers()
-        cleanupBuffers()
-
-        if socksConnection?.state != .cancelled {
+        cancelKeepAliveTimer()  // 新增
+        // 确保完全清理
+           outOfOrderPackets.removeAll(keepingCapacity: false)
+           pendingClientBytes.removeAll(keepingCapacity: false)
+           socksConnection?.forceCancel()  // 强制取消
+           socksConnection = nil
+           closeContinuation?.resume()
+           closeContinuation = nil
             log("Closing connection.")
-            socksConnection?.cancel()
-        }
-        socksConnection = nil
-
-        closeContinuation?.resume()
-        closeContinuation = nil
     }
 
     // MARK: - Sequence helpers (wrap-around safe)
@@ -228,6 +226,7 @@ final actor TCPConnection {
     func handlePacket(payload: Data, sequenceNumber: UInt32) {
         guard !payload.isEmpty else { return }
 
+        updateLastActivity()  // 新增
         // Start SOCKS connection if needed
         if socksConnection == nil && socksState == .idle {
             Task { await self.start() }
@@ -343,19 +342,26 @@ final actor TCPConnection {
     // MARK: - Buffer Management (Optimized)
     private func bufferOutOfOrderPacket(payload: Data, sequenceNumber: UInt32) {
         // Check if already buffered (exact same seq)
-        if outOfOrderPackets.contains(where: { $0.seq == sequenceNumber }) { return }
+            if outOfOrderPackets.contains(where: { $0.seq == sequenceNumber }) { return }
 
-        // Insert in sorted order using wrap-safe comparator
-        let packet = (seq: sequenceNumber, data: payload)
-        let index = outOfOrderPackets.binarySearch { seqLT($0.seq, sequenceNumber) }
-        outOfOrderPackets.insert(packet, at: index)
+            // Insert in sorted order using wrap-safe comparator
+            let packet = (seq: sequenceNumber, data: payload)
+            let index = outOfOrderPackets.binarySearch { seqLT($0.seq, sequenceNumber) }
+            outOfOrderPackets.insert(packet, at: index)
 
-        // Limit buffer size
-        while outOfOrderPackets.count > MAX_BUFFERED_PACKETS {
-            outOfOrderPackets.removeFirst()
-            log("Buffer overflow: dropped oldest packet")
-        }
-        updateAdvertisedWindow() // shrink only
+            // Limit buffer size
+            while outOfOrderPackets.count > MAX_BUFFERED_PACKETS {
+                outOfOrderPackets.removeFirst()
+                log("Buffer overflow: dropped oldest packet")
+            }
+            
+            // 新增：检查总缓冲区使用情况
+            if bufferedBytesForWindow() > recvBufferLimit {
+                trimBuffers()  // 调用 trimBuffers
+                log("Buffer exceeded limit, trimming to \(recvBufferLimit)")
+            }
+            
+            updateAdvertisedWindow() // shrink only
     }
 
     private func processBufferedPackets() {
@@ -395,6 +401,9 @@ final actor TCPConnection {
             if outOfOrderPackets.isEmpty {
                 cancelRetransmitTimer()
             }
+            
+            // 新增：检查是否需要调整缓冲区
+            adaptBufferToFlow()
         }
     }
 
@@ -828,8 +837,21 @@ final actor TCPConnection {
             _ = try await receiveExactly(2) // Port
 
             await setSocksState(.established)
+            
             log("SOCKS tunnel established")
-
+            
+            // 新增：连接建立后可能调整缓冲区
+            // 如果是高优先级连接，可以增大缓冲区
+            if let priority = getConnectionPriority() {
+                let adjustedSize = priority == .high ? recvBufferLimit * 2 : recvBufferLimit
+                adjustBufferSize(adjustedSize)
+            }
+            
+            
+            startKeepAlive()  // 新增
+            
+            
+            
             await sendSynAckIfNeeded()
             await flushPendingData()
             await readFromSocks()
@@ -838,6 +860,40 @@ final actor TCPConnection {
             log("Connect response error: \(error)")
             close()
         }
+    }
+    
+    // 添加自适应缓冲区管理
+    private func adaptBufferToFlow() {
+        let utilizationRate = Double(bufferedBytesForWindow()) / Double(recvBufferLimit)
+        
+        if utilizationRate > 0.9 {
+            // 缓冲区使用率超过90%，可能需要扩大（如果内存允许）
+            if recvBufferLimit < 32 * 1024 {
+                adjustBufferSize(recvBufferLimit + 8 * 1024)
+                log("Buffer auto-expanded due to high utilization")
+            }
+        } else if utilizationRate < 0.3 && recvBufferLimit > 16 * 1024 {
+            // 使用率低于30%，可以缩小以节省内存
+            adjustBufferSize(recvBufferLimit - 8 * 1024)
+            log("Buffer auto-shrunk due to low utilization")
+        }
+    }
+    
+    
+    // 辅助方法：获取连接优先级（可根据端口或域名判断）
+    private func getConnectionPriority() -> ConnectionPriority? {
+        // 例如：HTTPS 连接优先级更高
+        if destPort == 443 {
+            return .high
+        } else if destPort == 80 {
+            return .normal
+        }
+        return .low
+    }
+    
+    
+    private enum ConnectionPriority {
+        case high, normal, low
     }
 
     private func flushPendingData() async {
@@ -897,6 +953,7 @@ final actor TCPConnection {
     private func cancelAllTimers() {
         cancelRetransmitTimer()
         cancelDelayedAckTimer()
+        cancelKeepAliveTimer()  // 新增
     }
 
     private func cancelRetransmitTimer() {
@@ -926,24 +983,35 @@ final actor TCPConnection {
         pendingClientBytes.append(data)
         pendingBytesTotal += data.count
 
-        if pendingBytesTotal > Self.pendingSoftCapBytes {
+        // 检查是否超过软限制
+        if pendingBytesTotal > pendingSoftCapBytes {
             trimPendingBuffer()
         }
+        
+        // 新增：检查是否超过硬限制（recvBufferLimit）
+        if pendingBytesTotal > recvBufferLimit {
+            trimBuffers()  // 调用 trimBuffers 进行更激进的清理
+            log("Pending bytes exceeded recv limit, aggressive trimming")
+        }
+        
         updateAdvertisedWindow() // shrink only
     }
 
     private func trimPendingBuffer() {
         guard !pendingClientBytes.isEmpty else { return }
 
+
         var dropped = 0
         var idx = 1 // Keep first segment (usually TLS ClientHello)
 
-        while pendingBytesTotal > Self.pendingSoftCapBytes && idx < pendingClientBytes.count {
-            let size = pendingClientBytes[idx].count
-            pendingClientBytes.remove(at: idx)
-            pendingBytesTotal -= size
-            dropped += size
+
+        while pendingBytesTotal > pendingSoftCapBytes && idx < pendingClientBytes.count { // PHASE1
+        let size = pendingClientBytes[idx].count
+        pendingClientBytes.remove(at: idx)
+        pendingBytesTotal -= size
+        dropped += size
         }
+
 
         if dropped > 0 {
             log("Dropped \(dropped) bytes from pending buffer")
@@ -1153,6 +1221,7 @@ final actor TCPConnection {
     }
 
     func onInboundAck(ackNumber: UInt32) {
+        updateLastActivity()  // 新增
         if !handshakeAcked {
             let expected = serverInitialSequenceNumber &+ 1
             if ackNumber >= expected {
@@ -1239,15 +1308,158 @@ final actor TCPConnection {
         NSLog("[TCPConnection \(key)] \(context) \(message)")
     }
 
-func onInboundFin(seq: UInt32) async {
-    // 仅在期望的序号位置上推进一个字节（FIN 消耗一个序号）
-    if seq == clientSequenceNumber {
-        clientSequenceNumber &+= 1
+    func onInboundFin(seq: UInt32) async {
+        // 仅在期望的序号位置上推进一个字节（FIN 消耗一个序号）
+        if seq == clientSequenceNumber {
+            clientSequenceNumber &+= 1
+        }
+        // 立即回 ACK，避免对端重传 FIN
+        sendPureAck()
+        // 不主动关闭，由上游（SOCKS/服务端）完成后再走正常关闭流程
     }
-    // 立即回 ACK，避免对端重传 FIN
-    sendPureAck()
-    // 不主动关闭，由上游（SOCKS/服务端）完成后再走正常关闭流程
-}
+    
+
+    // Replace the fixed pending cap constant with a computed property
+    private var pendingSoftCapBytes: Int { // PHASE1: smaller cap before SOCKS up
+        return (socksState == .established) ? (24 * 1024) : (12 * 1024)
+    }
+    
+    private var keepAliveTimer: DispatchSourceTimer?
+    private let keepAliveInterval: TimeInterval = 30.0
+    private var lastActivityTime = Date()
+    private var keepAliveProbesSent = 0
+    private let maxKeepAliveProbes = 3
+    
+    private func startKeepAlive() {
+        keepAliveTimer = DispatchSource.makeTimerSource(queue: queue)
+        keepAliveTimer?.schedule(deadline: .now() + keepAliveInterval,
+                                 repeating: keepAliveInterval)
+        keepAliveTimer?.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            Task.detached { [weak self] in
+                await self?.sendKeepAlive()
+            }
+        }
+        keepAliveTimer?.resume()
+    }
+    
+    // MARK: - Keep-Alive Implementation
+    private func sendKeepAlive() async {
+        // 检查连接是否活跃
+        let timeSinceLastActivity = Date().timeIntervalSince(lastActivityTime)
+        
+        // 如果最近有活动，跳过保活
+        if timeSinceLastActivity < keepAliveInterval {
+            keepAliveProbesSent = 0 // 重置探测计数
+            return
+        }
+        
+        // 检查连接状态
+        guard socksState == .established else {
+            cancelKeepAliveTimer()
+            return
+        }
+        
+        // 发送 TCP Keep-Alive 探测（零字节 ACK）
+        await sendKeepAliveProbe()
+        
+        keepAliveProbesSent += 1
+        
+        // 如果超过最大探测次数，关闭连接
+        if keepAliveProbesSent >= maxKeepAliveProbes {
+            log("Keep-alive timeout after \(maxKeepAliveProbes) probes, closing connection")
+            await close()
+        }
+    }
+
+    private func sendKeepAliveProbe() async {
+        // 发送一个零窗口探测包（TCP Keep-Alive）
+        // 这是一个包含前一个序列号的 ACK 包
+        let probeSeq = serverSequenceNumber &- 1
+        let ackNumber = clientSequenceNumber
+        
+        var tcp = Data(count: 20)
+        tcp[0] = UInt8(destPort >> 8); tcp[1] = UInt8(destPort & 0xFF)
+        tcp[2] = UInt8(sourcePort >> 8); tcp[3] = UInt8(sourcePort & 0xFF)
+        
+        withUnsafeBytes(of: probeSeq.bigEndian) { tcp.replaceSubrange(4..<8, with: $0) }
+        withUnsafeBytes(of: ackNumber.bigEndian) { tcp.replaceSubrange(8..<12, with: $0) }
+        
+        tcp[12] = 0x50  // Data offset = 5 (20 bytes)
+        tcp[13] = TCPFlags.ack.rawValue
+        tcp[14] = UInt8(availableWindow >> 8)
+        tcp[15] = UInt8(availableWindow & 0xFF)
+        tcp[16] = 0; tcp[17] = 0  // Checksum
+        tcp[18] = 0; tcp[19] = 0  // Urgent pointer
+        
+        var ip = createIPv4Header(payloadLength: tcp.count)
+        let tcpCsum = tcpChecksum(ipHeader: ip, tcpHeader: tcp, payload: Data())
+        tcp[16] = UInt8(tcpCsum >> 8); tcp[17] = UInt8(tcpCsum & 0xFF)
+        let ipCsum = ipChecksum(&ip)
+        ip[10] = UInt8(ipCsum >> 8); ip[11] = UInt8(ipCsum & 0xFF)
+        
+        packetFlow.writePackets([ip + tcp], withProtocols: [AF_INET as NSNumber])
+        
+        log("Keep-alive probe sent (probe #\(keepAliveProbesSent + 1))")
+    }
+    
+
+    private func cancelKeepAliveTimer() {
+        keepAliveTimer?.cancel()
+        keepAliveTimer = nil
+        keepAliveProbesSent = 0
+    }
+
+    // 更新活动时间
+    private func updateLastActivity() {
+        lastActivityTime = Date()
+        keepAliveProbesSent = 0  // 重置探测计数
+    }
+    
+    // MARK: - Dynamic Buffer Adjustment
+    func adjustBufferSize(_ newSize: Int) {
+        let oldSize = recvBufferLimit
+        recvBufferLimit = max(8 * 1024, min(newSize, Int(MAX_WINDOW_SIZE)))
+        
+        if oldSize != recvBufferLimit {
+            log("Buffer adjusted: \(oldSize) -> \(recvBufferLimit) bytes")
+            updateAdvertisedWindow()
+            
+            // 如果缓冲区缩小且当前缓存过多，触发清理
+            if recvBufferLimit < oldSize && bufferedBytesForWindow() > recvBufferLimit {
+                trimBuffers()
+            }
+        }
+    }
+    
+    // 清理过多的缓冲数据
+    private func trimBuffers() {
+        // 清理乱序包缓冲区
+        while outOfOrderPackets.count > MAX_BUFFERED_PACKETS / 2 {
+            outOfOrderPackets.removeFirst()
+        }
+        
+        // 清理待发送数据
+        if pendingBytesTotal > recvBufferLimit {
+            trimPendingBuffer()
+        }
+        
+        log("Buffers trimmed due to size reduction")
+    }
+    
+    // 添加一个公开方法供 ConnectionManager 调用
+    public func handleMemoryPressure(targetBufferSize: Int) async {
+        // 调整缓冲区大小
+        adjustBufferSize(targetBufferSize)
+        
+        // 如果缓冲区使用超过新限制，主动清理
+        if bufferedBytesForWindow() > recvBufferLimit {
+            trimBuffers()
+            log("Memory pressure: trimmed buffers to \(recvBufferLimit) bytes")
+        }
+    }
+    
+    
 }
 
 // MARK: - Helper Types

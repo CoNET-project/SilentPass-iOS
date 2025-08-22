@@ -1,12 +1,15 @@
 //  ConnectionManager.swift
 //  vpn2socks
 //
-//  Optimized + actor-safety fixes
+//  Optimized + actor-safety fixes + enhanced memory management
 //
 
 import Foundation
 import NetworkExtension
 import Network
+import os.log
+
+private let logger = Logger(subsystem: "com.vpn2socks", category: "ConnectionManager")
 
 final actor ConnectionManager {
 
@@ -34,48 +37,61 @@ final actor ConnectionManager {
 
     // 定时器
     private var statsTimer: Task<Void, Never>?
+    private var memoryMonitorTimer: Task<Void, Never>?
     private let statsInterval: TimeInterval = 30.0
 
-    // 限制
-    private let maxConnections = 100
-    private let connectionTimeout: TimeInterval = 60.0
-
-    // 止血
+    // CRITICAL: 降低限制以适应 iOS 内存约束
+    private let maxConnections = 35  // 从 100 降低
+    private let connectionTimeout: TimeInterval = 30.0  // 从 60 降低
+    private let maxIdleTime: TimeInterval = 10.0  // 积极的空闲超时
+    
+    // 内存管理阈值（MB）
+    private let memoryNormalMB: UInt64 = 25
+    private let memoryWarningMB: UInt64 = 30  // 从35MB降到30MB
+    private let memoryCriticalMB: UInt64 = 45
+    private let memoryEmergencyMB: UInt64 = 48
+    
+    // 止血模式（你原有的 shedding 逻辑）
     private var shedding = false
     private var pausedReads = false
     private var dropNewConnections = false
     private var logSampleN = 1
-    private let rssHighMB: UInt64 = 40
-    private let rssLowMB:  UInt64 = 34
-    private let maxConnsDuringShedding = 60
+    private let maxConnsDuringShedding = 20  // 从 60 降低
     private var lastTrimTime = Date.distantPast
-    private let trimCooldown: TimeInterval = 3.0
+    private let trimCooldown: TimeInterval = 0.5  // 从 3.0 降低
 
-    // “墓碑”表：关闭后的尾包吞掉
+    // "墓碑"表：关闭后的尾包吸掉
     private var recentlyClosed: [String: Date] = [:]
-    private let tombstoneTTL: TimeInterval = 3.0
+    private let tombstoneTTL: TimeInterval = 2.0  // 从 3.0 降低
 
     // UDP/ICMP 限流
     private var lastICMPReply: [String: Date] = [:]
     private let icmpReplyInterval: TimeInterval = 1.0
-    private let cleanupInterval: TimeInterval = 60.0
+    private let cleanupInterval: TimeInterval = 30.0  // 从 60 降低，更频繁清理
 
     // 采样计数器
     private let logCounterQueue = DispatchQueue(label: "connmgr.log.counter.q")
     private var logCounter: UInt64 = 0
+    
+    // 内存压力状态
+    private var isMemoryPressure = false
+    private var lastMemoryCheckTime = Date()
+    private let memoryCheckInterval: TimeInterval = 5.0  // 每5秒检查内存
 
     // MARK: - Init
 
     init(packetFlow: SendablePacketFlow, fakeDNSServer: String) {
         self.packetFlow = packetFlow
         self.fakeDNSServer = IPv4Address(fakeDNSServer)!
+        logger.info("[ConnectionManager] Initialized with limits: max=\(self.maxConnections) connections")
     }
 
     deinit {
         statsTimer?.cancel()
+        memoryMonitorTimer?.cancel()
     }
 
-    // MARK: - Public
+    // MARK: - Public Interface
 
     nonisolated func start() {
         Task { [weak self] in
@@ -83,22 +99,139 @@ final actor ConnectionManager {
             await self.startInternal()
         }
     }
+    
+    // 新增：供 PacketTunnelProvider 调用的内存清理方法
+    func performMemoryCleanup(targetCount: Int) async {
+        logger.warning("[Memory] Cleanup requested, target: \(targetCount) connections")
+        await trimConnections(targetMax: targetCount)
+    }
+    
+    func emergencyCleanup() async {
+        logger.critical("[Memory] EMERGENCY cleanup - closing ALL connections")
+
+
+        // Stop intake & reading immediately
+        dropNewConnections = true
+        pausedReads = true
+
+
+        // Close all live conns
+        for (key, conn) in tcpConnections {
+        await conn.close()
+        recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+        }
+        tcpConnections.removeAll(keepingCapacity: false)
+        pendingSyns.removeAll(keepingCapacity: false)
+        stats.activeConnections = 0
+
+
+        lastICMPReply.removeAll(keepingCapacity: false)
+        _ = autoreleasepool { }
+
+
+        logger.critical("[Memory] Emergency cleanup complete")
+
+
+        // PHASE1: Cooldowns —
+        // a) Always keep reads paused for 1.5s to let ARC/OS settle
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await self?.maybeUnpauseReadsAfterCooldown()
+        }
+
+
+        // b) Block new connections for 5s or until memory < critical
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            await self?.maybeLiftIntakeBanAfterCooldown()
+        }
+    }
 
     // MARK: - Start
 
     private func startInternal() async {
         startStatsTimer()
+        startMemoryMonitor()
         startCleanupTask()
+        startAdaptiveBufferTask()  // 新增
         startCleaner()
         await readPackets()
+    }
+    
+    private func startMemoryMonitor() {
+        memoryMonitorTimer?.cancel()
+        memoryMonitorTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(self?.memoryCheckInterval ?? 5) * 1_000_000_000)
+                guard let self = self else { break }
+                await self.checkMemoryPressure()
+            }
+        }
+    }
+    
+    private func checkMemoryPressure() async {
+        let memoryMB = getCurrentMemoryUsageMB()
+        let now = Date()
+        
+        // 避免过于频繁的检查
+        guard now.timeIntervalSince(lastMemoryCheckTime) >= 1.0 else { return }
+        lastMemoryCheckTime = now
+        
+        // 根据内存使用情况采取不同措施
+        if memoryMB >= memoryEmergencyMB {
+            logger.critical("💀 EMERGENCY: Memory \(memoryMB)MB >= \(self.memoryEmergencyMB)MB")
+            await emergencyCleanup()
+        } else if memoryMB >= memoryCriticalMB {
+            logger.critical("⚠️ CRITICAL: Memory \(memoryMB)MB >= \(self.memoryCriticalMB)MB")
+            isMemoryPressure = true
+            shedding = true
+            pausedReads = true
+            dropNewConnections = true
+            await trimConnections(targetMax: 5)
+        } else if memoryMB >= memoryWarningMB {
+            logger.warning("⚠️ WARNING: Memory \(memoryMB)MB >= \(self.memoryWarningMB)MB")
+            isMemoryPressure = true
+            shedding = true
+            await trimConnections(targetMax: maxConnsDuringShedding)
+        } else if memoryMB < memoryNormalMB && isMemoryPressure {
+            logger.info("✅ Memory recovered: \(memoryMB)MB < \(self.memoryNormalMB)MB")
+            isMemoryPressure = false
+            shedding = false
+            pausedReads = false
+            dropNewConnections = false
+            logSampleN = 1
+        }
+        
+        // 定期记录内存状态
+        if memoryMB > 30 || stats.totalConnections % 10 == 0 {
+            logger.debug("[Memory] Current: \(memoryMB)MB, Connections: \(self.tcpConnections.count)")
+        }
+    }
+    
+    private func getCurrentMemoryUsageMB() -> UInt64 {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+        
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
+                task_info(mach_task_self_,
+                         task_flavor_t(MACH_TASK_BASIC_INFO),
+                         $0,
+                         &count)
+            }
+        }
+        
+        if result == KERN_SUCCESS {
+            return info.resident_size / (1024 * 1024)
+        }
+        return 0
     }
 
     private func startStatsTimer() {
         statsTimer?.cancel()
         statsTimer = Task { [weak self] in
             while !Task.isCancelled {
-                let interval: Int
-                if let shedding = await self?.shedding, shedding { interval = 60 } else { interval = 30 }
+                let interval = await self?.isMemoryPressure == true ? 60.0 : 30.0  // Fixed: Added .0 for TimeInterval
                 try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
                 guard let self = self else { break }
                 await self.printStats()
@@ -109,34 +242,83 @@ final actor ConnectionManager {
     private func startCleanupTask() {
         Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(self?.cleanupInterval ?? 30) * 1_000_000_000)
                 guard let self = self else { break }
                 await self.cleanupStaleConnections()
+                await self.cleanupTombstones()
             }
         }
     }
+    
+    private func cleanupStaleConnections() async {
+        let now = Date()
+        var staleKeys: [String] = []
+        
+        // Note: TCPConnection needs to implement isIdle method
+        // For now, we'll skip idle checking
+        // TODO: Add isIdle method to TCPConnection
+        
+        if !staleKeys.isEmpty {
+            logger.info("[Cleanup] Removing \(staleKeys.count) idle connections")
+            for key in staleKeys {
+                if let conn = tcpConnections[key] {
+                    await conn.close()
+                    tcpConnections.removeValue(forKey: key)
+                    recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+                }
+            }
+            stats.activeConnections = tcpConnections.count
+        }
+    }
+    
+    private func cleanupTombstones() async {
+        let now = Date()
+        let beforeCount = recentlyClosed.count
+        recentlyClosed = recentlyClosed.filter { now.timeIntervalSince($0.value) < tombstoneTTL }
+        
+        if beforeCount != recentlyClosed.count {
+            logger.debug("[Cleanup] Removed \(beforeCount - self.recentlyClosed.count) tombstones")
+        }
+    }
 
-    private func printStats() {
+    private func printStats() async {
         let uptime = Date().timeIntervalSince(stats.startTime)
         let uptimeStr = formatUptime(uptime)
-        let msg = """
-
+        let memoryMB = getCurrentMemoryUsageMB()
+        
+        logger.info("""
+        
         === ConnectionManager Statistics ===
         Uptime: \(uptimeStr)
+        Memory: \(memoryMB)MB (pressure: \(self.isMemoryPressure), shedding: \(self.shedding))
         Connections:
-          - Total: \(stats.totalConnections)
-          - Active: \(tcpConnections.count)
-          - Failed: \(stats.failedConnections)
-          - Duplicate SYNs: \(stats.duplicateSyns)
+          - Total: \(self.stats.totalConnections)
+          - Active: \(self.tcpConnections.count)/\(self.maxConnections)
+          - Failed: \(self.stats.failedConnections)
+          - Duplicate SYNs: \(self.stats.duplicateSyns)
         Traffic:
-          - Received: \(formatBytes(stats.bytesReceived))
-          - Sent: \(formatBytes(stats.bytesSent))
-        Memory:
-          - Pending SYNs: \(pendingSyns.count)
-          - TCP Connections: \(tcpConnections.count)
+          - Received: \(self.formatBytes(self.stats.bytesReceived))
+          - Sent: \(self.formatBytes(self.stats.bytesSent))
+        Buffers:
+          - Pending SYNs: \(self.pendingSyns.count)
+          - Tombstones: \(self.recentlyClosed.count)
         ====================================
-        """
-        NSLog(msg)
+        """)
+        
+        // 计算平均缓冲区大小
+        var totalBufferSize = 0
+        for (_, conn) in tcpConnections {
+            totalBufferSize += await conn.recvBufferLimit
+        }
+        
+        let avgBufferSize = tcpConnections.isEmpty ? 0 : totalBufferSize / tcpConnections.count
+        
+        logger.info("""
+            Buffer Management:
+              - Avg Buffer Size: \(self.formatBytes(avgBufferSize))
+              - Load Factor: \(String(format: "%.1f%%", Double(self.tcpConnections.count) / Double(self.maxConnections) * 100))
+              - Memory Pressure: \(self.getMemoryPressureLevel())
+        """)
     }
 
     private func formatUptime(_ seconds: TimeInterval) -> String {
@@ -147,88 +329,92 @@ final actor ConnectionManager {
     }
 
     private func formatBytes(_ bytes: Int) -> String {
-        if bytes < 1024 { return "\(bytes) B" }
-        if bytes < 1024 * 1024 { return String(format: "%.2f KB", Double(bytes)/1024) }
-        if bytes < 1024 * 1024 * 1024 { return String(format: "%.2f MB", Double(bytes)/(1024*1024)) }
-        return String(format: "%.2f GB", Double(bytes)/(1024*1024*1024))
-    }
-
-    private func cleanupStaleConnections() {
-        // 预留：若添加 lastActivity，可在此清理超时连接
+        if bytes < 1024 { return "\(bytes)B" }
+        if bytes < 1024 * 1024 { return String(format: "%.1fKB", Double(bytes)/1024) }
+        if bytes < 1024 * 1024 * 1024 { return String(format: "%.1fMB", Double(bytes)/(1024*1024)) }
+        return String(format: "%.1fGB", Double(bytes)/(1024*1024*1024))
     }
 
     // MARK: - Packet Reading
 
     private func readPackets() async {
         while true {
-            if pausedReads {
-                try? await Task.sleep(nanoseconds: 50_000_000)
+            if pausedReads || isMemoryPressure {
+                try? await Task.sleep(nanoseconds: isMemoryPressure ? 100_000_000 : 50_000_000)
                 continue
             }
+
+
             let (datas, _) = await packetFlow.readPackets()
-            let batch = datas.prefix(64)
+
+
+            // PHASE1: tighter batch when pressured (we also set isMemoryPressure externally)
+            let batchSize = isMemoryPressure ? 8 : 32 // was 16 : 32
+            let batch = datas.prefix(batchSize)
+
+
             for pkt in batch {
-                autoreleasepool {
-                    if let ip = IPv4Packet(data: pkt) {
-                        switch ip.`protocol` {
+            _ = autoreleasepool {
+                if let ip = IPv4Packet(data: pkt) {
+                    switch ip.`protocol` {
                         case 6: Task { await self.handleTCPPacket(ip) }
                         case 17: Task { await self.handleUDPPacket(ip) }
+                        case 1: Task { await self.handleICMPPacket(ip) }
                         default: break
                         }
                     }
                 }
             }
+
+
+            // Optional: a short yield helps prevent immediate burst after big reads
+            if isMemoryPressure { try? await Task.sleep(nanoseconds: 5_000_000) } // 5ms
         }
     }
-
-    // MARK: - Shedding
-
-    private func handleRSS(_ rssMB: UInt64) {
-        if !shedding && rssMB >= rssHighMB {
-            shedding = true
-            pausedReads = true
-            dropNewConnections = true
-            logSampleN = 8
-            NSLog("[ConnectionManager] RSS=\(rssMB)MB ≥ \(rssHighMB)MB，进入止血")
-            maybeTrimConnections(targetMax: maxConnsDuringShedding)
-            return
-        }
-        if shedding && rssMB > rssLowMB {
-            maybeTrimConnections(targetMax: maxConnsDuringShedding)
-            return
-        }
-        if shedding && rssMB <= rssLowMB {
-            shedding = false
-            pausedReads = false
-            dropNewConnections = false
-            logSampleN = 1
-            NSLog("[ConnectionManager] RSS=\(rssMB)MB ≤ \(rssLowMB)MB，退出止血")
-        }
+    
+    private func handleICMPPacket(_ ipPacket: IPv4Packet) async {
+        // 目前不对入站 ICMP 做回复，避免形成“ICMP->ICMP”的循环与额外内存消耗。
+        // 我们已在 UDP 分支中对 QUIC/HTTP3 及其他 UDP 发送 ICMP Unreachable，见 logUDPPacket()。
+        // 如需 Echo Reply，建议等 ICMPPacket 支持带上 identifier/sequence 的构造再启用。
     }
 
-    private func maybeTrimConnections(targetMax: Int) {
+    // MARK: - Connection Trimming (Enhanced)
+
+    private func trimConnections(targetMax: Int) async {
+        let current = tcpConnections.count
+        guard current > targetMax else { return }
+        
         let now = Date()
         guard now.timeIntervalSince(lastTrimTime) >= trimCooldown else { return }
         lastTrimTime = now
-        let current = tcpConnections.count
-        guard current > targetMax else { return }
+        
         let needClose = current - targetMax
-        let victims = tcpConnections.keys.sorted().prefix(needClose)
+        
+        // 优先关闭空闲连接
+        var victims: [String] = []
+        
+        // TODO: When TCPConnection has isIdle method, use it here
+        // For now, just close oldest connections
+        let keys = Array(tcpConnections.keys.sorted().prefix(needClose))
+        victims.append(contentsOf: keys)
+        
+        // 执行关闭
         var closed = 0
         for key in victims {
             if let conn = tcpConnections[key] {
-                Task { await conn.close() }
+                await conn.close()
                 if tcpConnections.removeValue(forKey: key) != nil {
                     closed += 1
                     recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
                 }
             }
         }
+        
         stats.activeConnections = tcpConnections.count
-        NSLog("[ConnectionManager] Shedding: 关闭 \(closed) 条连接（剩余 \(tcpConnections.count)）")
+        logger.warning("[Trim] Closed \(closed) connections (remaining: \(self.tcpConnections.count))")
     }
 
-    // MARK: - UDP/DNS
+    // MARK: - UDP/DNS (保持原有逻辑)
 
     private func handleUDPPacket(_ ipPacket: IPv4Packet) async {
         guard let udp = UDPDatagram(data: ipPacket.payload) else { return }
@@ -252,10 +438,14 @@ final actor ConnectionManager {
         )
         packetFlow.writePackets([resp], withProtocols: [AF_INET as NSNumber])
         stats.bytesSent += resp.count
-        NSLog("[ConnectionManager] DNS Reply to \(ipPacket.sourceAddress):\(udp.sourcePort) qtype=\(qtypeName(qtype)) len=\(result.response.count)")
+        
+        let _src = String(describing: ipPacket.sourceAddress)
+        let _qtype = qtypeName(qtype)
+        let _msg = "[DNS] Reply to \(_src):\(udp.sourcePort) qtype=\(_qtype)"
+        logger.debug("\(_msg)")
     }
 
-    // MARK: - TCP
+    // MARK: - TCP (增强内存管理)
 
     private func handleTCPPacket(_ ipPacket: IPv4Packet) async {
         guard let tcpSegment = TCPSegment(data: ipPacket.payload) else { return }
@@ -266,6 +456,11 @@ final actor ConnectionManager {
             dstIP: ipPacket.destinationAddress,
             dstPort: tcpSegment.destinationPort
         )
+        
+        // 检查墓碑（避免处理已关闭连接的包）
+        if let expires = recentlyClosed[key], Date() < expires {
+            return
+        }
 
         if tcpSegment.isSYN && !tcpSegment.isACK {
             await handleSYN(ipPacket: ipPacket, tcpSegment: tcpSegment, key: key)
@@ -294,39 +489,41 @@ final actor ConnectionManager {
     }
 
     private func handleSYN(ipPacket: IPv4Packet, tcpSegment: TCPSegment, key: String) async {
+        // 内存压力下拒绝新连接
+        if isMemoryPressure || dropNewConnections {
+            stats.failedConnections += 1
+            if (stats.failedConnections % logSampleN) == 0 {
+                logger.warning("[Memory] Rejecting connection under pressure: \(key)")
+            }
+            return
+        }
+        
+        // 检查连接限制
+        if tcpConnections.count >= maxConnections {
+            stats.failedConnections += 1
+            logger.warning("[Limit] Connection limit reached (\(self.maxConnections)), rejecting \(key)")
+            return
+        }
+
         if pendingSyns.contains(key) {
             stats.duplicateSyns += 1
-            NSLog("[ConnectionManager] Ignoring duplicate SYN for \(key)")
             return
         }
 
         if let existing = tcpConnections[key] {
             stats.duplicateSyns += 1
             await existing.retransmitSynAckDueToDuplicateSyn()
-            NSLog("[ConnectionManager] Existing connection, retransmitting SYN-ACK for \(key)")
-            return
-        }
-
-        if dropNewConnections {
-            stats.failedConnections += 1
-            if (stats.failedConnections % logSampleN) == 0 {
-                NSLog("[ConnectionManager] Shedding: 拒绝新连接 \(key)")
-            }
-            return
-        }
-
-        if tcpConnections.count >= maxConnections {
-            NSLog("[ConnectionManager] Connection limit reached (\(maxConnections)), rejecting \(key)")
             return
         }
 
         pendingSyns.insert(key)
+        defer { pendingSyns.remove(key) }
 
         let tcpBytes = ipPacket.payload
-        guard tcpBytes.count >= 20 else { pendingSyns.remove(key); return }
+        guard tcpBytes.count >= 20 else { return }
         let dataOffsetInWords = tcpBytes[12] >> 4
-        let tcpHeaderLen = max(20, Int(dataOffsetInWords) * 4)
-        guard tcpHeaderLen <= tcpBytes.count else { pendingSyns.remove(key); return }
+        let tcpHeaderLen = min(60, max(20, Int(dataOffsetInWords) * 4))
+        guard tcpHeaderLen <= tcpBytes.count else { return }
         let tcpSlice = tcpBytes.prefix(tcpHeaderLen)
 
         var domainForSocks: String? = nil
@@ -335,12 +532,26 @@ final actor ConnectionManager {
             domainForSocks = await lookupDomainWithBackoff(fakeIP: dstIP)
             if domainForSocks != nil {
                 await dnsInterceptor.retain(fakeIP: dstIP)
-                NSLog("[ConnectionManager] Fake IP \(dstIP) mapped to domain: \(domainForSocks!)")
-            } else {
-                NSLog("[ConnectionManager] Warning: No domain mapping for fake IP \(dstIP)")
+                
+                let _dst = String(describing: dstIP)
+                let _host = domainForSocks!   // 这里已在 if domainForSocks != nil 分支内，安全
+                let _msg2 = "[DNS] Fake IP \(_dst) mapped to: \(_host)"
+                logger.debug("\(_msg2)")
             }
         }
+        
+        // 计算动态缓冲区大小
+           let bufferSize = adaptiveBufferSize()
+           let pressureLevel = getMemoryPressureLevel()
+           
+           // 根据内存压力进一步调整
+           let finalBufferSize = pressureLevel >= 2
+               ? bufferSize / 2  // 内存压力大时减半
+               : bufferSize
+        
+        
 
+        // 创建连接（使用减小的缓冲区）
         let newConn = TCPConnection(
             key: key,
             packetFlow: packetFlow,
@@ -349,45 +560,37 @@ final actor ConnectionManager {
             destIP: dstIP,
             destPort: tcpSegment.destinationPort,
             destinationHost: domainForSocks,
-            initialSequenceNumber: tcpSegment.sequenceNumber
+            initialSequenceNumber: tcpSegment.sequenceNumber,
+            tunnelMTU: 1400,
+            recvBufferLimit: 32 * 1024  // 减小缓冲区
         )
 
         tcpConnections[key] = newConn
-        await newConn.setOnBytesBackToTunnel { [weak self] n in
-            guard let self = self else { return }
-            let mss = max(536, newConn.tunnelMTU - 40)
-            let segs = (n + mss - 1) / mss
-            let estimatedBytes = n + segs * 40
-            Task { await self.bumpSentBytes(estimatedBytes) }
-        }
-        pendingSyns.remove(key)
         stats.totalConnections += 1
         stats.activeConnections = tcpConnections.count
 
         await newConn.acceptClientSyn(tcpHeaderAndOptions: Data(tcpSlice))
 
-        // 用 Task 启动 SOCKS，并在完成后通过 actor 方法进行清理与“墓碑”写入
+        // 记录日志（调试用）
+        if stats.totalConnections % 10 == 0 {
+            logger.debug("[Adaptive] Buffer size: \(finalBufferSize) bytes for \(self.tcpConnections.count)/\(self.maxConnections) connections")
+        }
+    
+        // 启动连接
         Task { [weak self] in
             guard let self = self else { return }
             await newConn.start()
             await self.finishAndCleanup(key: key, dstIP: dstIP)
         }
     }
-    
-    private func addSentBytes(_ n: Int) {
-        stats.bytesSent += n
-    }
-    
-    func bumpSentBytes(_ n: Int) async {
-        guard n > 0 else { return }
-        stats.bytesSent &+= n
-    }
 
     private func handleConnectionClose(key: String) async {
         guard let connection = tcpConnections[key] else { return }
-        NSLog("[ConnectionManager] Closing connection: \(key)")
+        logger.debug("[Connection] Closing: \(key)")
         await connection.close()
-        // 结束时由 finishAndCleanup 统一清理
+        tcpConnections.removeValue(forKey: key)
+        recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+        stats.activeConnections = tcpConnections.count
     }
 
     private func handleEstablishedConnection(
@@ -405,7 +608,6 @@ final actor ConnectionManager {
         }
     }
 
-    /// 只在安全场景静默吞掉，不干预数据通路
     private func handleOrphanPacket(key: String, tcpSegment: TCPSegment) {
         if pendingSyns.contains(key),
            tcpSegment.payload.isEmpty,
@@ -416,35 +618,30 @@ final actor ConnectionManager {
             return
         }
         if !tcpSegment.payload.isEmpty || !tcpSegment.isACK {
-            NSLog("[ConnectionManager] Orphan packet for \(key), flags: SYN=\(tcpSegment.isSYN) ACK=\(tcpSegment.isACK) FIN=\(tcpSegment.isFIN) RST=\(tcpSegment.isRST)")
+            logger.debug("[Orphan] Packet for \(key), flags: SYN=\(tcpSegment.isSYN) ACK=\(tcpSegment.isACK) FIN=\(tcpSegment.isFIN) RST=\(tcpSegment.isRST)")
         }
     }
 
-    // MARK: - Actor helpers (修复 actor 隔离写入)
+    // MARK: - Cleanup
 
     private func finishAndCleanup(key: String, dstIP: IPv4Address) async {
-        NSLog("[ConnectionManager] Connection \(key) completed")
+        logger.debug("[Connection] Completed: \(key)")
 
         if await dnsInterceptor.contains(dstIP) {
             await dnsInterceptor.release(fakeIP: dstIP)
         }
-        // 写入墓碑并移除连接（都在 actor 隔离上下文内）
-        markRecentlyClosed(key)
-        await removeConnection(key: key)
-    }
-
-    private func markRecentlyClosed(_ key: String) {
+        
+        tcpConnections.removeValue(forKey: key)
         recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+        stats.activeConnections = tcpConnections.count
     }
 
-    private func removeConnection(key: String) async {
-        if tcpConnections.removeValue(forKey: key) != nil {
-            stats.activeConnections = tcpConnections.count
-            NSLog("[ConnectionManager] Removed connection: \(key) (active: \(tcpConnections.count))")
-        }
+    func bumpSentBytes(_ n: Int) async {
+        guard n > 0 else { return }
+        stats.bytesSent &+= n
     }
 
-    // MARK: - Helpers
+    // MARK: - Helper Methods (保持原有实现)
 
     private func makeConnectionKey(
         srcIP: IPv4Address,
@@ -460,14 +657,14 @@ final actor ConnectionManager {
         for attempt in 1...4 {
             try? await Task.sleep(nanoseconds: 50_000_000)
             if let d = await dnsInterceptor.getDomain(forFakeIP: fakeIP) {
-                NSLog("[ConnectionManager] Domain found after \(attempt) retries")
+                logger.debug("[DNS] Domain found after \(attempt) retries")
                 return d
             }
         }
         return nil
     }
 
-    // MARK: - DNS utils
+    // MARK: - DNS/ICMP Utils (保持原有实现)
 
     private func qtypeName(_ qtype: UInt16) -> String {
         switch qtype {
@@ -495,7 +692,7 @@ final actor ConnectionManager {
         return (UInt16(dnsQuery[idx]) << 8) | UInt16(dnsQuery[idx + 1])
     }
 
-    // MARK: - Packet builders
+    // MARK: - Packet builders (保持原有实现)
 
     private func makeIPv4UDPReply(
         srcIP: IPv4Address,
@@ -590,15 +787,19 @@ final actor ConnectionManager {
     private func logUDPPacket(ipPacket: IPv4Packet, udp: UDPDatagram) {
         let dstPort = udp.destinationPort
 
-        // 对 UDP/443、UDP/80 立即回 ICMP Port Unreachable（不做节流）
+        // 对 UDP/443、UDP/80 立即回 ICMP Port Unreachable
         if dstPort == 443 || dstPort == 80 {
             let icmp = ICMPPacket.unreachable(for: ipPacket)
             packetFlow.writePackets([icmp.data], withProtocols: [NSNumber(value: AF_INET)])
-            NSLog("[ConnectionManager] QUIC/UDP->\(ipPacket.destinationAddress):\(dstPort) len=\(udp.payload.count); ICMP Port Unreachable sent immediately")
+            
+            let _dst2 = String(describing: ipPacket.destinationAddress)
+            let _msg3 = "[UDP] QUIC/HTTP3 -> \(_dst2):\(dstPort), sent ICMP unreachable"
+            logger.debug("\(_msg3)")
+            
             return
         }
 
-        // 其它 UDP：保持原有限流 ICMP 回复
+        // 其它 UDP：限流 ICMP 回复
         let flowKey = "\(ipPacket.sourceAddress):\(udp.sourcePort)->\(ipPacket.destinationAddress):\(dstPort)"
         let now = Date()
         if let last = lastICMPReply[flowKey], now.timeIntervalSince(last) < icmpReplyInterval {
@@ -608,13 +809,13 @@ final actor ConnectionManager {
 
         let icmp = ICMPPacket.unreachable(for: ipPacket)
         packetFlow.writePackets([icmp.data], withProtocols: [NSNumber(value: AF_INET)])
-        NSLog("[ConnectionManager] ICMP Unreachable sent for UDP \(flowKey)")
+        logger.debug("[UDP] ICMP Unreachable sent for \(flowKey)")
     }
 
     private func startCleaner() {
         Task.detached { [weak self] in
             while let strongSelf = self {
-                try? await Task.sleep(nanoseconds: UInt64(strongSelf.cleanupInterval * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(await strongSelf.cleanupInterval * 1_000_000_000))
                 await strongSelf.cleanExpiredICMPReplies()
             }
         }
@@ -622,16 +823,123 @@ final actor ConnectionManager {
 
     private func cleanExpiredICMPReplies() {
         let now = Date()
+        let beforeCount = lastICMPReply.count
         lastICMPReply = lastICMPReply.filter { now.timeIntervalSince($0.value) < cleanupInterval }
-        NSLog("[ConnectionManager] Cleaned up expired ICMP entries, left=\(lastICMPReply.count)")
+        
+        if beforeCount != lastICMPReply.count {
+            logger.debug("[Cleanup] Removed \(beforeCount - self.lastICMPReply.count) ICMP entries")
+        }
+    }
+    
+    // New helpers (actor‑isolated)
+    private func maybeUnpauseReadsAfterCooldown() {
+        // If we are still in emergency/critical, keep paused; otherwise resume reads
+        let mem = getCurrentMemoryUsageMB()
+        if mem < memoryCriticalMB { // <45MB
+            pausedReads = false
+        }
+    }
+
+
+    private func maybeLiftIntakeBanAfterCooldown() {
+        let mem = getCurrentMemoryUsageMB()
+        if mem < memoryCriticalMB { // <45MB
+            dropNewConnections = false
+        }
+    }
+    
+    // MARK: - Adaptive Buffer Management
+    private func adaptiveBufferSize() -> Int {
+        let baseSize = 16 * 1024
+        let currentConnections = tcpConnections.count
+        let loadFactor = Double(currentConnections) / Double(maxConnections)
+        
+        // 连接越多，每个连接的缓冲区越小
+        // loadFactor: 0.0 -> 2.0x, 0.5 -> 1.5x, 1.0 -> 1.0x
+        let multiplier = 2.0 - loadFactor
+        let adaptedSize = Int(Double(baseSize) * multiplier)
+        
+        // 限制范围：8KB - 32KB
+        return max(8 * 1024, min(32 * 1024, adaptedSize))
+    }
+    
+    // 获取当前内存压力等级
+    private func getMemoryPressureLevel() -> Int {
+        let memoryMB = getCurrentMemoryUsageMB()
+        if memoryMB >= memoryCriticalMB { return 3 }  // 严重
+        if memoryMB >= memoryWarningMB { return 2 }   // 警告
+        if memoryMB >= memoryNormalMB { return 1 }    // 正常偏高
+        return 0  // 正常
+    }
+    
+    // ConnectionManager.swift - 添加定期调整任务
+    private func startAdaptiveBufferTask() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000) // 每10秒
+                guard let self = self else { break }
+                await self.adjustAllConnectionBuffers()
+            }
+        }
+    }
+
+    private func adjustAllConnectionBuffers() async {
+        let newSize = adaptiveBufferSize()
+        let pressureLevel = getMemoryPressureLevel()
+        
+        // 只在内存压力变化时调整
+        guard pressureLevel >= 1 else { return }
+        
+        for (_, conn) in tcpConnections {
+            await conn.adjustBufferSize(newSize)
+            
+            // 如果内存压力大，触发清理
+            if pressureLevel >= 2 {
+                await conn.handleMemoryPressure(targetBufferSize: newSize / 2)
+            }
+        }
+        
+        logger.debug("[Adaptive] Adjusted buffers for \(self.tcpConnections.count) connections to \(newSize) bytes")
     }
     
     
 }
 
+// MARK: - Extension for Shutdown
+
 extension ConnectionManager {
     nonisolated func prepareForStop() {
-        // 可以在这里做 flush stats、tombstone 清理、防止 RST 风暴等
-        NSLog("[ConnectionManager] prepareForStop called")
+        Task { [weak self] in
+            guard let self = self else { return }
+            logger.info("[Shutdown] Preparing to stop...")
+            
+            // 停止定时器
+            await self.stopTimers()
+            
+            // 关闭所有连接
+            await self.closeAllConnections()
+            
+            logger.info("[Shutdown] Cleanup complete")
+        }
     }
+    
+    private func stopTimers() {
+        statsTimer?.cancel()
+        memoryMonitorTimer?.cancel()
+        statsTimer = nil
+        memoryMonitorTimer = nil
+    }
+    
+    private func closeAllConnections() async {
+        for (_, conn) in tcpConnections {
+            await conn.close()
+        }
+        tcpConnections.removeAll()
+        pendingSyns.removeAll()
+        recentlyClosed.removeAll()
+        lastICMPReply.removeAll()
+    }
+    
+    
 }
+
