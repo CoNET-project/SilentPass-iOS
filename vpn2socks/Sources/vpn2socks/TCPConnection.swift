@@ -11,6 +11,17 @@ import Foundation
 
 final actor TCPConnection {
 
+    enum ConnectionPriority: Int, Comparable {
+        case low = 0
+        case normal = 1
+        case high = 2
+        case critical = 3
+        
+        static func < (lhs: ConnectionPriority, rhs: ConnectionPriority) -> Bool {
+            return lhs.rawValue < rhs.rawValue
+        }
+    }
+    
     // MARK: - Constants
     public let tunnelMTU: Int
     private var mss: Int { max(536, tunnelMTU - 40) } // 40 = IPv4+TCP 基础头
@@ -26,8 +37,8 @@ final actor TCPConnection {
     private let sourceIP: IPv4Address
     private let sourcePort: UInt16
     private let destIP: IPv4Address
-    private let destPort: UInt16
-    private let destinationHost: String?
+    public let destPort: UInt16
+    public let destinationHost: String?
 
     // MARK: - TCP State
     private var synAckSent = false
@@ -99,6 +110,31 @@ final actor TCPConnection {
     func setOnBytesBackToTunnel(_ cb: @escaping (Int) -> Void) {
         self.onBytesBackToTunnel = cb
     }
+    
+    // 添加公开的方法来获取最后活动时间
+    public func getLastActivityTime() async -> Date? {
+        return lastActivityTime
+    }
+    
+    // 添加优先级属性
+    private let priority: ConnectionPriority
+    public private(set) var keepAliveInterval: TimeInterval = 45.0
+    private var lastKeepAliveSent: Date?
+    public func getKeepAliveTelemetry() async -> (interval: TimeInterval, lastSent: Date?, lastActivity: Date?) {
+        return (keepAliveInterval, lastKeepAliveSent, await getLastActivityTime())
+    }
+
+    private nonisolated func computeKeepAliveInterval(host: String?, port: UInt16) -> TimeInterval {
+        switch (host, port) {
+        case (_, 5223): return 180.0     // Apple/FCM Push（你日志里 5223 的保活大多是 180s）
+        case (_, 5228): return 180.0     // FCM
+        case let (h, 443) where (h?.contains("apple.com") ?? false): return 120.0
+        case (_, 443): return 60.0
+        case (_, 80):  return 30.0
+        default:       return 45.0
+        }
+    }
+
 
     // MARK: - Initialization
     init(
@@ -112,8 +148,11 @@ final actor TCPConnection {
         initialSequenceNumber: UInt32,
         tunnelMTU: Int = 1400,
         recvBufferLimit: Int = 16 * 1024, //   60 * 1024, // NEW: 动态窗口的软上限
+        priority: ConnectionPriority = .normal,  // 新增参数
         onBytesBackToTunnel: ((Int) -> Void)? = nil
     ) {
+        // --- Initialization Phase 1: Assign all properties directly ---
+                
         self.key = key
         self.packetFlow = packetFlow
         self.sourceIP = sourceIP
@@ -121,20 +160,44 @@ final actor TCPConnection {
         self.destIP = destIP
         self.destPort = destPort
         self.destinationHost = destinationHost
-        self.serverSequenceNumber = arc4random()
-        self.serverInitialSequenceNumber = self.serverSequenceNumber
+        self.priority = priority
+        self.tunnelMTU = tunnelMTU
+        
+        // Initialize sequence numbers
+        let initialServerSeq = arc4random()
+        self.serverSequenceNumber = initialServerSeq
+        self.serverInitialSequenceNumber = initialServerSeq
         self.initialClientSequenceNumber = initialSequenceNumber
         self.clientSequenceNumber = initialSequenceNumber
         self.nextExpectedSequence = initialSequenceNumber
-        self.tunnelMTU = tunnelMTU
-        // clamp recv cap to [8K, 65535]
+        
+        // Calculate and set buffer/window properties
+        // This is the main fix: Calculate 'cap' first, then use it to initialize all dependent properties.
         let cap = max(8 * 1024, min(recvBufferLimit, Int(MAX_WINDOW_SIZE)))
         self.recvBufferLimit = cap
-        // 初始窗口 = cap
         self.availableWindow = UInt16(cap)
-        self.lastAdvertisedWindow = self.availableWindow
+        self.lastAdvertisedWindow = UInt16(cap) // FIX: Initialize directly from 'cap', not from another property.
+        
+        // Call the nonisolated helper and assign its result
+        // This must be done BEFORE the initializer exits.
+
+        // --- Initialization Complete ---
+        // Now it's safe to call methods or perform other logic.
+        let interval: TimeInterval
+           switch (destinationHost, destPort) {
+           case (_, 5223), (_, 5228):  // Push 服务
+               interval = 180.0
+           case let (host, 443) where host?.contains("apple.com") ?? false:
+               interval = 120.0  // Apple 服务特殊处理
+           case (_, 443):   // 普通 HTTPS
+               interval = 60.0
+           case (_, 80):    // HTTP
+               interval = 30.0
+           default:
+               interval = 45.0
+           }
+        self.keepAliveInterval = interval
         NSLog("[TCPConnection \(key)] Initialized. InitialClientSeq: \(initialSequenceNumber)")
-        self.onBytesBackToTunnel = onBytesBackToTunnel
     }
 
     // NEW: 当前用于接收重组的已占用字节数
@@ -865,36 +928,58 @@ final actor TCPConnection {
     // 添加自适应缓冲区管理
     private func adaptBufferToFlow() {
         let utilizationRate = Double(bufferedBytesForWindow()) / Double(recvBufferLimit)
-        
-        if utilizationRate > 0.9 {
-            // 缓冲区使用率超过90%，可能需要扩大（如果内存允许）
-            if recvBufferLimit < 32 * 1024 {
-                adjustBufferSize(recvBufferLimit + 8 * 1024)
-                log("Buffer auto-expanded due to high utilization")
-            }
-        } else if utilizationRate < 0.3 && recvBufferLimit > 16 * 1024 {
-            // 使用率低于30%，可以缩小以节省内存
-            adjustBufferSize(recvBufferLimit - 8 * 1024)
-            log("Buffer auto-shrunk due to low utilization")
+            
+        // 增加滞后区间
+        if utilizationRate > 0.9 && recvBufferLimit < 64 * 1024 {
+            // 使用率超过90%才扩展
+            adjustBufferSize(min(recvBufferLimit * 2, 64 * 1024))
+        } else if utilizationRate < 0.2 && recvBufferLimit > 16 * 1024 {
+            // 使用率低于20%才收缩（原来是30%）
+            adjustBufferSize(max(recvBufferLimit / 2, 16 * 1024))
         }
     }
+    
+    // 暴露给 ConnectionManager 使用的属性
+        public var remotePort: UInt16? { destPort }
+        public var remoteIPv4: String? {
+            String(describing: destIP)
+        }
+        public var sniHost: String? {
+            // 从 TLS ClientHello 中提取的 SNI（需要实现）
+            return extractedSNI
+        }
+        public var originalHostname: String? { destinationHost }
+        
+        // 存储提取的 SNI
+        private var extractedSNI: String?
+        
+        // 在处理数据包时提取 SNI
+        private func extractSNIFromTLSHandshake(_ data: Data) {
+            // TLS ClientHello 解析逻辑
+            // 这里是简化版本，实际需要完整解析
+            guard data.count > 43,
+                  data[0] == 0x16, // TLS Handshake
+                  data[5] == 0x01  // ClientHello
+            else { return }
+            
+            // 解析 SNI extension（简化示例）
+            // 实际实现需要完整的 TLS 解析
+        }
+    
     
     
     // 辅助方法：获取连接优先级（可根据端口或域名判断）
     private func getConnectionPriority() -> ConnectionPriority? {
-        // 例如：HTTPS 连接优先级更高
-        if destPort == 443 {
-            return .high
-        } else if destPort == 80 {
-            return .normal
+        switch destPort {
+            case 5223: return .critical  // Apple Push
+            case 443: return .high      // HTTPS
+            case 80: return .normal     // HTTP
+            default: return .low
         }
-        return .low
     }
     
     
-    private enum ConnectionPriority {
-        case high, normal, low
-    }
+
 
     private func flushPendingData() async {
         guard socksState == .established, !pendingClientBytes.isEmpty else { return }
@@ -1002,7 +1087,7 @@ final actor TCPConnection {
 
 
         var dropped = 0
-        var idx = 1 // Keep first segment (usually TLS ClientHello)
+        let idx = 1 // Keep first segment (usually TLS ClientHello)
 
 
         while pendingBytesTotal > pendingSoftCapBytes && idx < pendingClientBytes.count { // PHASE1
@@ -1078,7 +1163,7 @@ final actor TCPConnection {
     private enum SocksReadError: Error { case closed }
 
     private func receiveExactly(_ n: Int) async throws -> Data {
-        guard let conn = socksConnection else { throw SocksReadError.closed }
+        guard socksConnection != nil else { throw SocksReadError.closed }
 
         var buf = Data()
         buf.reserveCapacity(n)
@@ -1325,28 +1410,62 @@ final actor TCPConnection {
     }
     
     private var keepAliveTimer: DispatchSourceTimer?
-    private let keepAliveInterval: TimeInterval = 30.0
+    
     private var lastActivityTime = Date()
     private var keepAliveProbesSent = 0
     private let maxKeepAliveProbes = 3
     
     private func startKeepAlive() {
+        
+        let interval = computeKeepAliveInterval(host: self.destinationHost, port: self.destPort)
+        self.keepAliveInterval = interval            // ← 统一来源
         keepAliveTimer = DispatchSource.makeTimerSource(queue: queue)
-        keepAliveTimer?.schedule(deadline: .now() + keepAliveInterval,
-                                 repeating: keepAliveInterval)
+        keepAliveTimer?.schedule(deadline: .now() + interval, repeating: interval)
         keepAliveTimer?.setEventHandler { [weak self] in
             guard let self = self else { return }
             Task.detached { [weak self] in
                 await self?.sendKeepAlive()
             }
         }
+        self.lastKeepAliveSent = Date()
         keepAliveTimer?.resume()
+        log("Keep-alive started with interval: \(interval)s for port \(destPort)")
+    }
+    
+    
+    
+    // TCPConnection.swift - 在类的属性部分添加
+    public var isHighTraffic: Bool = false
+    private var overflowCount: Int = 0
+    private var lastOverflowTime: Date?
+
+    // 添加获取溢出计数的方法
+    public func getOverflowCount() async -> Int {
+        return overflowCount
+    }
+
+    // 在处理缓冲区溢出的地方增加计数
+    private func handleBufferOverflow() async {
+        overflowCount += 1
+        lastOverflowTime = Date()
+        
+        let currentSize = recvBufferLimit
+        let newSize = min(currentSize * 2, 131072) // 最大128KB
+        
+        if currentSize < newSize {
+            log("[Buffer] Overflow detected (#\(overflowCount)), expanding from \(currentSize) to \(newSize)")
+            adjustBufferSize(newSize)
+            isHighTraffic = true
+        } else {
+            log("[Buffer] Maximum size reached, dropping packets (overflow count: \(overflowCount))")
+        }
     }
     
     // MARK: - Keep-Alive Implementation
     private func sendKeepAlive() async {
         // 检查连接是否活跃
         let timeSinceLastActivity = Date().timeIntervalSince(lastActivityTime)
+        
         
         // 如果最近有活动，跳过保活
         if timeSinceLastActivity < keepAliveInterval {
@@ -1368,7 +1487,7 @@ final actor TCPConnection {
         // 如果超过最大探测次数，关闭连接
         if keepAliveProbesSent >= maxKeepAliveProbes {
             log("Keep-alive timeout after \(maxKeepAliveProbes) probes, closing connection")
-            await close()
+            close()
         }
     }
 

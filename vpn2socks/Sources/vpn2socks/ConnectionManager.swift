@@ -11,8 +11,55 @@ import os.log
 
 private let logger = Logger(subsystem: "com.vpn2socks", category: "ConnectionManager")
 
-final actor ConnectionManager {
 
+final actor ConnectionManager {
+    private let pushPorts: Set<UInt16> = [5223, 5228, 5229, 5230, 443]
+    
+    func isPushConnection(_ c: TCPConnection) async -> Bool {  // 添加 async
+        let port = c.destPort                      // was: await c.destPort
+        if pushPorts.contains(port) { return true }
+
+        if port == 443 {
+            let host = (c.destinationHost)?.lowercased() ?? ""   // was: (await c.destinationHost)?
+            if host == "mtalk.google.com"
+                || host.hasSuffix(".push.apple.com")
+                || host == "api.push.apple.com" {
+                return true
+            }
+        }
+        return false
+    }
+    
+    private func protectPushService() async {
+        
+        
+        for (_, conn) in tcpConnections {
+            let port = conn.destPort
+            if port == 5223 || port == 5228 {
+                
+                // 确保Push连接有足够缓冲区
+                let currentBuffer = await conn.recvBufferLimit
+                if currentBuffer < 32 * 1024 {
+                    await conn.adjustBufferSize(48 * 1024)
+                    logger.info("[Push] Enhanced buffer for push service")
+                }
+            }
+        }
+    }
+    
+    private var processedPackets = Set<String>()
+    private let packetCacheTTL: TimeInterval = 1.0
+    // 添加连接优先级枚举定义
+    private enum ConnectionPriority: Int, Comparable {
+        case low = 0
+        case normal = 1
+        case high = 2
+        case critical = 3
+        
+        static func < (lhs: ConnectionPriority, rhs: ConnectionPriority) -> Bool {
+            return lhs.rawValue < rhs.rawValue
+        }
+    }
     // MARK: - Properties
 
     private let packetFlow: SendablePacketFlow
@@ -41,15 +88,15 @@ final actor ConnectionManager {
     private let statsInterval: TimeInterval = 30.0
 
     // CRITICAL: 降低限制以适应 iOS 内存约束
-    private let maxConnections = 35  // 从 100 降低
-    private let connectionTimeout: TimeInterval = 30.0  // 从 60 降低
-    private let maxIdleTime: TimeInterval = 10.0  // 积极的空闲超时
+    private let maxConnections = 60  // 从 100 降低
+    private let connectionTimeout: TimeInterval = 45.0  // 从 60 降低
+    private let maxIdleTime: TimeInterval = 20.0  // 积极的空闲超时
     
     // 内存管理阈值（MB）
-    private let memoryNormalMB: UInt64 = 25
-    private let memoryWarningMB: UInt64 = 30  // 从35MB降到30MB
-    private let memoryCriticalMB: UInt64 = 45
-    private let memoryEmergencyMB: UInt64 = 48
+    private let memoryNormalMB: UInt64 = 20     // 从25降低
+    private let memoryWarningMB: UInt64 = 35  // 从35MB降到30MB
+    private let memoryCriticalMB: UInt64 = 45   // 从45降低
+    private let memoryEmergencyMB: UInt64 = 55
     
     // 止血模式（你原有的 shedding 逻辑）
     private var shedding = false
@@ -77,7 +124,7 @@ final actor ConnectionManager {
     private var isMemoryPressure = false
     private var lastMemoryCheckTime = Date()
     private let memoryCheckInterval: TimeInterval = 5.0  // 每5秒检查内存
-
+    private var keepCritical: Bool = true
     // MARK: - Init
 
     init(packetFlow: SendablePacketFlow, fakeDNSServer: String) {
@@ -107,55 +154,156 @@ final actor ConnectionManager {
     }
     
     func emergencyCleanup() async {
-        logger.critical("[Memory] EMERGENCY cleanup - closing ALL connections")
-
-
-        // Stop intake & reading immediately
-        dropNewConnections = true
-        pausedReads = true
-
-
-        // Close all live conns
+        if !keepCritical {
+            // 完全清理模式 - 关闭所有连接
+            logger.critical("[Memory] EMERGENCY cleanup - closing ALL connections")
+            
+            // Stop intake & reading immediately
+            dropNewConnections = true
+            pausedReads = true
+            
+            // Close all live conns
+            for (key, conn) in tcpConnections {
+                await conn.close()
+                recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+            }
+            tcpConnections.removeAll(keepingCapacity: false)
+            pendingSyns.removeAll(keepingCapacity: false)
+            stats.activeConnections = 0
+            
+            lastICMPReply.removeAll(keepingCapacity: false)
+            autoreleasepool { }
+            
+            logger.critical("[Memory] Emergency cleanup complete")
+            
+            // Cooldowns
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                await self?.maybeUnpauseReadsAfterCooldown()
+            }
+            
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                await self?.maybeLiftIntakeBanAfterCooldown()
+            }
+            return
+        }
+        
+        // 保护模式：保留关键连接
+        var toClose: [String] = []
+        
         for (key, conn) in tcpConnections {
-        await conn.close()
-        recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+            // 检查是否是 Push 连接
+            if await isPushConnection(conn) {
+                logger.info("[Emergency] Keeping Push connection: \(key)")
+                continue
+            }
+            
+            // 检查是否是其他重要服务
+            let port = conn.destPort
+            if port == 443 {
+                if let host = conn.destinationHost,
+                   host.lowercased().contains("apple.com") || host.lowercased().contains("icloud.com") {
+                    logger.info("[Emergency] Keeping Apple service: \(key)")
+                    continue
+                }
+            }
+            
+            toClose.append(key)
         }
-        tcpConnections.removeAll(keepingCapacity: false)
-        pendingSyns.removeAll(keepingCapacity: false)
-        stats.activeConnections = 0
-
-
-        lastICMPReply.removeAll(keepingCapacity: false)
-        _ = autoreleasepool { }
-
-
-        logger.critical("[Memory] Emergency cleanup complete")
-
-
-        // PHASE1: Cooldowns —
-        // a) Always keep reads paused for 1.5s to let ARC/OS settle
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            await self?.maybeUnpauseReadsAfterCooldown()
+        
+        // 关闭非关键连接
+        for key in toClose {
+            if let conn = tcpConnections[key] {
+                await conn.close()
+                tcpConnections.removeValue(forKey: key)
+                recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+            }
         }
+        
+        logger.critical("[Emergency] Kept \(self.tcpConnections.count) critical connections, closed \(toClose.count)")
 
-
-        // b) Block new connections for 5s or until memory < critical
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            await self?.maybeLiftIntakeBanAfterCooldown()
-        }
     }
 
     // MARK: - Start
 
     private func startInternal() async {
-        startStatsTimer()
-        startMemoryMonitor()
-        startCleanupTask()
-        startAdaptiveBufferTask()  // 新增
-        startCleaner()
+        logger.info("[ConnectionManager] Starting all subsystems...")
+        
+        // 基础定时器
+        startStatsTimer()           // 统计输出
+        startMemoryMonitor()         // 内存监控
+        
+        // 清理任务
+        startCleanupTask()          // 定期清理
+        startCleaner()              // ICMP 清理
+        
+        // 优化任务
+        startAdaptiveBufferTask()   // 自适应缓冲
+        startHealthMonitor()        // 健康监控
+        startConnectionMonitor()    // 连接监控
+        startConnectionPoolOptimizer() // 连接池优化
+        
+        logger.info("[ConnectionManager] All subsystems started")
+        
+        // 开始处理数据包
         await readPackets()
+    }
+    
+    // 新增：健康监控任务
+    private func startHealthMonitor() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20_000_000_000) // 每20秒
+                guard let self = self else { break }
+                await self.monitorConnectionPool()
+            }
+        }
+    }
+
+    // 新增：连接监控任务
+    private func startConnectionMonitor() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000) // 每10秒
+                guard let self = self else { break }
+                await self.checkCriticalConnections()
+            }
+        }
+    }
+
+    // 新增：检查关键连接
+    private func checkCriticalConnections() async {
+        
+        var hasAnyPush = false
+        var missingPorts = Set<UInt16>()
+        let requiredPorts: Set<UInt16> = [5223, 5228, 5229, 5230]
+        var activePorts = Set<UInt16>()
+        
+        // 检查现有 Push 连接
+        for (_, conn) in tcpConnections {
+            if await isPushConnection(conn) {  // 添加 await
+                hasAnyPush = true
+                let port = conn.destPort  // 修改为 destPort
+                activePorts.insert(port)
+            }
+        }
+        
+        // 计算缺失的端口
+        missingPorts = requiredPorts.subtracting(activePorts)
+        
+        if !hasAnyPush {
+            logger.critical("[Monitor] ⚠️ NO Push connections active!")
+            // 触发告警或重连逻辑
+            await triggerPushReconnection()
+        } else if !missingPorts.isEmpty {
+            logger.warning("[Monitor] Missing Push ports: \(missingPorts)")
+        } else {
+            logger.info("[Monitor] ✅ Push services healthy")
+        }
+        
+        // 确保 Push 连接有足够资源
+        await protectPushService()
     }
     
     private func startMemoryMonitor() {
@@ -167,6 +315,19 @@ final actor ConnectionManager {
                 await self.checkMemoryPressure()
             }
         }
+    }
+    
+    private func triggerPushReconnection() async {
+        // 这里可以：
+        // 1. 通知应用层重新初始化 Push
+        // 2. 或者主动触发系统的网络重连
+        // 3. 记录事件供分析
+        
+        logger.critical("[Push] Triggering reconnection attempt")
+        lastPushReconnectTime = Date()
+        
+        // 通知应用层（如果有回调机制）
+        // notificationHandler?.pushConnectionLost()
     }
     
     private func checkMemoryPressure() async {
@@ -183,16 +344,17 @@ final actor ConnectionManager {
             await emergencyCleanup()
         } else if memoryMB >= memoryCriticalMB {
             logger.critical("⚠️ CRITICAL: Memory \(memoryMB)MB >= \(self.memoryCriticalMB)MB")
-            isMemoryPressure = true
-            shedding = true
-            pausedReads = true
+            /// 严重：保留核心连接
+            await trimConnections(targetMax: 10)
             dropNewConnections = true
-            await trimConnections(targetMax: 5)
         } else if memoryMB >= memoryWarningMB {
             logger.warning("⚠️ WARNING: Memory \(memoryMB)MB >= \(self.memoryWarningMB)MB")
-            isMemoryPressure = true
-            shedding = true
+            // 警告：温和限制
             await trimConnections(targetMax: maxConnsDuringShedding)
+            // 不立即禁止新连接，而是限流
+            if tcpConnections.count >= maxConnsDuringShedding {
+                dropNewConnections = true
+            }
         } else if memoryMB < memoryNormalMB && isMemoryPressure {
             logger.info("✅ Memory recovered: \(memoryMB)MB < \(self.memoryNormalMB)MB")
             isMemoryPressure = false
@@ -229,11 +391,12 @@ final actor ConnectionManager {
 
     private func startStatsTimer() {
         statsTimer?.cancel()
+        logger.info("[Stats] Starting statistics timer (interval: 30s)")
+        
         statsTimer = Task { [weak self] in
             while !Task.isCancelled {
-                let interval = await self?.isMemoryPressure == true ? 60.0 : 30.0  // Fixed: Added .0 for TimeInterval
-                try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
                 guard let self = self else { break }
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
                 await self.printStats()
             }
         }
@@ -250,25 +413,253 @@ final actor ConnectionManager {
         }
     }
     
+    public var lastActivityTime = Date()
+    
     private func cleanupStaleConnections() async {
         let now = Date()
         var staleKeys: [String] = []
         
-        // Note: TCPConnection needs to implement isIdle method
-        // For now, we'll skip idle checking
-        // TODO: Add isIdle method to TCPConnection
-        
-        if !staleKeys.isEmpty {
-            logger.info("[Cleanup] Removing \(staleKeys.count) idle connections")
-            for key in staleKeys {
-                if let conn = tcpConnections[key] {
-                    await conn.close()
-                    tcpConnections.removeValue(forKey: key)
-                    recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+        for (key, conn) in tcpConnections {
+            // 检查是否是 Push 连接
+            if await isPushConnection(conn) {
+                // Push 连接给予更长的空闲时间
+                if let lastActivity = await conn.getLastActivityTime() {
+                    if now.timeIntervalSince(lastActivity) > 300 { // 5分钟
+                        staleKeys.append(key)
+                    }
+                }
+            } else {
+                // 普通连接正常清理
+                if let lastActivity = await conn.getLastActivityTime() {
+                    if now.timeIntervalSince(lastActivity) > 60 {
+                        staleKeys.append(key)
+                    }
                 }
             }
-            stats.activeConnections = tcpConnections.count
         }
+        
+        // 清理前再次确认保护 Push 服务
+        await protectPushService()
+        
+        // 执行清理
+        for key in staleKeys {
+            if let conn = tcpConnections[key] {
+                await conn.close()
+                tcpConnections.removeValue(forKey: key)
+                recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+            }
+        }
+    }
+    
+    // 2. 添加 checkIfPushServiceNeeded 方法
+    private func checkIfPushServiceNeeded(port: UInt16) async -> Bool {
+        // 检查是否有其他活跃的 Push 连接
+        for (_, conn) in tcpConnections {
+            let connPort = conn.destPort
+            if connPort == port {
+                // 已有同端口的连接，不需要重连
+                return false
+            }
+        }
+        // 没有找到相同端口的连接，需要重连
+        return true
+    }
+    
+    private func cleanupLowPriorityConnections() async {
+        var lowPriorityConnections: [(String, ConnectionPriority, Date?)] = []
+        
+        // 收集所有低优先级连接
+        for (key, conn) in tcpConnections {
+            let port = conn.destPort
+            let priority = getConnectionPriority(destPort: port)
+            
+            // 跳过关键服务
+            if port == 5223 || port == 5228 {
+                continue
+            }
+            
+            // 只收集低优先级连接
+            if priority <= .normal {
+                let lastActivity = await conn.getLastActivityTime()
+                lowPriorityConnections.append((key, priority, lastActivity))
+            }
+        }
+        
+        // 按优先级和活动时间排序
+        lowPriorityConnections.sort { (a, b) in
+            // 先按优先级排序（低优先级在前）
+            if a.1 != b.1 {
+                return a.1 < b.1
+            }
+            // 相同优先级按最后活动时间排序（久未使用的在前）
+            let aTime = a.2 ?? Date.distantPast
+            let bTime = b.2 ?? Date.distantPast
+            return aTime < bTime
+        }
+        
+        // 确定要关闭的连接数量
+        let targetCloseCount = min(
+            lowPriorityConnections.count,
+            max(1, tcpConnections.count / 3)  // 最多关闭1/3的连接
+        )
+        
+        // 关闭选中的连接
+        var closedCount = 0
+        for i in 0..<targetCloseCount {
+            let (key, priority, lastActivity) = lowPriorityConnections[i]
+            if let conn = tcpConnections[key] {
+                let idleTime = lastActivity.map { Date().timeIntervalSince($0) } ?? 0
+                logger.info("[Cleanup] Closing low priority connection \(key) (priority: \(priority.rawValue), idle: \(Int(idleTime))s)")
+                
+                await conn.close()
+                tcpConnections.removeValue(forKey: key)
+                recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+                closedCount += 1
+            }
+        }
+        
+        if closedCount > 0 {
+            stats.activeConnections = tcpConnections.count
+            logger.info("[Cleanup] Closed \(closedCount) low priority connections")
+        }
+    }
+    
+    private func monitorConnectionPool() async {
+        _ = tcpConnections.count
+        _ = getCurrentMemoryUsageMB()
+        
+        // 检查连接池健康度
+        let healthScore = calculateHealthScore()
+        
+        if healthScore < 0.5 {
+            logger.warning("[Health] Poor health: \(healthScore)")
+            
+            // 分级响应
+            if healthScore < 0.3 {
+                // 紧急：清理所有非关键连接
+                await emergencyCleanup(keepCritical: true)
+            } else if healthScore < 0.4 {
+                // 严重：清理低优先级和空闲连接
+                await cleanupLowPriorityConnections()
+            } else {
+                // 警告：只清理空闲超过30秒的
+                await cleanupIdleConnections(maxIdle: 30)
+            }
+        }
+    }
+    
+    private func emergencyCleanup(keepCritical: Bool) async {
+        for (key, conn) in tcpConnections {
+            let port = conn.destPort
+            
+            // 保留Push服务
+            if keepCritical && (port == 5223 || port == 5228) {
+                continue
+            }
+            
+            // 保留Apple服务
+            if keepCritical && port == 443 {
+                if let host = conn.destinationHost,
+                   host.contains("apple.com") {
+                    continue
+                }
+            }
+            
+            // 关闭其他所有连接
+            await conn.close()
+            tcpConnections.removeValue(forKey: key)
+            recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+        }
+        
+        logger.critical("[Emergency] Kept only critical connections")
+    }
+    
+    private func handleCriticalConnectionLoss(key: String, port: UInt16) async {
+        guard let conn = tcpConnections[key] else { return }
+        let isPush = await self.isPushConnection(conn)
+        guard isPush else { return }
+
+        logger.info("[Reconnect] Scheduling reconnection for push service on port \(port)")
+        lastPushReconnectTime = Date()
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if await self.checkIfPushServiceNeeded(port: port) {
+                logger.info("[Reconnect] Attempting to restore push connection")
+                // TODO: 触发重建（按你的项目实际接入点）
+            }
+        }
+    }
+
+    
+    private func calculateHealthScore() -> Double {
+        let connectionUtilization = Double(tcpConnections.count) / Double(maxConnections)
+        let failureRate = Double(stats.failedConnections) / max(1.0, Double(stats.totalConnections))
+        let memoryPressure = Double(getCurrentMemoryUsageMB()) / Double(memoryWarningMB)
+        
+        // 计算健康分数（0-1，越高越健康）
+        let score = 1.0 - (connectionUtilization * 0.3 + failureRate * 0.4 + memoryPressure * 0.3)
+        return max(0.0, min(1.0, score))
+    }
+    
+    private func makeRoomForHighPriorityConnection(priority: ConnectionPriority) async -> Bool {
+        // 收集所有可关闭的连接（不包括关键连接）
+            var victims: [(String, ConnectionPriority, Date?)] = []
+            
+            for (key, conn) in tcpConnections {
+                let port = conn.destPort
+                let connPriority = getConnectionPriority(destPort: port)
+                
+                // 永远不关闭 Push 服务
+                if port == 5223 || port == 5228 {
+                    continue
+                }
+                
+                // 只收集比请求优先级低的连接
+                if connPriority < priority {
+                    let lastActivity = await conn.getLastActivityTime()
+                    victims.append((key, connPriority, lastActivity))
+                }
+            }
+            
+            // 如果没有可关闭的连接，尝试关闭同优先级但空闲的
+            if victims.isEmpty && priority == .high {
+                for (key, conn) in tcpConnections {
+                    let port = conn.destPort
+                    let connPriority = getConnectionPriority(destPort: port)
+                    
+                    if connPriority == .high {
+                        if let lastActivity = await conn.getLastActivityTime(),
+                           Date().timeIntervalSince(lastActivity) > 30 {
+                            victims.append((key, connPriority, lastActivity))
+                        }
+                    }
+                }
+            }
+            
+            guard !victims.isEmpty else {
+                logger.error("[Priority] No connections available to close")
+                return false
+            }
+            
+            // 按活动时间排序，关闭最久未使用的
+            victims.sort { (a, b) in
+                let aTime = a.2 ?? Date.distantPast
+                let bTime = b.2 ?? Date.distantPast
+                return aTime < bTime
+            }
+            
+            // 关闭第一个
+            let victim = victims[0]
+            if let conn = tcpConnections[victim.0] {
+                logger.info("[Priority] Closing \(victim.0) (priority: \(victim.1.rawValue)) for high priority connection")
+                await conn.close()
+                tcpConnections.removeValue(forKey: victim.0)
+                recentlyClosed[victim.0] = Date().addingTimeInterval(tombstoneTTL)
+                stats.activeConnections = tcpConnections.count
+                return true
+            }
+            
+            return false
     }
     
     private func cleanupTombstones() async {
@@ -319,6 +710,181 @@ final actor ConnectionManager {
               - Load Factor: \(String(format: "%.1f%%", Double(self.tcpConnections.count) / Double(self.maxConnections) * 100))
               - Memory Pressure: \(self.getMemoryPressureLevel())
         """)
+        
+        // 更新最近拒绝计数
+        updateRecentRejections()
+        
+        // 计算拒绝率
+        let rejectionRate = stats.totalConnections > 0
+            ? (Double(stats.failedConnections) / Double(stats.totalConnections) * 100.0)
+            : 0.0
+        
+        logger.info("""
+            Performance Metrics:
+              - Connection Success Rate: \(String(format: "%.1f%%", 100.0 - rejectionRate))
+              - Avg Connection Lifetime: \(self.calculateAvgLifetime())
+              - Peak Connections: \(self.peakConnections)
+              - Rejection Count (last min): \(self.recentRejections)
+        """)
+        
+        // 如果拒绝率过高，自动调整
+        if rejectionRate > 20 {
+            logger.warning("High rejection rate detected, consider increasing connection limit")
+        }
+        
+        // 修复质量统计部分
+        let avgQuality = self.connectionQualities.values  // 添加 self.
+                .map { $0.score }
+                .reduce(0, +) / Double(max(1, self.connectionQualities.count))  // 添加 self.
+            
+        // 计算高流量连接数
+        var highTrafficCount = 0
+        for (_, conn) in tcpConnections {
+            if await conn.isHighTraffic {
+                highTrafficCount += 1
+            }
+        }
+    
+        
+        logger.info("""
+            Connection Quality:
+              - Average Score: \(String(format: "%.2f", avgQuality))
+              - Buffer Overflows: \(self.connectionQualities.values.map { $0.overflowCount }.reduce(0, +))  // 添加 self.
+              - High Traffic Conns: \(highTrafficCount)
+            """)
+            
+        var pushTotal = 0
+        var pushBufferSum = 0
+        var byPort: [UInt16:Int] = [5223:0, 5228:0, 5229:0, 5230:0, 443:0]
+
+        for (_, conn) in tcpConnections {
+            if await self.isPushConnection(conn) {
+                pushTotal += 1
+                pushBufferSum += await conn.recvBufferLimit
+                let p = conn.destPort
+                if byPort[p] != nil { byPort[p]! += 1 }
+                else if p == 443 { byPort[443]! += 1 } // 443 + SNI 兜底计到 443
+            }
+        }
+
+        let avgPushBuf = pushTotal > 0 ? pushBufferSum / pushTotal : 0
+
+        logger.info("""
+        Push Service Status:
+          - Active Connections: \(pushTotal)
+          - By Port: 5223=\(byPort[5223]!), 5228=\(byPort[5228]!), 5229=\(byPort[5229]!), 5230=\(byPort[5230]!), 443=\(byPort[443]!)
+          - Avg Buffer Size: \(avgPushBuf) bytes
+          - Last Reconnect: \(self.timeSinceLastPushReconnect())
+        """)
+        
+        var pushConnections: [String: Int] = [:]
+            var pushBufferTotal = 0
+            
+        for (_, conn) in tcpConnections {
+                if await isPushConnection(conn) {
+                    let port = conn.destPort
+                    let buffer = await conn.recvBufferLimit
+                    
+                    let service = identifyPushService(port: port, conn: conn)
+                    pushConnections[service] = (pushConnections[service] ?? 0) + 1
+                    pushBufferTotal += buffer
+                }
+            }
+            
+            logger.info("""
+            Push Service Health:
+              - Apple Push (5223): \(pushConnections["APNs"] ?? 0)
+              - FCM (5228): \(pushConnections["FCM"] ?? 0)
+              - Other Push: \(pushConnections["Other"] ?? 0)
+              - Total Buffer: \(self.formatBytes(pushBufferTotal))
+              - Protection Active: \(pushConnections.count > 0 ? "✅" : "❌")
+            """)
+    }
+    
+    private func identifyPushService(port: UInt16, conn: TCPConnection) -> String {
+        switch port {
+        case 5223: return "APNs"
+        case 5228: return "FCM"
+        case 5229, 5230: return "FCM-Alt"
+        case 443:
+            // 可以根据 SNI 或 IP 进一步识别
+            return "Push-HTTPS"
+        default: return "Other"
+        }
+    }
+    
+    private var lastPushReconnectTime = Date.distantPast
+    // 添加辅助方法
+    private func timeSinceLastPushReconnect() -> String {
+        let interval = Date().timeIntervalSince(lastPushReconnectTime)
+        if interval < 60 {
+            return "\(Int(interval))s ago"
+        } else if interval < 3600 {
+            return "\(Int(interval / 60))m ago"
+        } else if interval < 86400 {
+            return "\(Int(interval / 3600))h ago"
+        } else {
+            return "Never"
+        }
+    }
+    
+    // 定期评估连接质量
+    private func evaluateConnectionQuality() async {
+        for (key, conn) in tcpConnections {
+            var quality = connectionQualities[key] ?? ConnectionQuality(key: key)
+            
+            // 更新质量指标
+            quality.overflowCount = await conn.getOverflowCount()
+            quality.lastUpdate = Date()
+            
+            connectionQualities[key] = quality
+            
+            // 如果质量太差，考虑关闭并重建
+            if quality.score < 0.3 {
+                logger.warning("[Quality] Poor connection quality for \(key): \(quality.score)")
+                // 可以触发重连逻辑
+            }
+        }
+    }
+    
+    private var connectionQualities: [String: ConnectionQuality] = [:]
+    
+    private struct ConnectionQuality {
+        let key: String
+        var rtt: TimeInterval = 0
+        var packetLoss: Double = 0
+        var throughput: Double = 0
+        var overflowCount: Int = 0
+        var lastUpdate: Date = Date()
+        
+        var score: Double {
+            // 计算质量分数（0-1）
+            let rttScore = max(0, 1 - (rtt / 1.0)) // RTT < 1秒为好
+            let lossScore = max(0, 1 - packetLoss)
+            let overflowScore = max(0, 1 - Double(overflowCount) / 10.0)
+            return (rttScore + lossScore + overflowScore) / 3.0
+        }
+    }
+    
+    private var peakConnections: Int = 0
+    private var recentRejections: Int = 0
+    private var lastRejectionsReset = Date()
+    private var connectionStartTimes: [String: Date] = [:]
+    private var connectionLifetimes: [TimeInterval] = []
+    
+    private func calculateAvgLifetime() -> String {
+        guard !connectionLifetimes.isEmpty else { return "N/A" }
+        let avg = connectionLifetimes.reduce(0, +) / Double(connectionLifetimes.count)
+        return String(format: "%.1fs", avg)
+    }
+
+    private func updateRecentRejections() {
+        let now = Date()
+       // 每分钟重置一次
+       if now.timeIntervalSince(lastRejectionsReset) >= 60 {
+           recentRejections = 0
+           lastRejectionsReset = now
+       }
     }
 
     private func formatUptime(_ seconds: TimeInterval) -> String {
@@ -354,7 +920,7 @@ final actor ConnectionManager {
 
 
             for pkt in batch {
-            _ = autoreleasepool {
+                autoreleasepool {
                 if let ip = IPv4Packet(data: pkt) {
                     switch ip.`protocol` {
                         case 6: Task { await self.handleTCPPacket(ip) }
@@ -384,34 +950,41 @@ final actor ConnectionManager {
         let current = tcpConnections.count
         guard current > targetMax else { return }
         
-        let now = Date()
-        guard now.timeIntervalSince(lastTrimTime) >= trimCooldown else { return }
-        lastTrimTime = now
+        // 先保护 Push 服务
+        await protectPushService()
         
-        let needClose = current - targetMax
+        // 收集可关闭的连接（排除 Push）
+        var victims: [(String, TCPConnection, Date?)] = []
         
-        // 优先关闭空闲连接
-        var victims: [String] = []
-        
-        // TODO: When TCPConnection has isIdle method, use it here
-        // For now, just close oldest connections
-        let keys = Array(tcpConnections.keys.sorted().prefix(needClose))
-        victims.append(contentsOf: keys)
-        
-        // 执行关闭
-        var closed = 0
-        for key in victims {
-            if let conn = tcpConnections[key] {
-                await conn.close()
-                if tcpConnections.removeValue(forKey: key) != nil {
-                    closed += 1
-                    recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
-                }
+        for (key, conn) in tcpConnections {
+            // 跳过 Push 连接
+            if await isPushConnection(conn) {
+                continue
             }
+            
+            let lastActivity = await conn.getLastActivityTime()
+            victims.append((key, conn, lastActivity))
+        }
+        
+        // 按活动时间排序
+        victims.sort { (a, b) in
+            let aTime = a.2 ?? Date.distantPast
+            let bTime = b.2 ?? Date.distantPast
+            return aTime < bTime
+        }
+        
+        // 关闭需要的数量
+        let needClose = current - targetMax
+        for i in 0..<min(needClose, victims.count) {
+            let (key, conn, _) = victims[i]
+            await conn.close()
+            tcpConnections.removeValue(forKey: key)
+            recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
         }
         
         stats.activeConnections = tcpConnections.count
-        logger.warning("[Trim] Closed \(closed) connections (remaining: \(self.tcpConnections.count))")
+        logger.info("[Trim] Protected Push connections, closed \(min(needClose, victims.count)) others")
+
     }
 
     // MARK: - UDP/DNS (保持原有逻辑)
@@ -449,7 +1022,23 @@ final actor ConnectionManager {
 
     private func handleTCPPacket(_ ipPacket: IPv4Packet) async {
         guard let tcpSegment = TCPSegment(data: ipPacket.payload) else { return }
-
+        // 创建唯一标识符
+        let packetID = "\(ipPacket.sourceAddress):\(tcpSegment.sourcePort)-\(ipPacket.destinationAddress):\(tcpSegment.destinationPort)-\(tcpSegment.sequenceNumber)"
+        
+        // 检查是否已处理
+        if processedPackets.contains(packetID) {
+            return // 跳过重复包
+        }
+        
+        // 记录已处理
+        processedPackets.insert(packetID)
+        
+        // 定时清理缓存
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(packetCacheTTL * 1_000_000_000))
+            processedPackets.remove(packetID)
+        }
+        
         let key = makeConnectionKey(
             srcIP: ipPacket.sourceAddress,
             srcPort: tcpSegment.sourcePort,
@@ -487,10 +1076,79 @@ final actor ConnectionManager {
             handleOrphanPacket(key: key, tcpSegment: tcpSegment)
         }
     }
+    
+    private func getConnectionPriority(destPort: UInt16) -> ConnectionPriority {
+        // 不再需要 conn 参数，直接根据端口判断基础优先级
+        switch destPort {
+        case 5223, 5228, 5229, 5230: return .critical  // Push 服务
+        case 443: return .high      // HTTPS
+        case 80: return .normal     // HTTP
+        default: return .low
+        }
+    }
+    
+    private func closeLowPriorityConnection() async {
+        // 查找低优先级连接
+        var lowestPriorityKey: String?
+        var lowestPriority = ConnectionPriority.critical
+        
+        for (key, conn) in tcpConnections {
+            let port = conn.destPort
+            let priority = getConnectionPriority(destPort: port)
+            
+            if priority < lowestPriority {
+                lowestPriority = priority
+                lowestPriorityKey = key
+            }
+        }
+        
+        // 关闭找到的低优先级连接
+        if let key = lowestPriorityKey, let conn = tcpConnections[key] {
+            logger.info("[Priority] Closing low priority connection \(key) to make room")
+            await conn.close()
+            tcpConnections.removeValue(forKey: key)
+            recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+            stats.activeConnections = tcpConnections.count
+        }
+    }
 
     private func handleSYN(ipPacket: IPv4Packet, tcpSegment: TCPSegment, key: String) async {
+        
+        let priority = getConnectionPriority(destPort: tcpSegment.destinationPort)
+                
+        // 内存压力下的优先级判断
+        if isMemoryPressure {
+            if priority < .high {
+                stats.failedConnections += 1
+                recentRejections += 1
+                updateRecentRejections()
+                logger.info("[Priority] Rejecting low priority connection under memory pressure")
+                return
+            }
+        }
+        
+        // 连接数达到限制时的智能处理
+        if tcpConnections.count >= maxConnections {
+            // 高优先级连接尝试腾出空间
+            if priority >= .high {
+                let madeRoom = await makeRoomForHighPriorityConnection(priority: priority)
+                if !madeRoom {
+                    stats.failedConnections += 1
+                    recentRejections += 1
+                    logger.warning("[Priority] Cannot make room for high priority connection")
+                    return
+                }
+            } else {
+                // 低优先级直接拒绝
+                stats.failedConnections += 1
+                recentRejections += 1
+                logger.info("[Priority] Rejecting low priority connection, limit reached")
+                return
+            }
+        }
+        
         // 内存压力下拒绝新连接
-        if isMemoryPressure || dropNewConnections {
+        if dropNewConnections {
             stats.failedConnections += 1
             if (stats.failedConnections % logSampleN) == 0 {
                 logger.warning("[Memory] Rejecting connection under pressure: \(key)")
@@ -540,16 +1198,16 @@ final actor ConnectionManager {
             }
         }
         
-        // 计算动态缓冲区大小
-           let bufferSize = adaptiveBufferSize()
-           let pressureLevel = getMemoryPressureLevel()
-           
-           // 根据内存压力进一步调整
-           let finalBufferSize = pressureLevel >= 2
-               ? bufferSize / 2  // 内存压力大时减半
-               : bufferSize
+        // 创建连接时记录开始时间
+        connectionStartTimes[key] = Date()
         
+        // FIX: Removed the second, invalid redeclaration of 'priority'
+        let bufferSize = calculateBufferSizeForPriority(priority)
         
+        // 更新峰值连接数
+        if tcpConnections.count > peakConnections {
+            peakConnections = tcpConnections.count
+        }
 
         // 创建连接（使用减小的缓冲区）
         let newConn = TCPConnection(
@@ -562,18 +1220,20 @@ final actor ConnectionManager {
             destinationHost: domainForSocks,
             initialSequenceNumber: tcpSegment.sequenceNumber,
             tunnelMTU: 1400,
-            recvBufferLimit: 32 * 1024  // 减小缓冲区
+            recvBufferLimit: bufferSize // 使用计算后的缓冲区大小
         )
 
         tcpConnections[key] = newConn
         stats.totalConnections += 1
         stats.activeConnections = tcpConnections.count
 
+        // FIX: The ambiguity is resolved by removing the duplicate variables above.
         await newConn.acceptClientSyn(tcpHeaderAndOptions: Data(tcpSlice))
 
         // 记录日志（调试用）
         if stats.totalConnections % 10 == 0 {
-            logger.debug("[Adaptive] Buffer size: \(finalBufferSize) bytes for \(self.tcpConnections.count)/\(self.maxConnections) connections")
+             // The original `finalBufferSize` is no longer defined, updated log message
+            logger.debug("[Adaptive] Buffer size: \(bufferSize) bytes for \(self.tcpConnections.count)/\(self.maxConnections) connections")
         }
     
         // 启动连接
@@ -583,15 +1243,120 @@ final actor ConnectionManager {
             await self.finishAndCleanup(key: key, dstIP: dstIP)
         }
     }
+    
+    // 新增：根据优先级计算缓冲区大小
+    private func calculateBufferSizeForPriority(_ priority: ConnectionPriority) -> Int {
+        switch priority {
+        case .critical:
+            return 64 * 1024  // 48KB for critical connections
+        case .high:
+            return 48 * 1024  // 32KB for high priority
+        case .normal:
+            return 32 * 1024  // 16KB for normal
+        case .low:
+            return 16 * 1024   // 8KB for low priority
+        }
+    }
 
     private func handleConnectionClose(key: String) async {
         guard let connection = tcpConnections[key] else { return }
-        logger.debug("[Connection] Closing: \(key)")
+        
+        let port = connection.destPort
+        let priority = getConnectionPriority(destPort: port)
+        
+        logger.debug("[Connection] Closing: \(key) (priority: \(priority.rawValue))")
+        
         await connection.close()
         tcpConnections.removeValue(forKey: key)
         recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
         stats.activeConnections = tcpConnections.count
+        
+        // 对于关键连接，触发重连机制
+        if priority == .critical {
+            await handleCriticalConnectionLoss(key: key, port: port)
+        }
     }
+    
+    private func startConnectionPoolOptimizer() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000) // 每30秒
+                guard let self = self else { break }
+                await self.optimizeConnectionPool()
+            }
+        }
+    }
+    
+    private func optimizeConnectionPool() async {
+        let memoryMB = getCurrentMemoryUsageMB()
+        let activeCount = tcpConnections.count
+        let healthScore = calculateHealthScore()
+        
+        logger.info("""
+        [Optimizer] Pool status:
+        - Connections: \(activeCount)/\(self.maxConnections)  // 添加 self
+        - Memory: \(memoryMB)MB
+        - Health Score: \(String(format: "%.2f", healthScore))
+        """)
+        
+        // 根据健康分数调整策略
+        if healthScore < 0.3 {
+            // 健康度很差，激进清理
+            logger.warning("[Optimizer] Poor health, aggressive cleanup triggered")
+            await trimConnections(targetMax: self.maxConnections / 2)  // 添加 self
+        } else if healthScore < 0.5 {
+            // 健康度一般，温和清理
+            logger.info("[Optimizer] Moderate health, gentle cleanup triggered")
+            await cleanupIdleConnections(maxIdle: 30)
+        } else if healthScore > 0.8 && activeCount < self.maxConnections / 2 {  // 添加 self
+            // 健康度良好且连接数较少，可以增加缓冲区
+            await increaseBuffersForActiveConnections()
+        }
+    }
+
+    // 新增：清理空闲连接
+    private func cleanupIdleConnections(maxIdle: TimeInterval) async {
+        let now = Date()
+        var idleConnections: [(String, TimeInterval)] = []
+        
+        for (key, conn) in tcpConnections {
+            if let lastActivity = await conn.getLastActivityTime() {
+                let idleTime = now.timeIntervalSince(lastActivity)
+                if idleTime > maxIdle {
+                    idleConnections.append((key, idleTime))
+                }
+            }
+        }
+        
+        // 按空闲时间排序，优先关闭最久未使用的
+        idleConnections.sort { $0.1 > $1.1 }
+        
+        // 关闭前 25% 最空闲的连接
+        let toClose = max(1, idleConnections.count / 4)
+        for i in 0..<min(toClose, idleConnections.count) {
+            let (key, idleTime) = idleConnections[i]
+            if let conn = tcpConnections[key] {
+                logger.info("[Cleanup] Closing idle connection \(key) (idle: \(Int(idleTime))s)")
+                await conn.close()
+                tcpConnections.removeValue(forKey: key)
+                recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+            }
+        }
+        
+        stats.activeConnections = tcpConnections.count
+    }
+
+    // 新增：为活跃连接增加缓冲区
+    private func increaseBuffersForActiveConnections() async {
+        for (_, conn) in tcpConnections {
+            let currentBuffer = await conn.recvBufferLimit
+            if currentBuffer < 32 * 1024 {
+                await conn.adjustBufferSize(currentBuffer + 8 * 1024)
+            }
+        }
+        logger.info("[Optimizer] Increased buffers for active connections")
+    }
+    
 
     private func handleEstablishedConnection(
         connection: TCPConnection,
@@ -626,14 +1391,27 @@ final actor ConnectionManager {
 
     private func finishAndCleanup(key: String, dstIP: IPv4Address) async {
         logger.debug("[Connection] Completed: \(key)")
-
-        if await dnsInterceptor.contains(dstIP) {
-            await dnsInterceptor.release(fakeIP: dstIP)
-        }
-        
-        tcpConnections.removeValue(forKey: key)
-        recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
-        stats.activeConnections = tcpConnections.count
+           
+       // 计算连接生命周期
+       if let startTime = connectionStartTimes[key] {
+           let lifetime = Date().timeIntervalSince(startTime)
+           connectionLifetimes.append(lifetime)
+           
+           // 保持最近100个连接的生命周期记录
+           if connectionLifetimes.count > 100 {
+               connectionLifetimes.removeFirst()
+           }
+           
+           connectionStartTimes.removeValue(forKey: key)
+       }
+       
+       if await dnsInterceptor.contains(dstIP) {
+           await dnsInterceptor.release(fakeIP: dstIP)
+       }
+       
+       tcpConnections.removeValue(forKey: key)
+       recentlyClosed[key] = Date().addingTimeInterval(tombstoneTTL)
+       stats.activeConnections = tcpConnections.count
     }
 
     func bumpSentBytes(_ n: Int) async {
@@ -815,7 +1593,7 @@ final actor ConnectionManager {
     private func startCleaner() {
         Task.detached { [weak self] in
             while let strongSelf = self {
-                try? await Task.sleep(nanoseconds: UInt64(await strongSelf.cleanupInterval * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(strongSelf.cleanupInterval * 1_000_000_000))
                 await strongSelf.cleanExpiredICMPReplies()
             }
         }
