@@ -8,6 +8,7 @@
 import NetworkExtension
 import Network
 
+
 open class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private var connectionManager: ConnectionManager?
@@ -24,37 +25,35 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
         let ip = "172.16.0.1"
         let mask = "255.255.255.0"
         let fakeDNS = "172.16.0.2"
-        
+
         let v4 = NEIPv4Settings(addresses: [ip], subnetMasks: [mask])
-        
+
         // Include routes for our fake IP range (RFC 2544 test net)
         // Route 198.18.0.0/15 so packets to fake IPs go into the tunnel
         v4.includedRoutes = [
-            .default(), // full-tunnel; remove this if you only want to hijack fake IPs
+            NEIPv4Route.default(), // full-tunnel; remove this if you only want to hijack fake IPs
             NEIPv4Route(destinationAddress: "198.18.0.0", subnetMask: "255.254.0.0")
         ]
-
         NSLog("[PacketTunnelProvider] Routing includes 198.18.0.0/15 for fake IPs")
 
-        
         // Exclude local networks to avoid conflicts
         v4.excludedRoutes = [
             NEIPv4Route(destinationAddress: "192.168.0.0", subnetMask: "255.255.0.0"),
             NEIPv4Route(destinationAddress: "10.0.0.0", subnetMask: "255.0.0.0"),
-//            NEIPv4Route(destinationAddress: "172.16.0.0", subnetMask: "255.240.0.0"),
+            // NEIPv4Route(destinationAddress: "172.16.0.0", subnetMask: "255.240.0.0"),
             NEIPv4Route(destinationAddress: "127.0.0.0", subnetMask: "255.0.0.0"),
             NEIPv4Route(destinationAddress: "169.254.0.0", subnetMask: "255.255.0.0")
         ]
-        
         settings.ipv4Settings = v4
-        
-//        let v6 = NEIPv6Settings(addresses: ["fd00::1"], networkPrefixLengths: [64])
-//        v6.includedRoutes = [ NEIPv6Route.default() ]   // 把所有 IPv6 也进隧道
-//        settings.ipv6Settings = v6
+
+        // 如果暂时不需要 v6，可保持注释，避免多余路径影响
+        // let v6 = NEIPv6Settings(addresses: ["fd00::1"], networkPrefixLengths: [64])
+        // v6.includedRoutes = [ NEIPv6Route.default() ]
+        // settings.ipv6Settings = v6
 
         settings.dnsSettings = NEDNSSettings(servers: [fakeDNS])
         settings.mtu = 1400  // Set MTU to avoid fragmentation issues
-        
+
         NSLog("[PacketTunnelProvider] DNS trap set for \(fakeDNS)")
         NSLog("[PacketTunnelProvider] Routing includes 10.8.0.0/16 for fake IPs")
 
@@ -82,7 +81,9 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
     nonisolated
     open override func stopTunnel(with reason: NEProviderStopReason,
                                   completionHandler: @escaping () -> Void) {
-        NSLog("[PacketTunnelProvider] Stopping tunnel.")
+        NSLog("[PacketTunnelProvider] Stopping tunnel (reason=\(reason.rawValue)).")
+        // Graceful shutdown (your ConnectionManager.swift has prepareForStop())
+        self.connectionManager?.prepareForStop()
         self.connectionManager = nil
         completionHandler()
     }

@@ -625,4 +625,13 @@ final actor ConnectionManager {
         lastICMPReply = lastICMPReply.filter { now.timeIntervalSince($0.value) < cleanupInterval }
         NSLog("[ConnectionManager] Cleaned up expired ICMP entries, left=\(lastICMPReply.count)")
     }
+    
+    
+}
+
+extension ConnectionManager {
+    nonisolated func prepareForStop() {
+        // 可以在这里做 flush stats、tombstone 清理、防止 RST 风暴等
+        NSLog("[ConnectionManager] prepareForStop called")
+    }
 }
