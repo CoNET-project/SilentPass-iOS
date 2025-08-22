@@ -3,7 +3,7 @@
 //  vpn2socks
 //
 //  Created by peter on 2025-08-17.
-//  Updated with complete concurrency safety for Swift 6
+//  Updated with complete concurrency safety for Swift 6 + APNs direct routing
 //
 import NetworkExtension
 import Network
@@ -35,7 +35,7 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
         // Lower thread priority
         Thread.current.qualityOfService = .utility
         
-        // Configure TUN settings
+        // Configure TUN settings with APNs exclusions
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         let ip = "172.16.0.1"
         let mask = "255.255.255.0"
@@ -43,28 +43,44 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
         
         let v4 = NEIPv4Settings(addresses: [ip], subnetMasks: [mask])
         
+        // ✅ 修改路由配置：排除 APNs 网段和域名
         v4.includedRoutes = [
-            NEIPv4Route.default(),
-            NEIPv4Route(destinationAddress: "198.18.0.0", subnetMask: "255.254.0.0")
+//            NEIPv4Route.default(),
+            NEIPv4Route(destinationAddress: "172.16.0.2", subnetMask: "255.255.255.255"),
+            NEIPv4Route(destinationAddress: "198.18.0.0", subnetMask: "255.254.0.0") // 仅 FakeIP /15
         ]
         NSLog("[PacketTunnelProvider] Routing includes 198.18.0.0/15 for fake IPs")
         
+        // ✅ 新增：排除苹果推送网段和其他本地网络
         v4.excludedRoutes = [
+            // 苹果推送服务网段 (17.0.0.0/8) - 核心APNs网段
+            NEIPv4Route(destinationAddress: "17.0.0.0", subnetMask: "255.0.0.0"),
+            // 本地网络
             NEIPv4Route(destinationAddress: "192.168.0.0", subnetMask: "255.255.0.0"),
             NEIPv4Route(destinationAddress: "10.0.0.0", subnetMask: "255.0.0.0"),
             NEIPv4Route(destinationAddress: "127.0.0.0", subnetMask: "255.0.0.0"),
-            NEIPv4Route(destinationAddress: "169.254.0.0", subnetMask: "255.255.0.0")
+            NEIPv4Route(destinationAddress: "169.254.0.0", subnetMask: "255.255.0.0"),
+            // 其他苹果服务网段
+            NEIPv4Route(destinationAddress: "23.0.0.0", subnetMask: "255.0.0.0"),        // Apple CDN
+            NEIPv4Route(destinationAddress: "143.224.0.0", subnetMask: "255.240.0.0"),   // Apple 服务
+            NEIPv4Route(destinationAddress: "144.178.0.0", subnetMask: "255.254.0.0"),   // Apple 服务备用
+            NEIPv4Route(destinationAddress: "199.47.192.0", subnetMask: "255.255.224.0") // Apple 推送备用
         ]
         settings.ipv4Settings = v4
         
-        settings.dnsSettings = NEDNSSettings(servers: [fakeDNS])
+        // ✅ DNS设置保持不变，但会在应用层做域名判断
+        let dns = NEDNSSettings(servers: [fakeDNS])
+        dns.matchDomains = [""] // 关键：让所有域名查询都走fakeDNS
+        settings.dnsSettings = dns
+        
         settings.mtu = 1400
         
         NSLog("[PacketTunnelProvider] DNS trap set for \(fakeDNS)")
+        NSLog("[PacketTunnelProvider] APNs traffic (17.0.0.0/8) will bypass tunnel")
         
         let startBox = StartCompletionBox(completionHandler)
 
-        // ✅ 用中介对象承接非 Sendable 的 provider/settings
+        // 用中介对象承接非 Sendable 的 provider/settings
         let applier = NetworkSettingsApplier(provider: self, settings: settings)
 
         Task {
@@ -75,7 +91,7 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
             }
 
             await TunnelSetupHelper.setupTunnel(
-                flowWrapper: flowWrapper,             // ← 传包装，而不是原始 packetFlow
+                flowWrapper: flowWrapper,
                 fakeDNS: fakeDNS,
                 stateManager: stateManager,
                 connectionStore: connectionStore
@@ -113,18 +129,18 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
         
         let stateManager = self.stateManager
 
-           // ✅ 只有在存在回调时才创建盒子；避免额外捕获
-       let dataBox = completionHandler.map { DataCompletionBox($0) }
+        // 只有在存在回调时才创建盒子；避免额外捕获
+        let dataBox = completionHandler.map { DataCompletionBox($0) }
 
-       Task {
-           let data = await TunnelSetupHelper.handleAppMessage(
-               message: message,
-               stateManager: stateManager
-           )
-           if let box = dataBox {
-               await box.call(data)
-           }
-       }
+        Task {
+            let data = await TunnelSetupHelper.handleAppMessage(
+                message: message,
+                stateManager: stateManager
+            )
+            if let box = dataBox {
+                await box.call(data)
+            }
+        }
     }
     
     open override func sleep(completionHandler: @escaping () -> Void) {
@@ -154,7 +170,7 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
 enum TunnelSetupHelper {
 
     static func setupTunnel(
-        flowWrapper: SendablePacketFlow,           // ✅ 改签名
+        flowWrapper: SendablePacketFlow,
         fakeDNS: String,
         stateManager: TunnelStateManager,
         connectionStore: ConnectionStore
@@ -162,7 +178,6 @@ enum TunnelSetupHelper {
         await stateManager.setupInitial()
         await stateManager.startMemoryMonitoring()
 
-        // ✅ 直接使用传入的 flowWrapper，不要再内部二次包装
         let manager = ConnectionManager(packetFlow: flowWrapper, fakeDNSServer: fakeDNS)
 
         await connectionStore.setManager(manager)
@@ -208,7 +223,7 @@ enum TunnelSetupHelper {
     }
 
     static func handleWake(stateManager: TunnelStateManager) {
-        Task.detached {    // 这里保留 detached 没问题，因为没有把系统回调跨发
+        Task.detached {
             await stateManager.checkMemoryUsage()
         }
     }
@@ -275,7 +290,6 @@ actor TunnelStateManager {
         )
         
         let handler = MemoryPressureHandler(source: source, owner: self)
-        // ✅ 显式声明一个 @Sendable thunk，闭包只捕获 handler（Sendable）
         let onPressure: @Sendable () -> Void = { handler.handle() }
         source.setEventHandler(handler: DispatchWorkItem(block: onPressure))
         
@@ -433,6 +447,7 @@ final class ErrorContinuationBox: @unchecked Sendable {
         cont = nil
     }
 }
+
 final class MemoryPressureHandler: @unchecked Sendable {
     private unowned(unsafe) let source: DispatchSourceMemoryPressure
     private weak var owner: TunnelStateManager?
@@ -456,8 +471,6 @@ final class MemoryPressureHandler: @unchecked Sendable {
         }
     }
 }
-// 让 withCheckedContinuation 的闭包只捕获本中介（@unchecked Sendable），
-// 避免直接在闭包里用非 Sendable 的 settings/provider。
 
 final class NetworkSettingsApplier: @unchecked Sendable {
     private unowned(unsafe) let provider: NEPacketTunnelProvider
@@ -467,7 +480,6 @@ final class NetworkSettingsApplier: @unchecked Sendable {
         self.settings = settings
     }
 
-    // ✅ 把 withCheckedContinuation 移到类内部，避免调用处产生 "sending" 闭包
     func apply() async -> Error? {
         await withCheckedContinuation { (cont: CheckedContinuation<Error?, Never>) in
             let box = ErrorContinuationBox(cont)
