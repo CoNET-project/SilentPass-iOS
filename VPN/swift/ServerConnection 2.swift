@@ -1,525 +1,494 @@
 import Foundation
 import Network
+import os
 
-/// 单个 SOCKS5 会话（直连上游）
-final class ServerConnection {
+public final class ServerConnection {
 
-    // MARK: - 基本属性
-    private let client: NWConnection
-    private let listenPort: UInt16
-    private let id: UInt64
-    private let onClose: ((ServerConnection) -> Void)?
+    public let id: UInt64
+    public let client: NWConnection
+    private let onClosed: ((UInt64) -> Void)?
 
+    private let logger: Logger
     private let queue: DispatchQueue
+    private let verbose: Bool
+
+    private var recvBuffer = Data()
+    private enum Phase {
+        case methodSelect
+        case requestHead
+        case requestAddr(ver: UInt8, cmd: UInt8, atyp: UInt8)
+        case connected(host: String, port: Int)
+        case bridged
+        case closed
+    }
+    private var phase: Phase = .methodSelect
     private var closed = false
+    private var handedOff = false
+    private var bridge: LayerMinusBridge?
 
-    // 上游直连
-    private var upstream: NWConnection?
-
-    // 握手/转发状态
-    private var clientReadEOF = false
-    private var upstreamReadEOF = false
-    private var didReplySuccess = false
-
-    // MARK: - 超时
-    private let connectTimeoutSec: TimeInterval = 10
-    private let idleTimeoutSec: TimeInterval = 60
-    private var connectDeadline: DispatchSourceTimer?
-    private var idleTimer: DispatchSourceTimer?
-
-    // 目的端口白名单
-    private let allowedPorts: Set<UInt16>? = nil
-
-    // MARK: - DNS 直连解析器（过滤 198.18/15 与私网）
-    enum DirectDNSError: Error { case timeout, badResponse }
-    
-    
-    var connectTitle = ""
-    struct DirectDNSResolver {
-        /// 解析首个可路由的 IPv4 地址
-        static func resolveIPv4(
-            host: String,
-            serverIPv4: String = "1.1.1.1",
-            timeout: TimeInterval = 2.0
-        ) async throws -> IPv4Address {
-
-            // 构造 DNS 报文: Header(12) + Question
-            let txid = UInt16.random(in: 0...UInt16.max)
-            var q = Data()
-            q.append(contentsOf: [UInt8(txid >> 8), UInt8(txid & 0xFF)]) // ID
-            q.append(0x01); q.append(0x00) // RD=1
-            q.append(0x00); q.append(0x01) // QDCOUNT=1
-            q.append(0x00); q.append(0x00) // ANCOUNT=0
-            q.append(0x00); q.append(0x00) // NSCOUNT=0
-            q.append(0x00); q.append(0x00) // ARCOUNT=0
-            for label in host.split(separator: ".") {
-                guard let lb = label.data(using: .utf8), lb.count > 0, lb.count < 64 else {
-                    throw DirectDNSError.badResponse
-                }
-                q.append(UInt8(lb.count)); q.append(lb)
-            }
-            q.append(0x00)
-            q.append(0x00); q.append(0x01) // QTYPE=A
-            q.append(0x00); q.append(0x01) // QCLASS=IN
-
-            let params = makeDirectUDPParameters()
-            let conn = NWConnection(host: NWEndpoint.Host(serverIPv4), port: 53, using: params)
-
-            // ready
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                conn.stateUpdateHandler = { st in
-                    switch st {
-                    case .ready: cont.resume()
-                    case .failed(let e): cont.resume(throwing: e)
-                    case .waiting(let e): cont.resume(throwing: e)
-                    default: break
-                    }
-                }
-                conn.start(queue: .global(qos: .userInitiated))
-            }
-
-            // 发送
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                conn.send(content: q, completion: .contentProcessed { e in
-                    if let e { cont.resume(throwing: e) } else { cont.resume() }
-                })
-            }
-
-            // 接收
-            let data = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-                conn.receiveMessage { data, _, _, error in
-                    if let error { cont.resume(throwing: error); return }
-                    guard let data else { cont.resume(throwing: DirectDNSError.timeout); return }
-                    cont.resume(returning: data)
-                }
-            }
-            conn.cancel()
-
-            // 解析应答
-            guard data.count >= 12 else { throw DirectDNSError.badResponse }
-            let rxid = (UInt16(data[0]) << 8) | UInt16(data[1])
-            guard rxid == txid else { throw DirectDNSError.badResponse }
-            let rcode = data[3] & 0x0F
-            guard rcode == 0 else { throw DirectDNSError.badResponse }
-
-            let qd = (Int(data[4]) << 8) | Int(data[5])
-            var an = (Int(data[6]) << 8) | Int(data[7])
-            var i = 12
-
-            // 跳过 Question
-            for _ in 0..<qd {
-                guard i < data.count else { throw DirectDNSError.badResponse }
-                while i < data.count, data[i] != 0 {
-                    let l = Int(data[i]); i += 1 + l
-                }
-                i += 1 /*root*/ + 4 /*QTYPE/QCLASS*/
-            }
-
-            // 读取 Answers
-            while an > 0, i + 12 <= data.count {
-                let type = (Int(data[i+2]) << 8) | Int(data[i+3])
-                let cls  = (Int(data[i+4]) << 8) | Int(data[i+5])
-                let rdlen = (Int(data[i+10]) << 8) | Int(data[i+11])
-                i += 12
-                guard i + rdlen <= data.count else { throw DirectDNSError.badResponse }
-                if type == 1, cls == 1, rdlen == 4 {
-                    let a = IPv4Address(data[i..<(i+4)])!
-                    if isRoutablePublicIPv4(a) { return a }
-                }
-                i += rdlen
-                an -= 1
-            }
-            throw DirectDNSError.badResponse
-        }
-
-        private static func isRoutablePublicIPv4(_ ip: IPv4Address) -> Bool {
-            let b = [UInt8](ip.rawValue)
-            let isPrivate =
-                b[0] == 10 || (b[0] == 172 && (b[1] >= 16 && b[1] <= 31)) ||
-                (b[0] == 192 && b[1] == 168)
-            let isLoopback = b[0] == 127
-            let isLinkLocal = (b[0] == 169 && b[1] == 254)
-            let isBenchmark = (b[0] == 198 && (b[1] & 0xFE) == 18) // 198.18/15
-            let isTestNet =
-                (b[0] == 192 && b[1] == 0 && b[2] == 2) ||
-                (b[0] == 198 && b[1] == 51 && b[2] == 100) ||
-                (b[0] == 203 && b[1] == 0 && b[2] == 113)
-            let isMulticast = (b[0] >= 224 && b[0] <= 239)
-            let isReservedHi = (b[0] >= 240)
-            return !(isPrivate || isLoopback || isLinkLocal || isBenchmark || isTestNet || isMulticast || isReservedHi)
-        }
-
-        private static func makeDirectUDPParameters() -> NWParameters {
-            let p = NWParameters.udp
-            // 允许所有接口类型，让系统选择最佳路径
-            // 不设置 prohibitedInterfaceTypes
-            if #available(iOS 15.0, macOS 12.0, *) {
-                p.preferNoProxies = true
-            }
-            return p
-        }
-    }
-
-    // MARK: - 生命周期
-    init(client: NWConnection, listenPort: UInt16, id: UInt64, onClose: ((ServerConnection) -> Void)? = nil) {
-        self.client = client
-        self.listenPort = listenPort
+    public init(
+        id: UInt64,
+        connection: NWConnection,
+        logger: Logger = Logger(subsystem: "VPN", category: "SOCKS5"),
+        verbose: Bool = true,
+        onClosed: ((UInt64) -> Void)? = nil
+    ) {
         self.id = id
-        self.onClose = onClose
-        self.queue = DispatchQueue(label: "socks5.connection.\(id)", qos: .userInitiated)
+        self.client = connection
+        self.logger = logger
+        self.verbose = verbose
+        self.onClosed = onClosed
+        self.queue = DispatchQueue(label: "ServerConnection.\(id)", qos: .userInitiated)
+        
+        // 简单的生命周期日志
+        log("🟢 CREATED ServerConnection #\(id)")
     }
 
-    deinit { NSLog("Socks5Connection deinit") }
+    @inline(__always)
+    private func log(_ msg: String) {
+        NSLog("[ServerConnection] #\(id) %@", msg)
+    }
 
-    // MARK: - 启动
-    func start() {
-        NSLog("SOCKS5 \(listenPort) connection \(id) will start")
+    public func start() {
         client.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
+            guard let self = self else { return }
             switch state {
             case .ready:
-                NSLog("SOCKS5 \(self.listenPort) connection \(self.id) ready")
-                self.bumpIdle()
-                self.readHandshake()
+                self.log("client ready; enter recv loop")
+                self.recvLoop()
             case .failed(let e):
-                self.logNWError(prefix: "client failed", e)
-                self.close()
+                self.log("client failed: \(e)")
+                self.close(reason: "client failed")
             case .cancelled:
-                self.close()
+                self.log("client cancelled")
+                self.close(reason: "client cancelled")
             default:
                 break
             }
         }
         client.start(queue: queue)
+        log("will start")
     }
 
-    /// 并发超限时用于快速拒绝
-    func startQuickReject() {
-        client.start(queue: queue)
-        client.receive(minimumIncompleteLength: 2, maximumLength: 2) { [weak self] _, _, _, _ in
-            guard let self else { return }
-            self.client.send(content: Data([0x05, 0xFF]), completion: .contentProcessed { _ in
-                self.close()
-            })
-        }
-    }
-
-    // MARK: - SOCKS 握手
-    private func readHandshake() {
-        // 读 VER + NMETHODS
-        client.receive(minimumIncompleteLength: 2, maximumLength: 2) { [weak self] head, _, _, err in
-            guard let self else { return }
-            self.bumpIdle()
-            if let err { self.fail(err); return }
-            guard let h = head, h.count == 2, h[0] == 0x05 else { self.close(); return }
-            let n = Int(h[1])
-
-            // 读 METHODS
-            self.client.receive(minimumIncompleteLength: n, maximumLength: n) { [weak self] methods, _, _, err in
-                guard let self else { return }
-                self.bumpIdle()
-                if let err { self.fail(err); return }
-                guard methods?.count == n else { self.close(); return }
-
-                // 选择无认证
-                self.client.send(content: Data([0x05, 0x00]), completion: .contentProcessed { sendErr in
-                    if let sendErr { self.fail(sendErr); return }
-                    NSLog("SOCKS5 handshake ok, no-auth selected")
-                    self.readRequest()
-                })
-            }
-        }
-    }
-
-    // MARK: - 解析请求
-    private func readRequest() {
-        // VER/CMD/RSV/ATYP
-        client.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] header, _, _, err in
-            guard let self else { return }
-            self.bumpIdle()
-            if let err { self.fail(err); return }
-            guard let h = header, h.count == 4, h[0] == 0x05 else { self.close(); return }
-
-            let cmd = h[1]
-            let atyp = h[3]
-
-            guard cmd == 0x01 else { // CONNECT only
-                self.reply(rep: 0x07)
-                self.close()
-                return
-            }
-            self.readDst(atyp: atyp)
-        }
-    }
-
-    private func readDst(atyp: UInt8) {
-        switch atyp {
-        case 0x01: // IPv4 + PORT
-            client.receive(minimumIncompleteLength: 6, maximumLength: 6) { [weak self] d, _, _, err in
-                guard let self else { return }
-                self.bumpIdle()
-                if let err { self.fail(err); return }
-                guard let d, d.count == 6 else { self.close(); return }
-                let host = d[0...3].map { String($0) }.joined(separator: ".")
-                let port = UInt16(d[4]) << 8 | UInt16(d[5])
-                self.connectTitle = "Connect to \(host):\(port)"
-                self.handleConnect(host: host, port: port, isDomain: false)
-            }
-
-        case 0x03: // DOMAIN: LEN + NAME + PORT
-            client.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] lenD, _, _, err in
-                guard let self else { return }
-                self.bumpIdle()
-                if let err { self.fail(err); return }
-                guard let lenD, lenD.count == 1 else { self.close(); return }
-                let n = Int(lenD[0])
-
-                self.client.receive(minimumIncompleteLength: n + 2, maximumLength: n + 2) { [weak self] rest, _, _, err in
-                    guard let self else { return }
-                    self.bumpIdle()
-                    if let err { self.fail(err); return }
-                    guard let rest, rest.count == n + 2 else { self.close(); return }
-                    let name = String(decoding: rest[0..<n], as: UTF8.self)
-                    let port = UInt16(rest[n]) << 8 | UInt16(rest[n+1])
-                    self.connectTitle = "Connect to \(name):\(port)"
-                    self.handleConnect(host: name, port: port, isDomain: true)
-                }
-            }
-
-        case 0x04: // IPv6 + PORT
-            client.receive(minimumIncompleteLength: 18, maximumLength: 18) { [weak self] d, _, _, err in
-                guard let self else { return }
-                self.bumpIdle()
-                if let err { self.fail(err); return }
-                guard let d, d.count == 18 else { self.close(); return }
-                let ip6 = Self.ipv6String(from: Array(d[0..<16]))
-                let port = UInt16(d[16]) << 8 | UInt16(d[17])
-                self.handleConnect(host: ip6, port: port, isDomain: false)
-            }
-
-        default:
-            reply(rep: 0x08) // Address type not supported
-            close()
-        }
-    }
-
-    private func handleConnect(host: String, port: UInt16, isDomain: Bool) {
-        NSLog("SOCKS5 CONNECT to \(host):\(port)")
-        guardPortOrReject(port) {
-            // Simply use system resolver for all connections
-            // This avoids potential issues with custom DNS resolution
-            connectUpstream(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!)
-        }
-    }
-
-    private func guardPortOrReject(_ port: UInt16, _ cont: () -> Void) {
-        if let allow = allowedPorts {
-            if allow.contains(port) { cont() } else { reply(rep: 0x07); close() }
-        } else {
-            cont() // 不限端口
-        }
-    }
-
-    // MARK: - 建立上游连接（先回 0x00 再开始转发）
-    private func connectUpstream(host: NWEndpoint.Host, port: NWEndpoint.Port) {
-        let params = Self.makeDirectTCPParameters()
-        let up = NWConnection(host: host, port: port, using: params)
-        self.upstream = up
-
-        startConnectDeadline()
-
-        up.stateUpdateHandler = { [weak self] st in
-            guard let self = self else { return }
-            switch st {
-            case .ready:
-                self.cancelConnectDeadline()
-                NSLog("SOCKS5 \(self.connectTitle) Upstream ready -> reply 0x00 then begin relay")
-                self.replyOKAndStartRelay()   // 先回成功
-            case .failed(let err):
-                self.fail(err, at: "up.state.failed")
-            case .cancelled:
-                self.close(reason: "up.cancelled")
-            default:
-                break
-            }
-        }
-        // 与 client 使用同队列，简化串行化
-        up.start(queue: self.queue)
-    }
-
-    private func replyOKAndStartRelay() {
-        // VER=5, REP=0, RSV=0, ATYP=IPv4, BND=0.0.0.0:0
-        let resp = Data([0x05, 0x00, 0x00, 0x01, 0,0,0,0, 0,0])
-        didReplySuccess = true
-        client.send(content: resp, completion: .contentProcessed { [weak self] _ in
-            self?.beginRelay()
-        })
-    }
-
-    private static func makeDirectTCPParameters() -> NWParameters {
-        let p = NWParameters.tcp
-        if let tcp = p.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
-            tcp.connectionTimeout = 10
-            tcp.enableKeepalive = true
-            tcp.keepaliveIdle = 60
-        }
-        // 重要：不设置任何接口限制，让系统选择最佳路径
-        // 不设置 prohibitedInterfaceTypes
-        // 不设置 requiredInterfaceType
-        
-        // 在 macOS 12+ 和 iOS 15+ 上，确保不走系统代理
-        if #available(iOS 15.0, macOS 12.0, *) {
-            p.preferNoProxies = true
-        }
-        return p
-    }
-
-    // MARK: - 开始双向转发
-    private func beginRelay() {
-        readFromClient()
-        readFromUpstream()
-    }
-
-    // 上游 -> 客户端
-    private func readFromUpstream() {
-        guard let up = upstream else { close(reason: "no-upstream"); return }
-
-        up.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self = self else { return }
-            if let error = error {
-                self.fail(error, at: "up.receive")
-                return
-            }
-            if let data, !data.isEmpty {
-                self.bumpIdle()
-                self.client.send(content: data, completion: .contentProcessed { [weak self] sendErr in
-                    if let sendErr { self?.fail(sendErr, at: "client.send(up->client)") }
-                })
-            }
-            if isComplete {
-                self.upstreamReadEOF = true
-                // 告知客户端写端结束
-                self.client.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .idempotent)
-                self.maybeClose()
-                return
-            }
-            self.readFromUpstream()
-        }
-    }
-
-    // 客户端 -> 上游
-    private func readFromClient() {
-        guard let up = upstream else { close(reason: "no-upstream"); return }
-
-        client.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self = self else { return }
-            if let error = error {
-                self.fail(error, at: "client.receive")
-                return
-            }
-            if let data, !data.isEmpty {
-                self.bumpIdle()
-                up.send(content: data, completion: .contentProcessed { [weak self] sendErr in
-                    if let sendErr { self?.fail(sendErr, at: "up.send(client->up)") }
-                })
-            }
-            if isComplete {
-                self.clientReadEOF = true
-                up.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .idempotent)
-                self.maybeClose()
-                return
-            }
-            self.readFromClient()
-        }
-    }
-
-    // MARK: - 定时器
-    private func startConnectDeadline() {
-        cancelConnectDeadline()
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + connectTimeoutSec)
-        t.setEventHandler { [weak self] in
-            guard let self else { return }
-            NSLog("SOCKS5 \(self.connectTitle) connect timeout")
-            if !self.didReplySuccess { self.reply(rep: 0x05) }
-            self.close()
-        }
-        t.resume()
-        connectDeadline = t
-    }
-
-    private func cancelConnectDeadline() {
-        connectDeadline?.cancel()
-        connectDeadline = nil
-    }
-
-    private func bumpIdle() {
-        idleTimer?.cancel()
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + idleTimeoutSec)
-        t.setEventHandler { [weak self] in self?.close() }
-        t.resume()
-        idleTimer = t
-    }
-
-    // MARK: - 工具
-    private func reply(rep: UInt8) {
-        var resp = Data([0x05, rep, 0x00, 0x01])
-        resp.append(contentsOf: [0,0,0,0, 0,0])
-        client.send(content: resp, completion: .contentProcessed { _ in })
-    }
-
-    private func fail(_ err: Error) {
-        NSLog("SOCKS5 \(self.connectTitle) error: \(err)")
-        if !didReplySuccess { reply(rep: 0x05) }
-        close()
-    }
-
-    private func fail(_ err: Error, at site: String) {
-        NSLog("SOCKS5 \(self.connectTitle) error @\(site): \(err)")
-        if !didReplySuccess { reply(rep: 0x05) }
-        close(reason: "fail:\(site)")
-    }
-
-    private func logNWError(prefix: String, _ err: NWError) {
-        switch err {
-        case .posix(let code) where code == .ECANCELED:
-            NSLog("SOCKS5 \(self.connectTitle) \(prefix): ECANCELED")
-        case .posix(let code) where code.rawValue == 54:
-            NSLog("SOCKS5 \(self.connectTitle) \(prefix): Connection reset by peer")
-        default:
-            NSLog("SOCKS5 \(self.connectTitle) \(prefix): \(err)")
-        }
-    }
-
-    private static func ipv6String(from bytes: [UInt8]) -> String {
-        var s = ""
-        for i in stride(from: 0, to: 16, by: 2) {
-            let part = UInt16(bytes[i]) << 8 | UInt16(bytes[i+1])
-            s += String(format: "%x", part)
-            if i < 14 { s += ":" }
-        }
-        return s
-    }
-
-    private func maybeClose() {
-        if clientReadEOF && upstreamReadEOF {
-            close(reason: "both-EOF")
-        }
-    }
-
-    private func close() {
-        close(reason: "normal")
-    }
-
-    private func close(reason: String) {
-        if closed { return }
+    public func close(reason: String) {
+        guard !closed else { return }
         closed = true
-        NSLog("SOCKS5 \(self.connectTitle) close: \(reason)")
-        idleTimer?.cancel(); idleTimer = nil
-        connectDeadline?.cancel(); connectDeadline = nil
-        upstream?.cancel(); upstream = nil
+        phase = .closed
+        log("close: \(reason)")
+        
+        // 取消客户端连接
         client.cancel()
-        onClose?(self)
+        
+        // 如果有 bridge，也要关闭它
+        bridge?.cancel(reason: "ServerConnection closed: \(reason)")
+        bridge = nil
+        
+        // 通知 Server 移除此连接
+        onClosed?(id)
+    }
+    
+    // 外部调用的关闭方法
+    func shutdown(reason: String) {
+        close(reason: reason)
+    }
+    
+    deinit {
+        log("🔴 DESTROYED ServerConnection #\(id)")
+        if !closed {
+            print("⚠️ WARNING: ServerConnection #\(id) destroyed without proper closing!")
+        }
+    }
+
+    private func recvLoop() {
+        if handedOff || closed { return }
+
+        client.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
+            guard let self = self else { return }
+            if self.handedOff || self.closed { return }
+
+            if let err = err {
+                self.log("recv err: \(err)")
+                self.close(reason: "recv err")
+                return
+            }
+            
+            if let chunk = data, !chunk.isEmpty {
+                self.log("recv \(chunk.count)B, buffer before: \(self.recvBuffer.count)B, phase: \(self.phase)")
+                self.recvBuffer.append(chunk)
+                self.log("buffer after append: \(self.recvBuffer.count)B")
+                
+                // 打印接收到的数据的前几个字节（用于调试）
+                if chunk.count > 0 && self.verbose {
+                    let preview = chunk.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
+                    self.log("recv data preview: \(preview)")
+                }
+                
+                self.parseBuffer()
+            }
+            
+            if isComplete {
+                self.log("client EOF")
+                self.close(reason: "client EOF")
+                return
+            }
+
+            if self.handedOff || self.closed { return }
+            self.recvLoop()
+        }
+    }
+
+    private func parseBuffer() {
+        // 安全检查：确保 buffer 不为空
+        guard !recvBuffer.isEmpty else {
+            log("parseBuffer called with empty buffer")
+            return
+        }
+        
+        log("parseBuffer: phase=\(phase), buffer size=\(recvBuffer.count)")
+        
+        var advanced = true
+        while advanced, !closed, !handedOff {
+            advanced = false
+            
+            // 记录当前处理的阶段
+            let bufferSizeBefore = recvBuffer.count
+            
+            switch phase {
+            case .methodSelect:
+                advanced = parseMethodSelect()
+                if advanced {
+                    log("parseBuffer: methodSelect consumed \(bufferSizeBefore - recvBuffer.count) bytes")
+                }
+            case .requestHead:
+                advanced = parseRequestHead()
+                if advanced {
+                    log("parseBuffer: requestHead consumed \(bufferSizeBefore - recvBuffer.count) bytes")
+                }
+            case .requestAddr(let ver, let cmd, let atyp):
+                advanced = parseRequestAddr(ver: ver, cmd: cmd, atyp: atyp)
+                if advanced {
+                    log("parseBuffer: requestAddr consumed \(bufferSizeBefore - recvBuffer.count) bytes")
+                }
+            case .connected(let host, let port):
+                if !recvBuffer.isEmpty {
+                    log("parseBuffer: processing first body, \(recvBuffer.count) bytes")
+                    let first = recvBuffer
+                    recvBuffer.removeAll(keepingCapacity: false)
+                    processFirstBody(host: host, port: port, firstBody: first)
+                    advanced = true
+                }
+            case .bridged, .closed:
+                log("parseBuffer: already bridged or closed, returning")
+                return
+            }
+        }
+        
+        log("parseBuffer: done, remaining buffer=\(recvBuffer.count) bytes")
+    }
+
+    // MARK: Method Select
+    private func parseMethodSelect() -> Bool {
+        guard recvBuffer.count >= 2 else { return false }
+        
+        // 使用安全的方式访问 Data
+        let bytes = Array(recvBuffer.prefix(2))
+        guard bytes.count == 2 else { return false }
+        
+        let ver = bytes[0]
+        let n = Int(bytes[1])
+
+        guard ver == 0x05 else {
+            log("non-socks5 ver=\(ver)")
+            close(reason: "non-socks5")
+            return false
+        }
+        
+        guard recvBuffer.count >= 2 + n else { return false }
+
+        // 提取方法列表用于日志
+        var methods: [UInt8] = []
+        let methodBytes = Array(recvBuffer.dropFirst(2).prefix(n))
+        methods = methodBytes
+
+        recvBuffer.removeFirst(2 + n)
+        
+        // 先更改状态，再发送响应
+        phase = .requestHead
+        log("mselect parsed: ver=5 n=\(n) methods=\(methods)")
+        
+        // 异步发送响应，避免阻塞解析
+        let reply = Data([0x05, 0x00]) // NO-AUTH
+        client.send(content: reply, completion: .contentProcessed { [weak self] err in
+            guard let self = self else { return }
+            if let err = err {
+                self.log("send mselect err: \(err)")
+                self.close(reason: "send mselect err")
+                return
+            }
+            self.log("mselect reply sent (NO-AUTH)")
+        })
+        
+        return true
+    }
+
+    // MARK: Request Head
+    private func parseRequestHead() -> Bool {
+        // 安全检查
+        guard recvBuffer.count >= 4 else {
+            log("parseRequestHead: need 4 bytes, have \(recvBuffer.count)")
+            return false
+        }
+        
+        // 使用 Data 的安全访问方式
+        let bytes = Array(recvBuffer.prefix(4))
+        guard bytes.count == 4 else {
+            log("parseRequestHead: failed to extract 4 bytes")
+            return false
+        }
+        
+        let ver = bytes[0]
+        let cmd = bytes[1]
+        let rsv = bytes[2]
+        let atyp = bytes[3]
+        
+        log("parseRequestHead: ver=\(ver) cmd=\(cmd) rsv=\(rsv) atyp=\(atyp)")
+        
+        guard ver == 0x05, cmd == 0x01 else {
+            sendReply(socksReply: 0x07) // Command not supported
+            close(reason: "unsupported cmd/ver (ver=\(ver) cmd=\(cmd))")
+            return false
+        }
+        
+        recvBuffer.removeFirst(4)
+        phase = .requestAddr(ver: ver, cmd: cmd, atyp: atyp)
+        log("req head parsed: ver=5 cmd=CONNECT atyp=\(String(format:"0x%02x", atyp))")
+        return true
+    }
+
+    // MARK: Request Address
+    private func parseRequestAddr(ver: UInt8, cmd: UInt8, atyp: UInt8) -> Bool {
+        switch atyp {
+        case 0x01: // IPv4: 4 + 2
+            guard recvBuffer.count >= 6 else { return false }
+            let bytes = Array(recvBuffer.prefix(6))
+            guard bytes.count == 6 else { return false }
+            
+            let host = "\(bytes[0]).\(bytes[1]).\(bytes[2]).\(bytes[3])"
+            let port = (Int(bytes[4]) << 8) | Int(bytes[5])
+            recvBuffer.removeFirst(6)
+            return didGetTarget(host: host, port: port)
+
+        case 0x03: // DOMAIN: 1(len) + len + 2
+            guard recvBuffer.count >= 1 else { return false }
+            let lenByte = Array(recvBuffer.prefix(1))
+            guard lenByte.count == 1 else { return false }
+            
+            let n = Int(lenByte[0])
+            guard recvBuffer.count >= 1 + n + 2 else { return false }
+            
+            let nameData = recvBuffer.dropFirst(1).prefix(n)
+            let host = String(data: nameData, encoding: .utf8) ?? ""
+            
+            let portBytes = Array(recvBuffer.dropFirst(1 + n).prefix(2))
+            guard portBytes.count == 2 else { return false }
+            let port = (Int(portBytes[0]) << 8) | Int(portBytes[1])
+            
+            recvBuffer.removeFirst(1 + n + 2)
+            return didGetTarget(host: host, port: port)
+
+        case 0x04: // IPv6: 16 + 2
+            guard recvBuffer.count >= 18 else { return false }
+            let bytes = Array(recvBuffer.prefix(18))
+            guard bytes.count == 18 else { return false }
+            
+            var s = ""
+            for i in stride(from: 0, to: 16, by: 2) {
+                s += String(format: "%02x%02x", bytes[i], bytes[i+1])
+                if i < 14 { s += ":" }
+            }
+            let port = (Int(bytes[16]) << 8) | Int(bytes[17])
+            recvBuffer.removeFirst(18)
+            return didGetTarget(host: s, port: port)
+
+        default:
+            sendReply(socksReply: 0x08) // Address type not supported
+            close(reason: "bad atyp \(atyp)")
+            return false
+        }
+    }
+
+    private func didGetTarget(host: String, port: Int) -> Bool {
+        log("CONNECT \(host):\(port) -> reply OK, then wait first-body")
+        // 发送 SOCKS5 成功响应
+        let reply = Data([0x05, 0x00, 0x00, 0x01, 0,0,0,0, 0,0])
+        client.send(content: reply, completion: .contentProcessed { [weak self] err in
+            guard let self = self else { return }
+            if let err = err {
+                self.log("send CONNECT OK err: \(err)")
+                self.close(reason: "send CONNECT OK err")
+                return
+            }
+            self.log("CONNECT OK sent")
+        })
+        phase = .connected(host: host, port: port)
+        // 若缓冲里已经有首包，立刻处理
+        parseBuffer()
+        return true
+    }
+
+    // MARK: 首包处理（智能区分 SSL / 非 SSL）
+    private func processFirstBody(host: String, port: Int, firstBody: Data) {
+        guard !handedOff else { return }
+        
+        var detectedInfo = ""
+        var isSSL = false
+        
+        // 智能检测：检查是否为 TLS/SSL 握手
+        if isTLSClientHello(firstBody) {
+            // SSL/TLS 加密连接
+            isSSL = true
+            detectedInfo = "TLS/SSL ClientHello detected"
+            log("Detected SSL/TLS connection (ClientHello) to \(host):\(port), bytes=\(firstBody.count)")
+            
+        } else if let httpInfo = parseHttpFirstLineAndHost(firstBody) {
+            // HTTP 明文连接
+            isSSL = false
+            detectedInfo = "HTTP \(httpInfo.method) \(httpInfo.path) HTTP/\(httpInfo.version)"
+            if !httpInfo.host.isEmpty {
+                detectedInfo += ", Host: \(httpInfo.host)"
+            }
+            log("Detected HTTP connection: \(detectedInfo)")
+            
+            // 对于 HTTP CONNECT 方法，通常表示隧道代理（可能后续会升级为 SSL）
+            if httpInfo.method.uppercased() == "CONNECT" {
+                log("HTTP CONNECT method detected - tunnel proxy request")
+            }
+            
+        } else if isLikelyHTTP(firstBody) {
+            // 可能是 HTTP 但解析失败
+            isSSL = false
+            detectedInfo = "Likely HTTP but parse failed"
+            log("Possible HTTP connection but couldn't parse, bytes=\(firstBody.count)")
+            
+        } else {
+            // 无法识别的协议，根据端口猜测
+            if port == 443 || port == 8443 || port == 465 || port == 993 || port == 995 {
+                isSSL = true
+                detectedInfo = "Unknown protocol on SSL port \(port), treating as SSL"
+                log("Unknown protocol on common SSL port \(port), treating as encrypted")
+            } else {
+                isSSL = false
+                detectedInfo = "Unknown protocol on port \(port)"
+                log("Unknown protocol, treating as plain text, bytes=\(firstBody.count)")
+            }
+        }
+        
+        // 将首包转换为 Base64
+        let b64 = firstBody.base64EncodedString()
+        log("Converting first body to Base64: \(b64.prefix(100))... (total: \(b64.count) chars)")
+        log("Protocol detection: \(detectedInfo), isSSL=\(isSSL)")
+        
+        // 标记已移交，停止接收
+        handedOff = true
+        phase = .bridged
+        
+        log("Handing off to LayerMinusBridge, no longer receiving from client")
+        
+        // 创建并启动 LayerMinusBridge，保存引用
+        let newBridge = LayerMinusBridge(
+            id: self.id,
+            client: self.client,
+            targetHost: host,
+            targetPort: port,
+            verbose: self.verbose,
+            onClosed: { [weak self] bridgeId in
+                // 当 bridge 关闭时，关闭 ServerConnection
+                self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
+                self?.close(reason: "Bridge closed")
+            }
+        )
+        
+        self.bridge = newBridge
+        
+        // 传递 Base64 编码的首包给 bridge
+        newBridge.start(withFirstBody: b64)
+    }
+
+    // MARK: TLS/SSL 检测
+    private func isTLSClientHello(_ data: Data) -> Bool {
+        // TLS record: 0x16 (Handshake) 0x03 0x01/02/03... (TLS version), length(2)
+        guard data.count >= 5 else { return false }
+        let bytes = Array(data.prefix(2))
+        guard bytes.count == 2 else { return false }
+        
+        // 0x16 = TLS Handshake, 0x03 = TLS/SSL 3.x
+        return bytes[0] == 0x16 && bytes[1] == 0x03
+    }
+
+    // MARK: HTTP 解析
+    private func parseHttpFirstLineAndHost(_ data: Data) -> (method: String, path: String, version: String, host: String)? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        
+        // 查找第一个 \r\n
+        guard let rnRange = text.range(of: "\r\n") else { return nil }
+        let firstLine = String(text[..<rnRange.lowerBound])
+        
+        // 解析 HTTP 请求行: METHOD PATH HTTP/VERSION
+        let parts = firstLine.split(separator: " ", maxSplits: 2)
+        guard parts.count >= 3 else { return nil }
+        
+        let method = String(parts[0])
+        let path = String(parts[1])
+        var version = String(parts[2])
+        
+        // 验证 HTTP 方法
+        let httpMethods = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "CONNECT", "PATCH", "TRACE"]
+        guard httpMethods.contains(method.uppercased()) else { return nil }
+        
+        // 提取版本号
+        if version.hasPrefix("HTTP/") {
+            version.removeFirst(5)
+        }
+        
+        // 查找 Host 头
+        var hostHeader = ""
+        let remainingText = String(text[rnRange.upperBound...])
+        for line in remainingText.split(separator: "\r\n") {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+            if trimmedLine.lowercased().hasPrefix("host:") {
+                let hostValue = trimmedLine.dropFirst("host:".count)
+                hostHeader = hostValue.trimmingCharacters(in: .whitespaces)
+                break
+            }
+        }
+        
+        return (method, path, version, hostHeader)
+    }
+
+    // MARK: HTTP 启发式检测
+    private func isLikelyHTTP(_ data: Data) -> Bool {
+        guard data.count >= 4 else { return false }
+        guard let text = String(data: data.prefix(16), encoding: .utf8) else { return false }
+        
+        // 检查是否以常见 HTTP 方法开头
+        let httpMethods = ["GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "CONNECT ", "PATCH ", "TRACE "]
+        for method in httpMethods {
+            if text.hasPrefix(method) {
+                return true
+            }
+        }
+        
+        return false
+    }
+
+    
+    // MARK: Reply helper
+    private func sendReply(socksReply rep: UInt8) {
+        let reply = Data([0x05, rep, 0x00, 0x01, 0,0,0,0, 0,0])
+        client.send(content: reply, completion: .contentProcessed({ [weak self] err in
+            if let err = err {
+                self?.log("send reply err: \(err)")
+            }
+        }))
     }
 }

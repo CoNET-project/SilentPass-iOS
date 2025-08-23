@@ -51,6 +51,9 @@
 		BF572FEFDAA54A12D51B5FE9 /* Pods_CoNETVPN1.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DE531A7C6F806D913F3DA60 /* Pods_CoNETVPN1.framework */; };
 		C2F19D452DF27FCCD2E439F5 /* Pods_VPN.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B065FACCEF28785DA81D7B43 /* Pods_VPN.framework */; };
 		CAE69CDC58145A1A3DAC0297 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0712EF27A6FE658454DDE0C5 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework */; };
+		D04D4DF42E593DFD0083DD23 /* LayerMinusBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */; };
+		D04D4E1B2E59908B0083DD23 /* LayerMinus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */; };
+		D04D4E1D2E5990FF0083DD23 /* NodeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */; };
 		D06663F62E28443F007D010D /* LocalWebServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06663F52E28443F007D010D /* LocalWebServer.swift */; };
 		D06663F92E284A9C007D010D /* Swifter in Frameworks */ = {isa = PBXBuildFile; productRef = D06663F82E284A9C007D010D /* Swifter */; };
 		D06663FB2E284BC0007D010D /* Updater.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06663FA2E284BC0007D010D /* Updater.swift */; };
@@ -157,6 +160,9 @@
 		AC447B9CF46665A6870A6FE6 /* Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig"; sourceTree = "<group>"; };
 		B065FACCEF28785DA81D7B43 /* Pods_VPN.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_VPN.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		B863739A14ADB342BEEAA7B2 /* Pods-VPN.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VPN.release.xcconfig"; path = "Target Support Files/Pods-VPN/Pods-VPN.release.xcconfig"; sourceTree = "<group>"; };
+		D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinusBridge.swift; sourceTree = "<group>"; };
+		D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinus.swift; sourceTree = "<group>"; };
+		D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeManager.swift; sourceTree = "<group>"; };
 		D06663F52E28443F007D010D /* LocalWebServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWebServer.swift; sourceTree = "<group>"; };
 		D06663FA2E284BC0007D010D /* Updater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Updater.swift; sourceTree = "<group>"; };
 		D06663FC2E28641B007D010D /* build3.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = build3.zip; sourceTree = "<group>"; };
@@ -245,6 +251,9 @@
 				7606D7042D2EC5A000224EC8 /* CONET_Guardian_NodeInfo_ABI.text */,
 				7606D70A2D2EC5A000224EC8 /* Server 2.swift */,
 				7606D70C2D2EC5A000224EC8 /* ServerConnection 2.swift */,
+				D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */,
+				D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */,
+				D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */,
 				7606D70F2D2EC5A000224EC8 /* VPNManager.swift */,
 				7606D7102D2EC5A000224EC8 /* WebViewManager.swift */,
 			);
@@ -670,9 +679,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D04D4DF42E593DFD0083DD23 /* LayerMinusBridge.swift in Sources */,
 				7606D7142D2EC5A000224EC8 /* WebViewManager.swift in Sources */,
 				7606D7172D2EC5A000224EC8 /* VPNManager.swift in Sources */,
 				7606D71B2D2EC5A000224EC8 /* ServerConnection 2.swift in Sources */,
+				D04D4E1B2E59908B0083DD23 /* LayerMinus.swift in Sources */,
+				D04D4E1D2E5990FF0083DD23 /* NodeManager.swift in Sources */,
 				7606D71C2D2EC5A000224EC8 /* Server 2.swift in Sources */,
 				7660ED4A2D13A861008B6D28 /* PacketTunnelProvider.swift in Sources */,
 			);

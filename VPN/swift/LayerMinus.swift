@@ -81,7 +81,7 @@ class LayerMinus {
     var egressNodes: [Node] = []
     
     let javascriptContext: JSContext = JSContext()
-    var miningProcess: MiningProcess!
+
     var web3: Web3!
     var CONET_Guardian_NodeInfo_ABI: String!
     var CONET_Guardian_NodeInfo_Contract: EthereumContract!

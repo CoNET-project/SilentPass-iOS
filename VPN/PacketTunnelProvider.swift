@@ -15,9 +15,14 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
 
     override init() {
         super.init()
-        let s = Server(port: 8888, maxConcurrent: 64, localOnly: true)
+        let s = Server(port: 8888)
         self.socksServer = s
-        s.start()
+        do {
+            try s.start()
+            NSLog("PacketTunnelProvider SOCKS server started.")
+        } catch {
+            NSLog("PacketTunnelProvider Failed to start SOCKS server: \(error)")
+        }
     }
 
     override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -38,7 +43,13 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let egressNodesStr = options["egressNodes"] as? String ?? ""
                 let privateKey = options["privateKey"] as? String ?? ""
 
-                self.socksServer?.start()
+                do {
+                    try self.socksServer?.start()
+                    NSLog("PacketTunnelProvider SOCKS server started.")
+                } catch {
+                    NSLog("Failed to start SOCKS server: \(error)")
+                }
+                
                 // 最后，调用 completionHandler 通知系统
                 completionHandler(error)
                 
