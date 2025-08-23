@@ -8,21 +8,24 @@ import NetworkExtension
 import os.log
 import vpn2socks
 
+func nodeJSON (nodeJsonStr: String) -> [Node] {
+    let decoder = JSONDecoder()
+    do {
+        let nodes = try decoder.decode([Node].self, from: nodeJsonStr.data(using: .utf8)!)
+        return nodes
+    } catch {
+        return []
+    }
+    
+}
+
 class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
-    private var socksServer: Server?
+
     let port = 8888
-    var server: Server!
+    var server = Server(port: 8888)
 
     override init() {
         super.init()
-        let s = Server(port: 8888)
-        self.socksServer = s
-        do {
-            try s.start()
-            NSLog("PacketTunnelProvider SOCKS server started.")
-        } catch {
-            NSLog("PacketTunnelProvider Failed to start SOCKS server: \(error)")
-        }
     }
 
     override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -43,8 +46,15 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let egressNodesStr = options["egressNodes"] as? String ?? ""
                 let privateKey = options["privateKey"] as? String ?? ""
 
+                let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
+                let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
+                
                 do {
-                    try self.socksServer?.start()
+                    try self.server.start()
+                    Server.layerMinus.startInVPN(privateKey: privateKey,
+                                            entryNodes: entryNodes,
+                                            egressNodes: egressNodes,
+                                            port: 8888)
                     NSLog("PacketTunnelProvider SOCKS server started.")
                 } catch {
                     NSLog("Failed to start SOCKS server: \(error)")
@@ -63,8 +73,7 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         NSLog("🛑 PacketTunnelProvider.stopTunnel called, reason: \(reason.rawValue)")
-        socksServer?.stop()
-        socksServer = nil
+        server.stop()
         super.stopTunnel(with: reason) {
             NSLog("PacketTunnelProvider: Core tunnel stopped. Finalizing cleanup.")
             // 核心隧道停止后的最终清理
@@ -85,4 +94,7 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     override func wake() {
         NSLog("🔔 PacketTunnelProvider.wake called")
     }
+}
+extension Notification.Name {
+    static let didUpdateConnectionNodes = Notification.Name("didUpdateConnectionNodes")
 }

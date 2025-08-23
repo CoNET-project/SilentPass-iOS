@@ -49,7 +49,7 @@ public final class LayerMinusBridge {
 
     @inline(__always)
     private func log(_ msg: String) {
-        NSLog("[LayerMinusBridge \(id)] %@", msg)
+        //NSLog("[LayerMinusBridge \(id)] %@", msg)
     }
 
     public func start(withFirstBody firstBodyBase64: String) {

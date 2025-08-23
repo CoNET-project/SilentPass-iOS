@@ -1541,7 +1541,7 @@ final actor TCPConnection {
         recvBufferLimit = max(8 * 1024, min(newSize, Int(MAX_WINDOW_SIZE)))
         
         if oldSize != recvBufferLimit {
-            log("Buffer adjusted: \(oldSize) -> \(recvBufferLimit) bytes")
+            //log("Buffer adjusted: \(oldSize) -> \(recvBufferLimit) bytes")
             updateAdvertisedWindow()
             
             // 如果缓冲区缩小且当前缓存过多，触发清理
