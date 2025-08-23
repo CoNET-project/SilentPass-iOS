@@ -20,6 +20,7 @@ final class Server {
     private var tickUp = 0
     private var tickDown = 0
     private var statTimer: DispatchSourceTimer?
+    static public let layerMinus = LayerMinus(port: 8888)
 
     init(host: String = "127.0.0.1",
          port: UInt16 = 8888,
@@ -86,6 +87,7 @@ final class Server {
                 let conn = ServerConnection(
                     id: id,
                     connection: nw,
+                    LayerMinus: Server.layerMinus,
                     onClosed: { [weak self] connectionId in
                         // 当 ServerConnection 关闭时，从字典中移除
                         self?.onConnectionClosed(id: connectionId)
@@ -104,6 +106,8 @@ final class Server {
 
         lst.start(queue: queue)
         startStatsTimer()
+        
+        log("SOCKS5 Server LayerMinus started \(Server.layerMinus.egressNodes.count) egress nodes, \(Server.layerMinus.entryNodes.count) entry nodes ")
     }
 
     func stop() {

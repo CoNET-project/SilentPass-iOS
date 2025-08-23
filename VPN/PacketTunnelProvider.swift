@@ -8,17 +8,25 @@ import NetworkExtension
 import os.log
 import vpn2socks
 
+func nodeJSON (nodeJsonStr: String) -> [Node] {
+    let decoder = JSONDecoder()
+    do {
+        let nodes = try decoder.decode([Node].self, from: nodeJsonStr.data(using: .utf8)!)
+        return nodes
+    } catch {
+        return []
+    }
+    
+}
+
 class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     private var socksServer: Server?
-    let port = 8888
-    var server: Server!
+    var server = Server(port: 8888)
 
     override init() {
         super.init()
-        let s = Server(port: 8888)
-        self.socksServer = s
         do {
-            try s.start()
+            try self.socksServer?.start()
             NSLog("PacketTunnelProvider SOCKS server started.")
         } catch {
             NSLog("PacketTunnelProvider Failed to start SOCKS server: \(error)")
@@ -29,7 +37,7 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
         
         super.startTunnel(options: options) { error in
             // 5. 在核心逻辑完成后，你可以执行后续的自定义操作
-            if let error = error {
+            if error != nil {
                 NSLog("PacketTunnelProvider Target: Core logic failed. Cleaning up.")
                 // 处理错误
             } else {
@@ -42,13 +50,24 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let entryNodesStr = options["entryNodes"] as? String ?? ""
                 let egressNodesStr = options["egressNodes"] as? String ?? ""
                 let privateKey = options["privateKey"] as? String ?? ""
+                //NSLog("PacketTunnelProvider SOCKS entryNodesStr\(entryNodesStr) egressNodesStr\(egressNodesStr)")
+                
+                let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
+                let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
 
                 do {
                     try self.socksServer?.start()
+                    Server.layerMinus.startInVPN(privateKey: privateKey,
+                        entryNodes: entryNodes,
+                        egressNodes: egressNodes,
+                        port: 8888)
                     NSLog("PacketTunnelProvider SOCKS server started.")
                 } catch {
                     NSLog("Failed to start SOCKS server: \(error)")
                 }
+                
+                
+
                 
                 // 最后，调用 completionHandler 通知系统
                 completionHandler(error)

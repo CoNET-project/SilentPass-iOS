@@ -25,10 +25,11 @@ public final class ServerConnection {
     private var closed = false
     private var handedOff = false
     private var bridge: LayerMinusBridge?
-
-    public init(
+    private let LayerMinus: LayerMinus
+    init(
         id: UInt64,
         connection: NWConnection,
+        LayerMinus: LayerMinus,
         logger: Logger = Logger(subsystem: "VPN", category: "SOCKS5"),
         verbose: Bool = true,
         onClosed: ((UInt64) -> Void)? = nil
@@ -39,7 +40,7 @@ public final class ServerConnection {
         self.verbose = verbose
         self.onClosed = onClosed
         self.queue = DispatchQueue(label: "ServerConnection.\(id)", qos: .userInitiated)
-        
+        self.LayerMinus = LayerMinus
         // 简单的生命周期日志
         log("🟢 CREATED ServerConnection #\(id)")
     }
@@ -400,6 +401,7 @@ public final class ServerConnection {
             client: self.client,
             targetHost: host,
             targetPort: port,
+            LayerMinus: self.LayerMinus,
             verbose: self.verbose,
             onClosed: { [weak self] bridgeId in
                 // 当 bridge 关闭时，关闭 ServerConnection
