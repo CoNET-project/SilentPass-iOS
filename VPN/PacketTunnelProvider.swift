@@ -8,6 +8,17 @@ import NetworkExtension
 import os.log
 import vpn2socks
 
+func nodeJSON (nodeJsonStr: String) -> [Node] {
+    let decoder = JSONDecoder()
+    do {
+        let nodes = try decoder.decode([Node].self, from: nodeJsonStr.data(using: .utf8)!)
+        return nodes
+    } catch {
+        return []
+    }
+    
+}
+
 class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     private var socksServer: Server?
     let port = 8888
@@ -43,6 +54,13 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let egressNodesStr = options["egressNodes"] as? String ?? ""
                 let privateKey = options["privateKey"] as? String ?? ""
 
+                let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
+                let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
+                
+                Server.sharedLayerMinus.startInVPN(privateKey: privateKey,
+                            entryNodes: entryNodes,
+                            egressNodes: egressNodes,
+                            port: 8888)
                 do {
                     try self.socksServer?.start()
                     NSLog("PacketTunnelProvider SOCKS server started.")

@@ -20,6 +20,8 @@ final class Server {
     private var tickUp = 0
     private var tickDown = 0
     private var statTimer: DispatchSourceTimer?
+    
+    static let sharedLayerMinus = LayerMinus(port:8888)
 
     init(host: String = "127.0.0.1",
          port: UInt16 = 8888,
