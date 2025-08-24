@@ -86,3 +86,6 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
         NSLog("🔔 PacketTunnelProvider.wake called")
     }
 }
+extension Notification.Name {
+    static let didUpdateConnectionNodes = Notification.Name("didUpdateConnectionNodes")
+}
