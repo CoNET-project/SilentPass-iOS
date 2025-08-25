@@ -107,7 +107,7 @@ final actor ConnectionManager {
     // CRITICAL: 降低限制以适应 iOS 内存约束
     private let maxConnections = 60
     private let connectionTimeout: TimeInterval = 45.0
-    private let maxIdleTime: TimeInterval = 20.0
+    private let maxIdleTime: TimeInterval = 60.0
     
     // 内存管理阈值（MB）
     private let memoryNormalMB: UInt64 = 20
@@ -141,6 +141,7 @@ final actor ConnectionManager {
     private var isMemoryPressure = false
     private var lastMemoryCheckTime = Date()
     private let memoryCheckInterval: TimeInterval = 5.0
+    private var lastMemoryPressureTime = Date()  // 添加这个属性
     private var keepCritical: Bool = true
     
     // MARK: - Init
@@ -338,17 +339,78 @@ final actor ConnectionManager {
                 dropNewConnections = true
             }
         } else if memoryMB < memoryNormalMB && isMemoryPressure {
-            logger.info("✅ Memory recovered: \(memoryMB)MB < \(self.memoryNormalMB)MB")
-            isMemoryPressure = false
-            shedding = false
-            pausedReads = false
-            dropNewConnections = false
-            logSampleN = 1
+            // 等待稳定后再恢复
+               if now.timeIntervalSince(lastMemoryPressureTime) > 5.0 {
+                   logger.info("✅ Memory recovered: \(memoryMB)MB")
+                   isMemoryPressure = false
+                   dropNewConnections = false
+                   
+                   // 主动尝试恢复Push连接
+                   await restoreCriticalConnections()
+               }
         }
         
         if memoryMB > 30 || stats.totalConnections % 10 == 0 {
             logger.debug("[Memory] Current: \(memoryMB)MB, Connections: \(self.tcpConnections.count)")
         }
+    }
+    
+    private func restoreCriticalConnections() async {
+        // 检查并恢复Push服务
+        logger.info("[Recovery] Checking critical connections...")
+            
+            // 使用辅助方法检查
+            if !(await hasPushConnection()) {
+                logger.warning("[Recovery] No push connections found, attempting to restore...")
+                
+                // 临时允许新连接用于恢复Push服务
+                let originalDropState = dropNewConnections
+                dropNewConnections = false
+                
+                // 触发Push重连
+                lastPushReconnectTime = Date()
+                
+                // 给一些时间让Push连接建立
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000) // 3秒
+                    
+                    // 如果还没有其他内存压力，恢复原始状态
+                    if !self.isMemoryPressure {
+                        self.dropNewConnections = originalDropState
+                    }
+                }
+            }
+            
+            // 检查并调整现有连接的缓冲区
+            await adjustConnectionBuffers()
+    }
+    
+    // 分离缓冲区调整逻辑
+    private func adjustConnectionBuffers() async {
+        for (_, conn) in tcpConnections {
+            let currentBuffer = await conn.recvBufferLimit
+            
+            // 恢复正常缓冲区大小
+            if await isPushConnection(conn) {
+                if currentBuffer < 32 * 1024 {
+                    await conn.adjustBufferSize(32 * 1024)
+                    logger.debug("[Recovery] Restored push connection buffer to 32KB")
+                }
+            } else {
+                if currentBuffer < 16 * 1024 {
+                    await conn.adjustBufferSize(16 * 1024)
+                }
+            }
+        }
+    }
+    
+    private func hasPushConnection() async -> Bool {
+        for (_, conn) in tcpConnections {
+            if await isPushConnection(conn) {
+                return true
+            }
+        }
+        return false
     }
     
     private func getCurrentMemoryUsageMB() -> UInt64 {
@@ -487,6 +549,8 @@ final actor ConnectionManager {
             logger.info("[Cleanup] Closed \(closedCount) low priority connections")
         }
     }
+    
+    
     
     private func monitorConnectionPool() async {
         _ = tcpConnections.count
@@ -1172,11 +1236,11 @@ final actor ConnectionManager {
     private func calculateBufferSizeForPriority(_ priority: ConnectionPriority) -> Int {
         switch priority {
         case .critical:
-            return 64 * 1024
+            return 96 * 1024
         case .high:
-            return 48 * 1024
+            return 64 * 1024
         case .normal:
-            return 32 * 1024
+            return 48 * 1024
         case .low:
             return 16 * 1024
         }

@@ -129,8 +129,8 @@ final actor TCPConnection {
         case (_, 5223): return 180.0     // Apple/FCM Push（你日志里 5223 的保活大多是 180s）
         case (_, 5228): return 180.0     // FCM
         case let (h, 443) where (h?.contains("apple.com") ?? false): return 120.0
-        case (_, 443): return 60.0
-        case (_, 80):  return 30.0
+        case (_, 443): return 80.0
+        case (_, 80):  return 60.0
         default:       return 45.0
         }
     }
@@ -925,6 +925,16 @@ final actor TCPConnection {
         }
     }
     
+    @inline(__always)
+    private func sendRawToSocksOnce(_ data: Data) async -> Bool {
+        guard let conn = socksConnection else { return false }
+        return await withCheckedContinuation { cont in
+            conn.send(content: data, completion: .contentProcessed { err in
+                cont.resume(returning: err == nil)
+            })
+        }
+    }
+    
     // 添加自适应缓冲区管理
     private func adaptBufferToFlow() {
         let utilizationRate = Double(bufferedBytesForWindow()) / Double(recvBufferLimit)
@@ -933,7 +943,7 @@ final actor TCPConnection {
         if utilizationRate > 0.9 && recvBufferLimit < 64 * 1024 {
             // 使用率超过90%才扩展
             adjustBufferSize(min(recvBufferLimit * 2, 64 * 1024))
-        } else if utilizationRate < 0.2 && recvBufferLimit > 16 * 1024 {
+        } else if utilizationRate < 0.3 && recvBufferLimit > 16 * 1024 {
             // 使用率低于20%才收缩（原来是30%）
             adjustBufferSize(max(recvBufferLimit / 2, 16 * 1024))
         }
@@ -979,22 +989,45 @@ final actor TCPConnection {
     }
     
     
-
+    // 避免并发重入 flush
+    private var isFlushing = false
 
     private func flushPendingData() async {
         guard socksState == .established, !pendingClientBytes.isEmpty else { return }
 
-        let totalBytes = pendingBytesTotal
-        log("Flushing \(totalBytes) bytes of pending data")
+        // 复制出队列，清空原数组与计数；若部分发送失败，会再回填到队首
+        let queue = pendingClientBytes
+        pendingClientBytes.removeAll(keepingCapacity: true)
 
-        for chunk in pendingClientBytes {
-            sendRawToSocks(chunk)
+        // 不先清零 pendingBytesTotal，逐块成功后再扣减，失败则回填保持总数正确
+        log("Flushing \(pendingBytesTotal) bytes of pending data")
+
+        for chunk in queue {
+            var sentOK = false
+            var backoffNs: UInt64 = 20_000_000 // 20ms
+
+            for attempt in 1...3 {
+                if await sendRawToSocksOnce(chunk) {
+                    sentOK = true
+                    break
+                } else {
+                    log("flushPendingData: send failed (attempt \(attempt)), backing off \(backoffNs/1_000_000)ms")
+                    try? await Task.sleep(nanoseconds: backoffNs)
+                    backoffNs = min(backoffNs << 1, 200_000_000) // 封顶 ~200ms
+                }
+            }
+
+            if sentOK {
+                // 成功：从计数中扣减，并尝试通告窗口扩大（会在显著增长时发纯 ACK）
+                pendingBytesTotal -= chunk.count
+                lastActivityTime = Date()
+                maybeSendWindowUpdate(reason: "post-send") // 会在增长显著时写“Window update (post-send)”日志
+            } else {
+                // 仍失败：把当前块放回队首，停止 flush，留待后续条件更好时再发
+                pendingClientBytes.insert(chunk, at: 0)
+                break
+            }
         }
-
-        pendingClientBytes.removeAll()
-        pendingBytesTotal = 0
-        // pending 清空 -> 窗口可能大幅增长，主动发 Window Update
-        maybeSendWindowUpdate(reason: "flushPendingData")
     }
 
     private func readFromSocks() async {
@@ -1081,11 +1114,19 @@ final actor TCPConnection {
         
         updateAdvertisedWindow() // shrink only
     }
+    
+    private var isEmergencyMemoryPressure: Bool {
+        // TODO: 将来这里可以接 ConnectionManager 的内存监控
+        return false
+    }
 
     private func trimPendingBuffer() {
         guard !pendingClientBytes.isEmpty else { return }
 
-
+        if !isEmergencyMemoryPressure { // 新增：常态不丢
+            return
+        }
+        
         var dropped = 0
         let idx = 1 // Keep first segment (usually TLS ClientHello)
 
@@ -1106,13 +1147,41 @@ final actor TCPConnection {
 
     private func sendRawToSocks(_ data: Data) {
         socksConnection?.send(content: data, completion: .contentProcessed({ [weak self] err in
-            Task { [weak self] in
-                if let err = err {
-                    await self?.log("SOCKS send error: \(err)")
-                    await self?.close()
-                }
+            if let err = err {
+                Task { await self?.log("SOCKS send error: \(err)"); await self?.close() }
+                return
             }
+            Task { await self?.recomputeWindowAndMaybeAck(expand: true, reason: "post-send") }
         }))
+    }
+    
+    @inline(__always)
+    private func expandWindowAfterSend() {
+        // 1) 重新计算可用空间
+        let cap = min(recvBufferLimit, Int(MAX_WINDOW_SIZE))
+        let used = bufferedBytesForWindow()         // 你已有的函数
+        let free = max(0, cap - used)
+        let target = UInt16(free)
+
+        // 2) 若窗口确实变大了，更新并尝试发 Window Update
+        if target > availableWindow {
+            availableWindow = target
+            maybeSendWindowUpdate(reason: "post-send")  // 现有函数，会内部触发纯 ACK
+            lastAdvertisedWindow = availableWindow      // 与你现有语义对齐
+        }
+    }
+    
+    @inline(__always)
+    private func recomputeWindowAndMaybeAck(expand: Bool, reason: String) {
+        let prev = availableWindow
+        // 统一用“官方”计算：cap - used
+        updateAdvertisedWindow()  // 已存在的方法，会更新 availableWindow（cap-used）
+        // 收缩：只更新数值，不主动发 ACK（TCP 允许窗口收缩；必要时对端会探测）
+        if !expand { return }
+        // 扩张：在增长显著（0->正 或 ≥1 MSS）时发 Window Update（纯 ACK）
+        if availableWindow > prev {
+            maybeSendWindowUpdate(reason: reason)  // 已存在的方法，内部会更新 lastAdvertisedWindow
+        }
     }
 
     private func setSocksState(_ newState: SocksState) async {
@@ -1450,7 +1519,7 @@ final actor TCPConnection {
         lastOverflowTime = Date()
         
         let currentSize = recvBufferLimit
-        let newSize = min(currentSize * 2, 131072) // 最大128KB
+        let newSize = min(currentSize * 2, 1024 * 192) // 最大128KB
         
         if currentSize < newSize {
             log("[Buffer] Overflow detected (#\(overflowCount)), expanding from \(currentSize) to \(newSize)")
