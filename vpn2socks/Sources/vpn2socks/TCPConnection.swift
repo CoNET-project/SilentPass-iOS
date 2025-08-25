@@ -144,17 +144,23 @@ final actor TCPConnection {
     private var trafficType = TrafficType()
     
     // 优化的缓冲区大小常量 - 改为静态常量
-    private static let MIN_BUFFER = 4 * 1024      // 最小4KB
-    private static let DEFAULT_BUFFER = 64 * 1024  // 默认64KB
-    private static let MAX_BUFFER = 256 * 1024     // 最大256KB
-    private static let BURST_BUFFER = 512 * 1024   // 突发流量512KB
-    private static let YOUTUBE_BUFFER = 192 * 1024 // YouTube专用192KB
+       private static let MIN_BUFFER = 4 * 1024
+       private static let DEFAULT_BUFFER = 64 * 1024
+       private static let MAX_BUFFER = 256 * 1024
+       private static let BURST_BUFFER = 512 * 1024
+       private static let YOUTUBE_BUFFER = 192 * 1024
+       
+       // 新增的YouTube相关常量
+       private static let YOUTUBE_MAX_BUFFER = 256 * 1024  // YouTube最大缓冲
+       private static let YOUTUBE_EXPAND_STEP = 64 * 1024  // 每次扩展64KB
+       
+       // 社交媒体专用缓冲区常量
+       private static let SOCIAL_MIN_BUFFER = 32 * 1024
+       private static let SOCIAL_NORMAL_BUFFER = 96 * 1024
+       private static let SOCIAL_SCROLL_BUFFER = 64 * 1024
+       private static let SOCIAL_VIDEO_BUFFER = 128 * 1024
     
-    // 社交媒体专用缓冲区常量 - 改为静态常量
-    private static let SOCIAL_MIN_BUFFER = 32 * 1024      // 32KB 最小
-    private static let SOCIAL_NORMAL_BUFFER = 96 * 1024   // 96KB 正常
-    private static let SOCIAL_SCROLL_BUFFER = 64 * 1024   // 64KB 滚动时
-    private static let SOCIAL_VIDEO_BUFFER = 128 * 1024   // 128KB 视频
+    
     
     // 为了方便访问，添加实例属性
     private var MIN_BUFFER: Int { Self.MIN_BUFFER }
@@ -168,8 +174,26 @@ final actor TCPConnection {
     private var SOCIAL_VIDEO_BUFFER: Int { Self.SOCIAL_VIDEO_BUFFER }
     
     // 快速响应阈值
-    private let FAST_SHRINK_THRESHOLD: TimeInterval = 0.1  // 100ms
-    private let NORMAL_SHRINK_THRESHOLD: TimeInterval = 0.5  // 500ms
+    // TCPConnection.swift - 添加动态阈值
+    private var FAST_SHRINK_THRESHOLD: TimeInterval {
+        if isYouTubeConnection() {
+            return 0.2  // YouTube: 200ms
+        } else if isSocialMediaConnection() {
+            return 0.15 // 社交媒体: 150ms
+        } else {
+            return 0.1  // 其他: 100ms
+        }
+    }
+    
+    private var NORMAL_SHRINK_THRESHOLD: TimeInterval {
+        if isYouTubeConnection() {
+            return 1.0  // YouTube: 1秒
+        } else if isSocialMediaConnection() {
+            return 0.75 // 社交媒体: 750ms
+        } else {
+            return 0.5  // 其他: 500ms
+        }
+    }
     
     // 连接启动时间（用于判断新连接）
     private var connectionStartTime: Date?
@@ -462,7 +486,7 @@ final actor TCPConnection {
     }
 
     // MARK: - YouTube & Social Media Detection
-    private func isYouTubeConnection() -> Bool {
+    public func isYouTubeConnection() -> Bool {
         guard let host = destinationHost?.lowercased() else { return false }
         return host.contains("youtube.com") ||
                host.contains("ytimg.com") ||
@@ -668,33 +692,6 @@ final actor TCPConnection {
         }
     }
     
-    // MARK: - 核心改进：快速收缩
-    private func checkAndShrinkImmediate() {
-        let idleTime = Date().timeIntervalSince(backpressure.lastDataReceivedTime)
-        
-        // 100ms无数据 + 缓冲区使用率低 = 立即收缩
-        if idleTime > FAST_SHRINK_THRESHOLD {
-            let usage = bufferedBytesForWindow()
-            let utilizationRate = Double(usage) / Double(recvBufferLimit)
-            
-            if utilizationRate < 0.1 && recvBufferLimit > MIN_BUFFER {
-                // 特殊连接保护
-                let minSize = getMinBufferSize()
-                recvBufferLimit = minSize
-                updateAdvertisedWindow()
-                log("[FastShrink] 100ms idle, shrink to \(minSize)")
-                return
-            }
-        }
-        
-        // 500ms无数据 = 强制收缩
-        if idleTime > NORMAL_SHRINK_THRESHOLD && recvBufferLimit > MIN_BUFFER * 2 {
-            let minSize = getMinBufferSize()
-            recvBufferLimit = max(minSize, recvBufferLimit / 4)
-            updateAdvertisedWindow()
-            log("[Shrink] 500ms idle, shrink to \(recvBufferLimit)")
-        }
-    }
     
     private func getMinBufferSize() -> Int {
         if isYouTubeConnection() {
@@ -706,8 +703,38 @@ final actor TCPConnection {
         }
     }
     
+    // TCPConnection.swift - 添加防抖动属性
+    private var lastExpansionTime: Date?
+    private var lastShrinkTime: Date?
+    private var expansionCooldown: TimeInterval {
+        if isYouTubeConnection() {
+            return 0.5  // YouTube: 500ms冷却
+        } else {
+            return 0.3  // 其他: 300ms冷却
+        }
+    }
+
+    
+    
     // MARK: - 核心改进：智能扩展
     private func shouldExpandBuffer() -> Bool {
+        // 检查扩展冷却期
+        if let lastExpansion = lastExpansionTime {
+            let timeSinceExpansion = Date().timeIntervalSince(lastExpansion)
+            if timeSinceExpansion < expansionCooldown {
+                log("[Throttle] Expansion blocked: \(Int((expansionCooldown - timeSinceExpansion) * 1000))ms cooldown remaining")
+                return false
+            }
+        }
+        
+        // 检查收缩后的稳定期
+        if let lastShrink = lastShrinkTime {
+            let timeSinceShrink = Date().timeIntervalSince(lastShrink)
+            if timeSinceShrink < 0.2 {  // 收缩后200ms内不扩展
+                return false
+            }
+        }
+        
         // 必须有实际流量
         guard isReallyActive() else { return false }
         
@@ -724,25 +751,34 @@ final actor TCPConnection {
     
     private func intelligentExpand() {
         guard shouldExpandBuffer() else { return }
-        
-        let targetSize: Int
-        if backpressure.overflowCount > 0 {
-            // 有溢出：激进扩展
-            targetSize = min(MAX_BUFFER, recvBufferLimit * 3)
-        } else if backpressure.growthTrend > 0.3 {
-            // 高增长：2倍扩展
-            targetSize = min(MAX_BUFFER, recvBufferLimit * 2)
-        } else {
-            // 温和扩展
-            targetSize = min(MAX_BUFFER, recvBufferLimit + 32 * 1024)
-        }
-        
-        if targetSize > recvBufferLimit {
-            recvBufferLimit = targetSize
-            updateAdvertisedWindow()
-            maybeSendWindowUpdate(reason: "intelligent-expand")
-            log("[Expand] Based on actual demand to \(targetSize)")
-        }
+            
+            let targetSize: Int
+            if backpressure.overflowCount > 0 {
+                // 有溢出：激进扩展
+                if isYouTubeConnection() {
+                    targetSize = min(Self.YOUTUBE_MAX_BUFFER, recvBufferLimit * 2)  // 使用 Self.
+                } else {
+                    targetSize = min(Self.MAX_BUFFER, recvBufferLimit * 3)  // 使用 Self.
+                }
+            } else if backpressure.growthTrend > 0.3 {
+                // 高增长：适度扩展
+                if isYouTubeConnection() {
+                    targetSize = min(Self.YOUTUBE_MAX_BUFFER, recvBufferLimit + Self.YOUTUBE_EXPAND_STEP)  // 使用 Self.
+                } else {
+                    targetSize = min(Self.MAX_BUFFER, recvBufferLimit * 2)  // 使用 Self.
+                }
+            } else {
+                // 温和扩展
+                targetSize = min(Self.MAX_BUFFER, recvBufferLimit + 32 * 1024)  // 使用 Self.
+            }
+            
+            if targetSize > recvBufferLimit {
+                recvBufferLimit = targetSize
+                lastExpansionTime = Date()
+                updateAdvertisedWindow()
+                maybeSendWindowUpdate(reason: "intelligent-expand")
+                log("[Expand] Based on actual demand to \(targetSize)")
+            }
     }
     
     // 核心改进：精准流量感知
@@ -768,6 +804,11 @@ final actor TCPConnection {
     
     // MARK: - 核心改进：零延迟恢复
     private func handleBufferOverflow() {
+        
+        #if DEBUG
+        logBufferState("Before Overflow Handling")  // 溢出前状态
+        #endif
+        
         backpressure.recordOverflow()
         overflowCount += 1
         lastOverflowTime = Date()
@@ -1119,6 +1160,7 @@ final actor TCPConnection {
         trafficPattern.lastRequestTime = Date()
         trafficPattern.connectionAge = Date().timeIntervalSince(connectionStartTime ?? Date())
         
+        // 分类请求大小
         if payloadSize < 10 * 1024 {
             trafficPattern.smallPayloadCount += 1
         } else if payloadSize < 100 * 1024 {
@@ -1130,15 +1172,174 @@ final actor TCPConnection {
         trafficPattern.analyze()
         trafficPattern.detectSocialMediaBehavior()
         
-        // 如果检测到批量模式或YouTube模式，立即扩展缓冲区
-        if (trafficPattern.isBatchPattern || trafficPattern.isYouTubePattern) &&
-           recvBufferLimit < YOUTUBE_BUFFER {
-            expandForBatchRequests()
+        // 增强的批量检测
+        if trafficPattern.smallPayloadCount > 5 &&
+           Date().timeIntervalSince(trafficPattern.lastRequestTime) < 2.0 {
+            batchDetection.recordBatchRequest()
+            
+            // 只有确认的批量模式才扩展
+            if batchDetection.shouldTriggerExpansion {
+                if isYouTubeConnection() || trafficPattern.isYouTubePattern {
+                    log("[YouTube] Confirmed batch pattern (count: \(batchDetection.consecutiveBatchRequests))")
+                    
+                    #if DEBUG
+                    logBufferState("Batch Pattern Detected")  // 批量模式检测
+                    #endif
+                    expandForConfirmedBatch()
+                }
+            }
+        } else if Date().timeIntervalSince(trafficPattern.lastRequestTime) > 3.0 {
+            // 超过3秒没有批量请求，重置
+            batchDetection.reset()
+        }
+    }
+    
+    
+    // 新增：临时延长收缩阈值
+    private var temporaryShrinkExtension: Date?
+
+    
+    // TCPConnection.swift - 批量检测相关属性
+    private var temporaryShrinkExtensionTime: Date?
+
+    // 临时延长收缩阈值的方法
+    private func temporarilyExtendShrinkThreshold() {
+        temporaryShrinkExtensionTime = Date().addingTimeInterval(3.0)  // 3秒内使用更长的收缩时间
+        log("[Batch] Extending shrink threshold for 3 seconds")
+    }
+
+    // 获取实际的快速收缩阈值
+    private var actualFastShrinkThreshold: TimeInterval {
+        // 检查是否在延长期内
+        if let extendTime = temporaryShrinkExtensionTime {
+            if Date() < extendTime {
+                return 0.5  // 批量模式期间，500ms才收缩
+            } else {
+                // 过期了，清理
+                temporaryShrinkExtensionTime = nil
+            }
         }
         
-        // 社交媒体滚动检测
-        if trafficPattern.isScrollingPattern {
-            adjustBufferForScrolling()
+        // 返回正常的阈值
+        return FAST_SHRINK_THRESHOLD
+    }
+
+    // 在 checkAndShrinkImmediate 方法中使用 actualFastShrinkThreshold
+    private func checkAndShrinkImmediate() {
+        let idleTime = Date().timeIntervalSince(backpressure.lastDataReceivedTime)
+        
+        if idleTime > actualFastShrinkThreshold {
+            let usage = bufferedBytesForWindow()
+            let utilizationRate = Double(usage) / Double(recvBufferLimit)
+            
+            if utilizationRate < 0.1 && recvBufferLimit > getMinBufferSize() {
+                let minSize = getMinBufferSize()
+                
+                // YouTube特殊处理：分步收缩
+                if isYouTubeConnection() && recvBufferLimit > Self.YOUTUBE_BUFFER {  // 使用 Self.
+                    // 先收缩到192KB
+                    recvBufferLimit = Self.YOUTUBE_BUFFER
+                    log("[YouTube-Shrink] Step 1: shrink to \(Self.YOUTUBE_BUFFER)")
+                } else {
+                    recvBufferLimit = minSize
+                    log("[FastShrink] \(Int(idleTime * 1000))ms idle, shrink to \(minSize)")
+                }
+                
+                updateAdvertisedWindow()
+                return
+            }
+        }
+        
+        if idleTime > NORMAL_SHRINK_THRESHOLD && recvBufferLimit > getMinBufferSize() * 2 {
+            let minSize = getMinBufferSize()
+            recvBufferLimit = max(minSize, recvBufferLimit / 2)
+            updateAdvertisedWindow()
+            log("[Shrink] \(Int(idleTime * 1000))ms idle, shrink to \(recvBufferLimit)")
+        }
+    }
+    
+
+        
+        // 创建一个 Sendable 的状态结构体
+        public struct BufferState: Sendable {
+            public let bufferSize: Int
+            public let usage: Int
+            public let utilizationRate: Double
+            public let overflowCount: Int
+            public let batchCount: Int
+            public let isYouTube: Bool
+            public let isSocialMedia: Bool
+            public let connectionType: String
+            
+            
+        }
+    
+    
+    
+    // 添加详细的缓冲区状态日志方法
+    private func logBufferState(_ context: String) {
+        #if DEBUG
+        let usage = bufferedBytesForWindow()
+        let utilizationRate = Double(usage) * 100.0 / Double(recvBufferLimit)
+        
+        let stats = """
+        [\(context)] Buffer State:
+        - Current: \(recvBufferLimit) bytes
+        - Usage: \(usage)/\(recvBufferLimit) (\(String(format: "%.1f%%", utilizationRate)))
+        - Last Expansion: \(lastExpansionTime.map { String(format: "%.1fs ago", -$0.timeIntervalSinceNow) } ?? "never")
+        - Last Shrink: \(lastShrinkTime.map { String(format: "%.1fs ago", -$0.timeIntervalSinceNow) } ?? "never")
+        - Batch Count: \(batchDetection.consecutiveBatchRequests)
+        - Batch Confirmed: \(batchDetection.isConfirmedBatch)
+        - Overflow: \(backpressure.overflowCount)
+        - Growth Trend: \(String(format: "%.2f", backpressure.growthTrend))
+        - Connection Type: \(getConnectionTypeString())
+        """
+        log(stats)
+        #endif
+    }
+    
+    // 辅助方法：获取连接类型字符串
+    private func getConnectionTypeString() -> String {
+        if isYouTubeConnection() {
+            return "YouTube"
+        } else if isSocialMediaConnection() {
+            return "Social Media"
+        } else if destPort == 5223 || destPort == 5228 {
+            return "Push Service"
+        } else {
+            return "General"
+        }
+    }
+
+    // 完整的 expandForConfirmedBatch 方法
+    private func expandForConfirmedBatch() {
+        // 检查冷却期
+        if let lastTime = lastExpansionTime,
+           Date().timeIntervalSince(lastTime) < expansionCooldown {
+            return
+        }
+        
+        let targetSize: Int
+        if isYouTubeConnection() {
+            // YouTube批量模式：直接扩展到较大值
+            if recvBufferLimit < Self.YOUTUBE_BUFFER {  // ✅ 使用 Self.
+                targetSize = Self.YOUTUBE_BUFFER
+            } else if recvBufferLimit < Self.YOUTUBE_MAX_BUFFER {  // ✅ 使用 Self.
+                targetSize = min(Self.YOUTUBE_MAX_BUFFER, recvBufferLimit + Self.YOUTUBE_EXPAND_STEP)  // ✅ 使用 Self.
+            } else {
+                return
+            }
+            
+            expandBufferImmediate(to: targetSize)
+            lastExpansionTime = Date()
+            log("[YouTube-Batch] Confirmed batch expansion to \(targetSize)")
+            
+        #if DEBUG
+        logBufferState("Batch Expansion")  // 添加详细日志
+        #endif
+            
+            // 批量模式下，临时延长收缩时间
+            temporarilyExtendShrinkThreshold()
         }
     }
     
@@ -1146,38 +1347,40 @@ final actor TCPConnection {
     private var lastBatchExpansionTime: Date?
     private var batchExpansionCount: Int = 0
     
+    
     private func expandForBatchRequests() {
         // 防止重复扩展
-            if let lastTime = lastBatchExpansionTime,
-               Date().timeIntervalSince(lastTime) < 2.0 {
-                return  // 2秒内不重复扩展
-            }
-            
-            let targetSize: Int
-            
-            if trafficPattern.isYouTubePattern || isYouTubeConnection() {
-                // YouTube渐进式扩展
-                if recvBufferLimit < 96 * 1024 {
-                    targetSize = 96 * 1024
-                } else if recvBufferLimit < YOUTUBE_BUFFER {
-                    targetSize = YOUTUBE_BUFFER
-                } else {
-                    return  // 已达到最大值
-                }
-                log("[YouTube] Batch mode detected, expanding to \(targetSize)")
-            } else if trafficPattern.isSocialMediaPattern || isSocialMediaConnection() {
-                targetSize = SOCIAL_NORMAL_BUFFER
-                log("[Social] Batch mode detected, expanding to \(targetSize)")
+        if let lastTime = lastBatchExpansionTime,
+           Date().timeIntervalSince(lastTime) < 2.0 {
+            return
+        }
+        
+        let targetSize: Int
+        
+        if trafficPattern.isYouTubePattern || isYouTubeConnection() {
+            // YouTube渐进式扩展
+            if recvBufferLimit < 96 * 1024 {
+                targetSize = 96 * 1024
+            } else if recvBufferLimit < Self.YOUTUBE_BUFFER {  // ✅ 使用 Self.
+                targetSize = Self.YOUTUBE_BUFFER
+            } else if recvBufferLimit < Self.YOUTUBE_MAX_BUFFER {  // ✅ 使用 Self.
+                // 允许扩展到256KB
+                targetSize = min(Self.YOUTUBE_MAX_BUFFER, recvBufferLimit + Self.YOUTUBE_EXPAND_STEP)  // ✅ 使用 Self.
             } else {
-                targetSize = min(128 * 1024, recvBufferLimit * 2)
-                log("[BatchMode] Expanding to \(targetSize)")
+                return  // 已达到最大值
             }
-            
-            if targetSize > recvBufferLimit {
-                expandBufferImmediate(to: targetSize)
-                lastBatchExpansionTime = Date()
-                batchExpansionCount += 1
-            }
+            log("[YouTube] Batch mode detected, expanding to \(targetSize)")
+        } else if trafficPattern.isSocialMediaPattern || isSocialMediaConnection() {
+            targetSize = Self.SOCIAL_NORMAL_BUFFER  // ✅ 使用 Self.
+        } else {
+            targetSize = min(128 * 1024, recvBufferLimit * 2)
+        }
+        
+        if targetSize > recvBufferLimit {
+            expandBufferImmediate(to: targetSize)
+            lastBatchExpansionTime = Date()
+            batchExpansionCount += 1
+        }
     }
     
     private func evaluateBufferExpansion() {
@@ -1201,6 +1404,9 @@ final actor TCPConnection {
         updateAdvertisedWindow()
         maybeSendWindowUpdate(reason: "immediate-expand")
         log("[Backpressure] Buffer expanded: \(oldSize) -> \(size) bytes")
+        #if DEBUG
+           logBufferState("After Expansion")  // 添加详细日志
+        #endif
     }
 
     private func shrinkBufferImmediate() {
@@ -1208,6 +1414,7 @@ final actor TCPConnection {
         if recvBufferLimit > minSize {
             let oldSize = recvBufferLimit
             recvBufferLimit = minSize
+            lastShrinkTime = Date()  // 记录收缩时间
             
             if bufferedBytesForWindow() > minSize {
                 trimBuffersToFit()
@@ -1215,8 +1422,57 @@ final actor TCPConnection {
             
             updateAdvertisedWindow()
             log("[Backpressure] Buffer shrunk: \(oldSize) -> \(minSize) bytes")
+            
+        #if DEBUG
+        logBufferState("After Shrink")  // 添加详细日志
+        #endif
         }
     }
+    
+    // TCPConnection.swift - 增强批量检测
+    private struct BatchDetection {
+        var consecutiveBatchRequests: Int = 0
+        var firstBatchTime: Date?
+        var lastBatchTime: Date?
+        var isConfirmedBatch: Bool = false
+        
+        mutating func recordBatchRequest() {
+            let now = Date()
+            
+            if let last = lastBatchTime,
+               now.timeIntervalSince(last) > 2.0 {
+                // 超过2秒，重置计数
+                reset()
+            }
+            
+            if firstBatchTime == nil {
+                firstBatchTime = now
+            }
+            
+            lastBatchTime = now
+            consecutiveBatchRequests += 1
+            
+            // 连续3次批量请求才确认
+            if consecutiveBatchRequests >= 3 {
+                isConfirmedBatch = true
+            }
+        }
+        
+        mutating func reset() {
+            consecutiveBatchRequests = 0
+            firstBatchTime = nil
+            lastBatchTime = nil
+            isConfirmedBatch = false
+        }
+        
+        var shouldTriggerExpansion: Bool {
+            return isConfirmedBatch &&
+                   consecutiveBatchRequests >= 3 &&
+                   (lastBatchTime?.timeIntervalSince(firstBatchTime ?? Date()) ?? 0) < 2.0
+        }
+    }
+    
+    private var batchDetection = BatchDetection()
 
     private func trimBuffersToFit() {
         while bufferedBytesForWindow() > recvBufferLimit && !outOfOrderPackets.isEmpty {

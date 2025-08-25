@@ -219,6 +219,8 @@ final actor ConnectionManager {
         logger.warning("[Memory] Cleanup requested, target: \(targetCount) connections")
         await trimConnections(targetMax: targetCount)
     }
+
+    
     
     func emergencyCleanup() async {
         if !keepCritical {
@@ -591,6 +593,7 @@ final actor ConnectionManager {
                 guard let self = self else { break }
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
                 await self.printStats()
+                
             }
         }
     }

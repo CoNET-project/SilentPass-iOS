@@ -334,27 +334,27 @@
             filePath = "vpn2socks/Sources/vpn2socks/TCPConnection.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "988"
-            endingLineNumber = "988"
+            startingLineNumber = "1029"
+            endingLineNumber = "1029"
             landmarkName = "TCPConnection"
             landmarkType = "3">
             <Locations>
                <Location
-                  uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - fbf452179dcec330"
+                  uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - b66014c16326e6e3"
                   shouldBeEnabled = "Yes"
                   ignoreCount = "0"
                   continueAfterRunningActions = "No"
-                  symbolName = "(1) suspend resume partial function for vpn2socks.TCPConnection.start() async -&gt; ()"
+                  symbolName = "closure #2 (Swift.CheckedContinuation&lt;(), Swift.Never&gt;) -&gt; () in vpn2socks.TCPConnection.start() async -&gt; ()"
                   moduleName = "CoNETVPN1.debug.dylib"
                   usesParentBreakpointCondition = "Yes"
                   urlString = "file:///Users/peter/Downloads/SilentPass-iOS/vpn2socks/Sources/vpn2socks/TCPConnection.swift"
                   startingColumnNumber = "9223372036854775807"
                   endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "990"
-                  endingLineNumber = "990">
+                  startingLineNumber = "1029"
+                  endingLineNumber = "1029">
                </Location>
                <Location
-                  uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - 950f747958500eb5"
+                  uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - 950f7479585003ee"
                   shouldBeEnabled = "Yes"
                   ignoreCount = "0"
                   continueAfterRunningActions = "No"
@@ -364,8 +364,8 @@
                   urlString = "file:///Users/peter/Downloads/SilentPass-iOS/vpn2socks/Sources/vpn2socks/TCPConnection.swift"
                   startingColumnNumber = "9223372036854775807"
                   endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "990"
-                  endingLineNumber = "990">
+                  startingLineNumber = "1031"
+                  endingLineNumber = "1031">
                </Location>
             </Locations>
          </BreakpointContent>
