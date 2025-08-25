@@ -4,6 +4,7 @@
 //  Created by peter xie on 2021-10-18.
 //
 
+
 import NetworkExtension
 import os.log
 import vpn2socks
@@ -26,10 +27,13 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     override init() {
         super.init()
         do {
+
+//                    try self.socksServer?.start(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
+
             try self.socksServer?.start()
             NSLog("PacketTunnelProvider SOCKS server started.")
         } catch {
-            NSLog("PacketTunnelProvider Failed to start SOCKS server: \(error)")
+            NSLog("Failed to start SOCKS server: \(error)")
         }
     }
 
@@ -50,17 +54,16 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let entryNodesStr = options["entryNodes"] as? String ?? ""
                 let egressNodesStr = options["egressNodes"] as? String ?? ""
                 let privateKey = options["privateKey"] as? String ?? ""
-                //NSLog("PacketTunnelProvider SOCKS entryNodesStr\(entryNodesStr) egressNodesStr\(egressNodesStr)")
-                
+
                 let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
                 let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
 
                 do {
+//                    try self.socksServer?.start(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
                     try self.socksServer?.start()
-                    Server.layerMinus.startInVPN(privateKey: privateKey,
-                        entryNodes: entryNodes,
-                        egressNodes: egressNodes,
-                        port: 8888)
+
+                    self.socksServer?.layerMinusInit(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
+
                     NSLog("PacketTunnelProvider SOCKS server started.")
                 } catch {
                     NSLog("Failed to start SOCKS server: \(error)")
@@ -104,4 +107,7 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     override func wake() {
         NSLog("🔔 PacketTunnelProvider.wake called")
     }
+}
+extension Notification.Name {
+    static let didUpdateConnectionNodes = Notification.Name("didUpdateConnectionNodes")
 }

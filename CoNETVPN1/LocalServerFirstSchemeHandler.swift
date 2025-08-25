@@ -9,8 +9,6 @@ import WebKit
 
 class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
 
-    private let cacheManager = CacheManager.shared
-
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         guard let requestURL = urlSchemeTask.request.url else {
             urlSchemeTask.didFailWithError(URLError(.badURL))
@@ -40,7 +38,6 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
             } else {
                 // SERVER IS OFFLINE: Serve from cache
                 print("🔴 Server is Offline. Attempting to serve from cache...")
-                self.serveFromCache(for: finalURL, with: urlSchemeTask)
             }
         }
     }
@@ -88,22 +85,8 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
 
             // Update the cache in the background
             print("🗄️ Caching response for \(url.absoluteString)")
-            self?.cacheManager.cacheData(data, for: response)
+
         }
         task.resume()
-    }
-
-    /// 3. Serves data directly from the cache.
-    private func serveFromCache(for url: URL, with urlSchemeTask: WKURLSchemeTask) {
-        if let cachedData = cacheManager.getCachedData(for: url) {
-            print("✅ Cache HIT for \(url.absoluteString)")
-            urlSchemeTask.didReceive(cachedData.response)
-            urlSchemeTask.didReceive(cachedData.data)
-            urlSchemeTask.didFinish()
-        } else {
-            print("🚫 Cache MISS for \(url.absoluteString). No fallback available.")
-            // The server is offline AND there's no cache. The request fails.
-            urlSchemeTask.didFailWithError(URLError(.cannotConnectToHost))
-        }
     }
 }

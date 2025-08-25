@@ -20,8 +20,32 @@ final class Server {
     private var tickUp = 0
     private var tickDown = 0
     private var statTimer: DispatchSourceTimer?
-    static public let layerMinus = LayerMinus(port: 8888)
+    private let layerMinus = LayerMinus()
+    
+    private var didCutoverToLayerMinus = false
+    
+    /// 关闭所有非 LayerMinus 的旧连接，只执行一次
+    private func cutoverToLayerMinusIfNeeded(triggeringConn: ServerConnection) {
+        guard !didCutoverToLayerMinus else { return }
+        guard triggeringConn.isLayerMinusRouted else { return } // 只有当触发连接是 LM 才执行
 
+        // LayerMinus 已就绪才切换
+        guard let eg = self.layerMinus.getRandomEgressNodes(),
+              let en = self.layerMinus.getRandomEntryNodes(),
+              !eg.isEmpty, !en.isEmpty else { return }
+
+        didCutoverToLayerMinus = true
+        self.log("⚡️ LayerMinus cutover: closing non-LM connections, keeping LM connections")
+
+        let victims = self.conns.filter { !$0.value.isLayerMinusRouted }
+        for (id, conn) in victims {
+            self.log("Cutover: shutting down non-LM connection #\(id)")
+            conn.shutdown(reason: "LayerMinus cutover")
+        }
+        self.log("Cutover done: victims=\(victims.count), now conns=\(self.conns.count)")
+    }
+    
+    
     init(host: String = "127.0.0.1",
          port: UInt16 = 8888,
          portLabel: String? = nil,
@@ -45,7 +69,7 @@ final class Server {
             return
         }
 
-        log("SOCKS5 Server starting on \(bindHost):\(portLabel)")
+        //log("SOCKS5 Server starting on \(bindHost):\(portLabel) \(entryNodes.count) \(egressNodes.count)")
 
         let tcp = NWProtocolTCP.Options()
         tcp.enableKeepalive = true
@@ -84,23 +108,34 @@ final class Server {
                 self.nextID &+= 1
                 let id = self.nextID
                 
-                let conn = ServerConnection(
-                    id: id,
-                    connection: nw,
-                    LayerMinus: Server.layerMinus,
-                    onClosed: { [weak self] connectionId in
-                        // 当 ServerConnection 关闭时，从字典中移除
-                        self?.onConnectionClosed(id: connectionId)
+
+               
+                    
+                    let conn = ServerConnection(
+                        id: id,
+                        connection: nw,
+                        layerMinus: self.layerMinus,
+                        onClosed: { [weak self] connectionId in
+                            // 当 ServerConnection 关闭时，从字典中移除
+                            self?.onConnectionClosed(id: connectionId)
+                        }
+                    )
+                    
+                    self.conns[id] = conn
+                    
+                    if self.verbose {
+                        self.log("SOCKS5 new conn #\(id), active=\(self.conns.count)")
                     }
-                )
+                        
+                        
+                    conn.onRoutingDecided = { [weak self] conn in
+                        self?.cutoverToLayerMinusIfNeeded(triggeringConn: conn)
+                    }
+
+                    conn.start()
                 
-                self.conns[id] = conn
                 
-                if self.verbose {
-                    self.log("SOCKS5 new conn #\(id), active=\(self.conns.count)")
-                }
                 
-                conn.start()
             }
         }
 
@@ -108,6 +143,18 @@ final class Server {
         startStatsTimer()
         
         log("SOCKS5 Server LayerMinus started \(Server.layerMinus.egressNodes.count) egress nodes, \(Server.layerMinus.entryNodes.count) entry nodes ")
+    }
+    
+    
+    
+    func layerMinusInit (
+        privateKey: String, entryNodes: [Node], egressNodes: [Node]
+    ) {
+        self.layerMinus.startInVPN(privateKey: privateKey,
+                                   entryNodes: entryNodes,
+                                   egressNodes: egressNodes,
+                                   port: 8888)
+        self.log("layerMinusInit success privateKey = \(privateKey) entryNodes = \(entryNodes.count) egressNodes = \(egressNodes.count)")
     }
 
     func stop() {
@@ -146,7 +193,9 @@ final class Server {
     }
 
     // Logging & Error
-    func log(_ s: String) { NSLog("%@", s) }
+    func log(_ s: String) {
+        NSLog("[ServerConnection] %@", s)
+    }
     
     static func describe(_ err: Error) -> String {
         if let ne = err as? NWError {

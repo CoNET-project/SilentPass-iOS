@@ -35,13 +35,7 @@
 			<string>utility</string>
 		</dict>
 	</dict>
-	
-	<!-- Background Modes for Network Extension -->
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>network-authentication</string>
-		<string>voip</string>
-	</array>
+
 	
 	<!-- Required Capabilities -->
 	<key>UIRequiredDeviceCapabilities</key>

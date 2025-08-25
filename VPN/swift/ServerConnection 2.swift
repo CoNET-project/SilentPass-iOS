@@ -21,17 +21,31 @@ public final class ServerConnection {
         case bridged
         case closed
     }
+    
+    /// 该连接是否已切到 LayerMinus 通道（由业务分支显式标记）
+    public private(set) var isLayerMinusRouted: Bool = false
+
+    /// 当确定此连接将经由 LayerMinusBridge 转发时调用
+    public func markAsLayerMinusRouted() {
+        self.isLayerMinusRouted = true
+    }
+    
+    public var onRoutingDecided: ((ServerConnection) -> Void)?
+    
     private var phase: Phase = .methodSelect
     private var closed = false
     private var handedOff = false
     private var bridge: LayerMinusBridge?
-    private let LayerMinus: LayerMinus
+
+    private var layerMinus: LayerMinus
+
     init(
         id: UInt64,
         connection: NWConnection,
         LayerMinus: LayerMinus,
         logger: Logger = Logger(subsystem: "VPN", category: "SOCKS5"),
         verbose: Bool = true,
+        layerMinus: LayerMinus,
         onClosed: ((UInt64) -> Void)? = nil
     ) {
         self.id = id
@@ -40,14 +54,14 @@ public final class ServerConnection {
         self.verbose = verbose
         self.onClosed = onClosed
         self.queue = DispatchQueue(label: "ServerConnection.\(id)", qos: .userInitiated)
-        self.LayerMinus = LayerMinus
+        self.layerMinus = layerMinus
         // 简单的生命周期日志
         log("🟢 CREATED ServerConnection #\(id)")
     }
 
     @inline(__always)
     private func log(_ msg: String) {
-        NSLog("[ServerConnection] #\(id) %@", msg)
+        //NSLog("[ServerConnection] #\(id) %@", msg)
     }
 
     public func start() {
@@ -394,26 +408,69 @@ public final class ServerConnection {
         phase = .bridged
         
         log("Handing off to LayerMinusBridge, no longer receiving from client")
-        
-        // 创建并启动 LayerMinusBridge，保存引用
-        let newBridge = LayerMinusBridge(
-            id: self.id,
-            client: self.client,
-            targetHost: host,
-            targetPort: port,
-            LayerMinus: self.LayerMinus,
-            verbose: self.verbose,
-            onClosed: { [weak self] bridgeId in
-                // 当 bridge 关闭时，关闭 ServerConnection
-                self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
-                self?.close(reason: "Bridge closed")
+        guard let egressNode = self.layerMinus.getRandomEgressNodes(),
+              let entryNode = self.layerMinus.getRandomEntryNodes(),
+              !egressNode.isEmpty,
+              !entryNode.isEmpty else {
+            // 创建并启动 LayerMinusBridge，保存引用
+            let newBridge = LayerMinusBridge(
+                id: self.id,
+                client: self.client,
+                targetHost: host,
+                targetPort: port,
+                verbose: self.verbose,
+                onClosed: { [weak self] bridgeId in
+                    // 当 bridge 关闭时，关闭 ServerConnection
+                    self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
+                    self?.close(reason: "Bridge closed")
+                }
+            )
+            
+            self.bridge = newBridge
+            self.onRoutingDecided?(self)
+            
+            // 传递 Base64 编码的首包给 bridge
+            newBridge.start(withFirstBody: b64)
+            return
+        }
+        self.log("Layer Minus start \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
+        let message = self.layerMinus.makeSocksRequest(host: host, port: port, body: b64, command: "CONNECT")
+        let messageData = message.data(using: .utf8)!
+        let account = self.layerMinus.keystoreManager.addresses![0]
+        Task{
+            let signMessage = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
+            if let callFun2 = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message") {
+                if let ret2 = callFun2.call(withArguments: [message, "0x\(signMessage.toHexString())"]) {
+                    let cmd = ret2.toString()!
+                    let pre_request = self.layerMinus.createValidatorData(node: egressNode, responseData: cmd)
+                    let request = self.layerMinus.makeRequest(host: entryNode.ip_addr, data: pre_request)
+                    
+                    self.log("Layer Minus \(self.id) \(host):\(port) packaged success: \(entryNode.ip_addr), egress \(egressNode.ip_addr) \(request)")
+                    let newBridge = LayerMinusBridge(
+                        id: self.id,
+                        client: self.client,
+                        targetHost: entryNode.ip_addr,
+                        targetPort: 80,
+                        verbose: self.verbose,
+                        onClosed: { [weak self] bridgeId in
+                            // 当 bridge 关闭时，关闭 ServerConnection
+                            self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
+                            self?.close(reason: "Bridge closed")
+                        }
+                    )
+                    self.isLayerMinusRouted = true
+                    self.bridge = newBridge
+                    self.onRoutingDecided?(self)
+                    
+                    // 传递 Base64 编码的首包给 bridge
+                    newBridge.start(withFirstBody: request.data(using: .utf8)!.base64EncodedString())
+                }
             }
-        )
+        }
         
-        self.bridge = newBridge
         
-        // 传递 Base64 编码的首包给 bridge
-        newBridge.start(withFirstBody: b64)
+        
+        
     }
 
     // MARK: TLS/SSL 检测
