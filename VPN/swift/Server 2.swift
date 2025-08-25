@@ -84,14 +84,12 @@ final class Server {
                 self.nextID &+= 1
                 let id = self.nextID
                 
-                guard let egressNode = self.layerMinus.getRandomEgressNodes(),
-                      let entryNode = self.layerMinus.getRandomEntryNodes(),
-                      !egressNode.isEmpty,
-                      !entryNode.isEmpty else {
+               
                     
                         let conn = ServerConnection(
                             id: id,
                             connection: nw,
+                            layerMinus: self.layerMinus,
                             onClosed: { [weak self] connectionId in
                                 // 当 ServerConnection 关闭时，从字典中移除
                                 self?.onConnectionClosed(id: connectionId)
@@ -105,11 +103,11 @@ final class Server {
                         }
                         
                         conn.start()
-                        return
-                }
+                        
                 
-                self.log("SOCKS5 new USE LayerMinus Nodes \(egressNode.ip_addr) \(entryNode.ip_addr)")
-
+                
+                
+                
             }
         }
 
