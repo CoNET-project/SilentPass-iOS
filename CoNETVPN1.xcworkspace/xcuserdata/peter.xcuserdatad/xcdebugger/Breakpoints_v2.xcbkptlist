@@ -324,5 +324,51 @@
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "26E3B738-0F65-4050-8992-2635C19F05A4"
+            shouldBeEnabled = "Yes"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "vpn2socks/Sources/vpn2socks/TCPConnection.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "988"
+            endingLineNumber = "988"
+            landmarkName = "TCPConnection"
+            landmarkType = "3">
+            <Locations>
+               <Location
+                  uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - fbf452179dcec330"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "(1) suspend resume partial function for vpn2socks.TCPConnection.start() async -&gt; ()"
+                  moduleName = "CoNETVPN1.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/peter/Downloads/SilentPass-iOS/vpn2socks/Sources/vpn2socks/TCPConnection.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "990"
+                  endingLineNumber = "990">
+               </Location>
+               <Location
+                  uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - 950f747958500eb5"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "vpn2socks.TCPConnection.calculateGrowthTrend() -&gt; Swift.Double"
+                  moduleName = "CoNETVPN1.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/peter/Downloads/SilentPass-iOS/vpn2socks/Sources/vpn2socks/TCPConnection.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "990"
+                  endingLineNumber = "990">
+               </Location>
+            </Locations>
+         </BreakpointContent>
+      </BreakpointProxy>
    </Breakpoints>
 </Bucket>

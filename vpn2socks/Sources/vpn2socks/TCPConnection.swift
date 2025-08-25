@@ -2,13 +2,12 @@
 //  TCPConnection.swift
 //  vpn2socks
 //
-//  Optimized version based on log analysis (revised + dynamic rwnd w/ window updates)
+//  Optimized version with YouTube, Social Media & Core Performance improvements
 //
 
 import NetworkExtension
 import Network
 import Foundation
-
 
 private struct BackpressureMetrics {
     var lastDataReceivedTime = Date()
@@ -21,6 +20,12 @@ private struct BackpressureMetrics {
     // 滑动窗口记录最近的数据量
     var recentDataPoints: [(Date, Int)] = []
     let windowDuration: TimeInterval = 1.0 // 1秒窗口
+    
+    var growthTrend: Double = 0  // 流量增长趋势
+    var lastGrowthCheck = Date()
+    
+    var overflowCount: Int = 0
+    var lastOverflowTime: Date?
     
     mutating func recordDataReceived(_ bytes: Int) {
         let now = Date()
@@ -52,47 +57,125 @@ private struct BackpressureMetrics {
         Date().timeIntervalSince(lastDataReceivedTime)
     }
     
-    var growthTrend: Double = 0  // 流量增长趋势
-       var lastGrowthCheck = Date()
-       
-       mutating func updateGrowthTrend() {
-           guard recentDataPoints.count >= 5 else { return }
-           
-           let firstHalf = recentDataPoints.prefix(recentDataPoints.count / 2)
-           let secondHalf = recentDataPoints.suffix(recentDataPoints.count / 2)
-           
-           let firstAvg = Double(firstHalf.map { $0.1 }.reduce(0, +)) / Double(firstHalf.count)
-           let secondAvg = Double(secondHalf.map { $0.1 }.reduce(0, +)) / Double(secondHalf.count)
-           
-           growthTrend = (secondAvg - firstAvg) / max(firstAvg, 1.0)
-       }
+    mutating func recordOverflow() {
+        overflowCount += 1
+        lastOverflowTime = Date()
+    }
     
-    var overflowCount: Int = 0  // 添加溢出计数
-        var lastOverflowTime: Date?
-        
-        mutating func recordOverflow() {
-            overflowCount += 1
-            lastOverflowTime = Date()
-        }
-        
-        var recentOverflowRate: Double {
-            guard let lastTime = lastOverflowTime else { return 0 }
-            let timeSince = Date().timeIntervalSince(lastTime)
-            guard timeSince > 0 else { return Double(overflowCount) }
-            return Double(overflowCount) / timeSince  // 溢出次数/秒
-        }
+    var recentOverflowRate: Double {
+        guard let lastTime = lastOverflowTime else { return 0 }
+        let timeSince = Date().timeIntervalSince(lastTime)
+        guard timeSince > 0 else { return Double(overflowCount) }
+        return Double(overflowCount) / timeSince
+    }
 }
 
+// 流量模式检测 - 增强版
+private struct TrafficPattern {
+    var requestCount: Int = 0
+    var smallPayloadCount: Int = 0  // < 10KB的请求
+    var mediumPayloadCount: Int = 0 // 10KB-100KB的请求
+    var largePayloadCount: Int = 0  // > 100KB的请求
+    var lastRequestTime: Date = Date()
+    var isBatchPattern: Bool = false
+    var isYouTubePattern: Bool = false
+    var connectionAge: TimeInterval = 0
+    
+    // 社交媒体模式新增字段
+    var interruptCount: Int = 0
+    var lastInterruptTime: Date?
+    var averageSessionDuration: TimeInterval = 0
+    var isSocialMediaPattern: Bool = false
+    var isScrollingPattern: Bool = false
+    var videoStartCount: Int = 0
+    var videoInterruptCount: Int = 0
+    
+    mutating func analyze() {
+        // 检测批量小请求模式（如YouTube缩略图）
+        if smallPayloadCount > 5 &&
+           Date().timeIntervalSince(lastRequestTime) < 2.0 {
+            isBatchPattern = true
+        }
+        
+        // YouTube特征：前期大量小请求，后期有大请求
+        if connectionAge < 5.0 && smallPayloadCount > 8 {
+            isYouTubePattern = true
+        } else if connectionAge > 5.0 && largePayloadCount > 2 {
+            isYouTubePattern = true
+        }
+        
+        // 社交媒体特征：小中大请求混合
+        if smallPayloadCount > 5 &&
+           mediumPayloadCount > 2 &&
+           requestCount > 10 {
+            isSocialMediaPattern = true
+        }
+    }
+    
+    mutating func detectSocialMediaBehavior() {
+        // 检测频繁中断模式（快速滚动）
+        if interruptCount > 3 &&
+           lastInterruptTime != nil &&
+           Date().timeIntervalSince(lastInterruptTime!) < 5.0 {
+            isScrollingPattern = true
+        }
+    }
+}
 
+// 区分Keep-Alive和实际数据
+private struct TrafficType {
+    var isKeepAlive: Bool = false
+    var isActualData: Bool = false
+    var lastKeepAliveTime: Date?
+    var lastActualDataTime: Date?
+}
 
+enum ContentType {
+    case video
+    case images
+    case mixed
+    case text
+}
 
 final actor TCPConnection {
 
     private var backpressure = BackpressureMetrics()
-    private let MIN_BUFFER = 4 * 1024  // 最小4KB
-    private let MAX_BUFFER = 256 * 1024    // 增加到 256KB (原来可能是 64KB)
-    private let BURST_BUFFER = 512 * 1024  // 突发流量缓冲区 512KB
+    private var trafficPattern = TrafficPattern()
+    private var trafficType = TrafficType()
     
+    // 优化的缓冲区大小常量 - 改为静态常量
+    private static let MIN_BUFFER = 4 * 1024      // 最小4KB
+    private static let DEFAULT_BUFFER = 64 * 1024  // 默认64KB
+    private static let MAX_BUFFER = 256 * 1024     // 最大256KB
+    private static let BURST_BUFFER = 512 * 1024   // 突发流量512KB
+    private static let YOUTUBE_BUFFER = 192 * 1024 // YouTube专用192KB
+    
+    // 社交媒体专用缓冲区常量 - 改为静态常量
+    private static let SOCIAL_MIN_BUFFER = 32 * 1024      // 32KB 最小
+    private static let SOCIAL_NORMAL_BUFFER = 96 * 1024   // 96KB 正常
+    private static let SOCIAL_SCROLL_BUFFER = 64 * 1024   // 64KB 滚动时
+    private static let SOCIAL_VIDEO_BUFFER = 128 * 1024   // 128KB 视频
+    
+    // 为了方便访问，添加实例属性
+    private var MIN_BUFFER: Int { Self.MIN_BUFFER }
+    private var DEFAULT_BUFFER: Int { Self.DEFAULT_BUFFER }
+    private var MAX_BUFFER: Int { Self.MAX_BUFFER }
+    private var BURST_BUFFER: Int { Self.BURST_BUFFER }
+    private var YOUTUBE_BUFFER: Int { Self.YOUTUBE_BUFFER }
+    private var SOCIAL_MIN_BUFFER: Int { Self.SOCIAL_MIN_BUFFER }
+    private var SOCIAL_NORMAL_BUFFER: Int { Self.SOCIAL_NORMAL_BUFFER }
+    private var SOCIAL_SCROLL_BUFFER: Int { Self.SOCIAL_SCROLL_BUFFER }
+    private var SOCIAL_VIDEO_BUFFER: Int { Self.SOCIAL_VIDEO_BUFFER }
+    
+    // 快速响应阈值
+    private let FAST_SHRINK_THRESHOLD: TimeInterval = 0.1  // 100ms
+    private let NORMAL_SHRINK_THRESHOLD: TimeInterval = 0.5  // 500ms
+    
+    // 连接启动时间（用于判断新连接）
+    private var connectionStartTime: Date?
+    private var isWarmingUp = true
+    private var lastDataCheckpoint: Date = Date()
+    private var highFrequencyMonitorTask: Task<Void, Never>?
     
     enum ConnectionPriority: Int, Comparable {
         case low = 0
@@ -106,55 +189,61 @@ final actor TCPConnection {
     }
     
     // MARK: - 客户端拒绝检测相关属性
-    private var clientAdvertisedWindow: UInt16 = 65535  // 记录客户端通告的窗口大小
-    private var zeroWindowProbeCount: Int = 0           // 零窗口探测计数
-    private var lastRefusalTime: Date?                  // 上次拒绝时间
+    private var clientAdvertisedWindow: UInt16 = 65535
+    private var zeroWindowProbeCount: Int = 0
+    private var lastRefusalTime: Date?
     
     private func detectClientRefusal() -> Bool {
-        // 严重信号：立即返回true
+        // YouTube和社交媒体连接需要更多证据才判定为拒绝
+        if isYouTubeConnection() || isSocialMediaConnection() || trafficPattern.isYouTubePattern {
+            // 更宽容的阈值
+            if duplicatePacketCount > 20 || retransmitRetries >= MAX_RETRANSMIT_RETRIES * 2 {
+                return true
+            }
+            return false
+        }
         
         // 检测各种拒绝信号
-            if duplicatePacketCount > 10 {
-                log("[Refusal] Too many duplicate ACKs: \(duplicatePacketCount)")
-                return true
-            }
+        if duplicatePacketCount > 10 {
+            log("[Refusal] Too many duplicate ACKs: \(duplicatePacketCount)")
+            return true
+        }
         
-            if socksState == .closed || socksConnection == nil {
-                return true
-            }
-            
-            if retransmitRetries >= MAX_RETRANSMIT_RETRIES {
-                return true
-            }
-            
-            // 中等信号：组合判断
-            var refusalScore = 0
-            
-            if duplicatePacketCount > 5 {
-                refusalScore += duplicatePacketCount / 5
-            }
-            
-            if overflowCount > 5 {
-                refusalScore += overflowCount / 5
-            }
-            
-            if clientAdvertisedWindow == 0 {
-                refusalScore += zeroWindowProbeCount
-            }
-            
-            if outOfOrderPackets.count > MAX_BUFFERED_PACKETS / 2 {
-                refusalScore += 2
-            }
-            
-            // 综合评分超过阈值
-            if refusalScore >= 5 {
-                log("[Refusal] Refusal score: \(refusalScore) - client likely refusing data")
-                return true
-            }
-            
-            return false
+        if socksState == .closed || socksConnection == nil {
+            return true
+        }
+        
+        if retransmitRetries >= MAX_RETRANSMIT_RETRIES {
+            return true
+        }
+        
+        // 中等信号：组合判断
+        var refusalScore = 0
+        
+        if duplicatePacketCount > 5 {
+            refusalScore += duplicatePacketCount / 5
+        }
+        
+        if overflowCount > 5 {
+            refusalScore += overflowCount / 5
+        }
+        
+        if clientAdvertisedWindow == 0 {
+            refusalScore += zeroWindowProbeCount
+        }
+        
+        if outOfOrderPackets.count > MAX_BUFFERED_PACKETS / 2 {
+            refusalScore += 2
+        }
+        
+        // 综合评分超过阈值
+        if refusalScore >= 5 {
+            log("[Refusal] Refusal score: \(refusalScore) - client likely refusing data")
+            return true
+        }
+        
+        return false
     }
-    
     
     func handleRSTReceived() {
         log("[RST] Connection reset by peer")
@@ -167,53 +256,41 @@ final actor TCPConnection {
     
     public func shrinkToMinimumImmediate() {
         let oldSize = recvBufferLimit
-            
-        // 直接收缩到最小
-        recvBufferLimit = MIN_BUFFER
         
-        // 立即更新窗口
+        // YouTube和社交媒体连接收缩到更大的最小值
+        let minSize: Int
+        if isYouTubeConnection() {
+            minSize = 48 * 1024  // YouTube保持48KB
+        } else if isSocialMediaConnection() {
+            minSize = SOCIAL_MIN_BUFFER  // 社交媒体保持32KB
+        } else {
+            minSize = MIN_BUFFER  // 普通连接4KB
+        }
+        
+        recvBufferLimit = minSize
         updateAdvertisedWindow()
         
-        // 如果需要，发送窗口更新
-        if availableWindow < lastAdvertisedWindow / 2 {
-            sendPureAck()  // 通知对端窗口变小了
+        // 修复类型转换问题
+        if availableWindow < UInt16(lastAdvertisedWindow / 2) {
+            sendPureAck()
             lastAdvertisedWindow = availableWindow
         }
         
-        log("[Backpressure] Emergency shrink: \(oldSize) -> \(MIN_BUFFER) bytes")
+        log("[Backpressure] Emergency shrink: \(oldSize) -> \(minSize) bytes")
     }
     
-    private func handleSocksError(_ error: Error?) -> Bool {
-        if let error = error {
-            // SOCKS发送失败，说明客户端拒绝
-            return true
-        }
-        
-        // 检查SOCKS连接状态
-        if socksState != .established {
-            return true
-        }
-        
-        return false
-    }
-
     private func clearAllBuffers() {
-        // 清空乱序包缓冲
         outOfOrderPackets.removeAll()
         
-        // 清空待发送数据
         if socksState != .established {
             pendingClientBytes.removeAll()
             pendingBytesTotal = 0
         }
         
-        // 重置背压状态
         backpressure = BackpressureMetrics()
     }
     
-    // MARK: - 激进的缓冲区清理
     private func trimBuffersAggressively() {
-        // 只保留最新的几个包
         let maxKeep = 2
         
         if outOfOrderPackets.count > maxKeep {
@@ -222,7 +299,6 @@ final actor TCPConnection {
             log("[Trim] Aggressively removed \(toRemove) out-of-order packets")
         }
         
-        // 清理待发送数据（保留TLS握手等关键数据）
         if pendingClientBytes.count > 1 {
             let keepFirst = pendingClientBytes.first
             pendingClientBytes.removeAll()
@@ -233,35 +309,51 @@ final actor TCPConnection {
             log("[Trim] Cleared pending data except handshake")
         }
     }
+    
+    // 处理社交媒体中断
+    private func trimBuffersForInterrupt() {
+        // 保留最少的数据
+        while outOfOrderPackets.count > 2 {
+            outOfOrderPackets.removeFirst()
+        }
+        
+        // 清理待发送数据（视频流可能不再需要）
+        if pendingClientBytes.count > 2 {
+            let keep = pendingClientBytes.prefix(2)
+            pendingClientBytes = Array(keep)
+            pendingBytesTotal = keep.reduce(0) { $0 + $1.count }
+        }
+    }
 
     private func handleClientRefusal() {
-        log("[Refusal] Client refusing data - emergency shrink to \(MIN_BUFFER)")
-            
+        // 差异化处理
+        if isYouTubeConnection() {
+            let youtubeMinBuffer = 48 * 1024
+            recvBufferLimit = max(youtubeMinBuffer, recvBufferLimit / 2)
+            log("[YouTube] Gentle shrink to \(recvBufferLimit)")
+        } else if isSocialMediaConnection() {
+            recvBufferLimit = max(SOCIAL_MIN_BUFFER, recvBufferLimit / 2)
+            log("[Social] Gentle shrink to \(recvBufferLimit)")
+        } else {
+            log("[Refusal] Client refusing data - emergency shrink to \(MIN_BUFFER)")
             lastRefusalTime = Date()
-            
-            
-            // 立即收缩到最小
-            let oldSize = recvBufferLimit
             recvBufferLimit = MIN_BUFFER
-            
-            // 立即收缩
             shrinkToMinimumImmediate()
+        }
         
-            // 清理缓冲
-            if bufferedBytesForWindow() > MIN_BUFFER {
-                trimBuffersAggressively()
-            }
-            
-            // 通知背压管理器
-            backpressure.markIdle()
-            backpressure.consecutiveIdleCycles = 10  // 标记为极度空闲
+        if bufferedBytesForWindow() > recvBufferLimit {
+            trimBuffersAggressively()
+        }
+        
+        backpressure.markIdle()
+        backpressure.consecutiveIdleCycles = 10
     }
     
     // MARK: - Constants
     public let tunnelMTU: Int
-    private var mss: Int { max(536, tunnelMTU - 40) } // 40 = IPv4+TCP 基础头
+    private var mss: Int { max(536, tunnelMTU - 40) }
     private let MAX_WINDOW_SIZE: UInt16 = 65535
-    private let DELAYED_ACK_TIMEOUT_MS: Int = 25
+    private var DELAYED_ACK_TIMEOUT_MS: Int = 25
     private let MAX_BUFFERED_PACKETS = 24
     private let RETRANSMIT_TIMEOUT_MS: Int = 200
     private let MAX_RETRANSMIT_RETRIES = 3
@@ -302,7 +394,7 @@ final actor TCPConnection {
     private var outOfOrderPackets: [(seq: UInt32, data: Data)] = []
     private var pendingClientBytes: [Data] = []
     private var pendingBytesTotal: Int = 0
-    private static let pendingSoftCapBytes = 32 * 1024 //64 * 1024
+    private static let pendingSoftCapBytes = 32 * 1024
 
     // MARK: - SOCKS State
     private enum SocksState {
@@ -329,15 +421,15 @@ final actor TCPConnection {
     private var duplicatePacketCount: Int = 0
     private var outOfOrderPacketCount: Int = 0
     private var retransmittedPackets: Int = 0
+    private var overflowCount: Int = 0
+    private var lastOverflowTime: Date?
 
     // MARK: - Flow Control
     private var availableWindow: UInt16 = 65535
     private var congestionWindow: UInt32 { 10 * UInt32(mss) }
     private var slowStartThreshold: UInt32 = 65535
 
-    // NEW: advertised receive buffer cap (no window scale, so <= 65535)
     public var recvBufferLimit: Int
-    // NEW: remember last advertised window to decide whether to send a Window Update
     private var lastAdvertisedWindow: UInt16 = 0
     
     public var onBytesBackToTunnel: ((Int) -> Void)?
@@ -346,23 +438,22 @@ final actor TCPConnection {
         self.onBytesBackToTunnel = cb
     }
     
-    // 添加公开的方法来获取最后活动时间
     public func getLastActivityTime() async -> Date? {
         return lastActivityTime
     }
     
-    // 添加优先级属性
     private let priority: ConnectionPriority
     public private(set) var keepAliveInterval: TimeInterval = 45.0
     private var lastKeepAliveSent: Date?
+    
     public func getKeepAliveTelemetry() async -> (interval: TimeInterval, lastSent: Date?, lastActivity: Date?) {
         return (keepAliveInterval, lastKeepAliveSent, await getLastActivityTime())
     }
 
     private nonisolated func computeKeepAliveInterval(host: String?, port: UInt16) -> TimeInterval {
         switch (host, port) {
-        case (_, 5223): return 180.0     // Apple/FCM Push（你日志里 5223 的保活大多是 180s）
-        case (_, 5228): return 180.0     // FCM
+        case (_, 5223): return 180.0
+        case (_, 5228): return 180.0
         case let (h, 443) where (h?.contains("apple.com") ?? false): return 120.0
         case (_, 443): return 80.0
         case (_, 80):  return 60.0
@@ -370,6 +461,372 @@ final actor TCPConnection {
         }
     }
 
+    // MARK: - YouTube & Social Media Detection
+    private func isYouTubeConnection() -> Bool {
+        guard let host = destinationHost?.lowercased() else { return false }
+        return host.contains("youtube.com") ||
+               host.contains("ytimg.com") ||
+               host.contains("ggpht.com") ||
+               host.contains("googlevideo.com") ||
+               host.contains("googleusercontent.com")
+    }
+    
+    public func isSocialMediaConnection() -> Bool {
+        guard let host = destinationHost?.lowercased() else { return false }
+        
+        // Twitter/X
+        if host.contains("twitter.com") || host.contains("twimg.com") ||
+           host.contains("t.co") || host.contains("x.com") {
+            return true
+        }
+        
+        // Instagram
+        if host.contains("instagram.com") || host.contains("cdninstagram.com") ||
+           host.contains("fbcdn.net") {
+            return true
+        }
+        
+        // TikTok
+        if host.contains("tiktok.com") || host.contains("tiktokcdn.com") ||
+           host.contains("musical.ly") {
+            return true
+        }
+        
+        // Facebook
+        if host.contains("facebook.com") || host.contains("fb.com") {
+            return true
+        }
+        
+        return false
+    }
+    
+    private func optimizeForYouTube() {
+        guard isYouTubeConnection() else { return }
+        
+        if recvBufferLimit < YOUTUBE_BUFFER {
+            recvBufferLimit = YOUTUBE_BUFFER
+            log("[YouTube] Optimized buffer to \(YOUTUBE_BUFFER) bytes")
+        }
+        
+        DELAYED_ACK_TIMEOUT_MS = 10
+        trafficPattern.isYouTubePattern = true
+        
+        updateAdvertisedWindow()
+        if availableWindow < UInt16(lastAdvertisedWindow / 2) {
+            sendPureAck()
+        }
+    }
+    
+    private func optimizeForSocialMedia() {
+        guard isSocialMediaConnection() else { return }
+        
+        if trafficPattern.isScrollingPattern {
+            adjustBufferForScrolling()
+        } else if isVideoLoading() {
+            adjustBufferForVideo()
+        } else {
+            adjustBufferForNormalBrowsing()
+        }
+    }
+    
+    private func adjustBufferForScrolling() {
+        if recvBufferLimit > SOCIAL_SCROLL_BUFFER {
+            recvBufferLimit = SOCIAL_SCROLL_BUFFER
+            log("[Social] Scrolling detected, optimized to \(SOCIAL_SCROLL_BUFFER)")
+        }
+        DELAYED_ACK_TIMEOUT_MS = 5
+    }
+    
+    private func adjustBufferForVideo() {
+        if recvBufferLimit < SOCIAL_VIDEO_BUFFER {
+            recvBufferLimit = SOCIAL_VIDEO_BUFFER
+            log("[Social] Video loading, expanded to \(SOCIAL_VIDEO_BUFFER)")
+        }
+    }
+    
+    private func adjustBufferForNormalBrowsing() {
+        if recvBufferLimit != SOCIAL_NORMAL_BUFFER {
+            recvBufferLimit = SOCIAL_NORMAL_BUFFER
+            log("[Social] Normal browsing, set to \(SOCIAL_NORMAL_BUFFER)")
+        }
+    }
+    
+    private func isVideoLoading() -> Bool {
+        return trafficPattern.largePayloadCount > 2 ||
+               backpressure.recentDataRate > Double(mss * 20)
+    }
+    
+    // TCPConnection.swift - 增强滚动检测
+    private func detectScrollingPattern() -> Bool {
+        // 检查最近的数据模式
+        guard backpressure.recentDataPoints.count >= 5 else { return false }
+        
+        let recent = backpressure.recentDataPoints.suffix(5)
+        let sizes = recent.map { $0.1 }
+        let avgSize = sizes.reduce(0, +) / sizes.count
+        
+        // 滚动特征：小包频繁（图片预览）
+        let isSmallPackets = avgSize < 10 * 1024
+        let isFrequent = recent.last!.0.timeIntervalSince(recent.first!.0) < 1.0
+        
+        if isSmallPackets && isFrequent {
+            log("[Social] Scrolling pattern detected")
+            return true
+        }
+        
+        return false
+    }
+    
+    // 处理用户中断（滚动离开）
+    func handleUserInterrupt() {
+        trafficPattern.interruptCount += 1
+        trafficPattern.lastInterruptTime = Date()
+        
+        // 检测滚动
+        if detectScrollingPattern() {
+            trafficPattern.isScrollingPattern = true
+            let targetSize = SOCIAL_SCROLL_BUFFER
+            if recvBufferLimit > targetSize {
+                recvBufferLimit = targetSize
+                trimBuffersForInterrupt()
+                log("[Social] Quick shrink on scroll to \(targetSize)")
+            }
+        }
+    }
+    
+    // 快速恢复机制
+    private func quickRecoveryAfterInterrupt() {
+        if !trafficPattern.isScrollingPattern &&
+           Date().timeIntervalSince(trafficPattern.lastInterruptTime ?? Date()) > 0.5 {
+            
+            if recvBufferLimit < SOCIAL_NORMAL_BUFFER {
+                expandBufferImmediate(to: SOCIAL_NORMAL_BUFFER)
+                log("[Social] Quick recovery after scroll stop")
+            }
+            
+            if Date().timeIntervalSince(trafficPattern.lastInterruptTime ?? Date()) > 2.0 {
+                trafficPattern.interruptCount = 0
+                trafficPattern.isScrollingPattern = false
+            }
+        }
+    }
+    
+    private func predictNextContentType() -> ContentType {
+        if trafficPattern.largePayloadCount > trafficPattern.smallPayloadCount * 2 {
+            return .video
+        } else if trafficPattern.smallPayloadCount > 10 {
+            return .images
+        } else {
+            return .mixed
+        }
+    }
+    
+    private func preemptiveOptimization() {
+        let predicted = predictNextContentType()
+        
+        switch predicted {
+        case .video:
+            if isYouTubeConnection() && recvBufferLimit < YOUTUBE_BUFFER {
+                expandBufferImmediate(to: YOUTUBE_BUFFER)
+            } else if isSocialMediaConnection() && recvBufferLimit < SOCIAL_VIDEO_BUFFER {
+                expandBufferImmediate(to: SOCIAL_VIDEO_BUFFER)
+            }
+        case .images:
+            if recvBufferLimit != SOCIAL_NORMAL_BUFFER {
+                recvBufferLimit = SOCIAL_NORMAL_BUFFER
+            }
+        case .mixed, .text:
+            adaptBufferToFlow()
+        }
+    }
+    
+    private func warmupConnection() async {
+        guard isWarmingUp else { return }
+        
+        let age = Date().timeIntervalSince(connectionStartTime ?? Date())
+        
+        if isYouTubeConnection() {
+            if age < 3.0 && recvBufferLimit < YOUTUBE_BUFFER {
+                expandBufferImmediate(to: YOUTUBE_BUFFER)
+                log("[YouTube Warmup] Quick expansion to: \(YOUTUBE_BUFFER) bytes")
+            }
+        } else if isSocialMediaConnection() {
+            if age < 3.0 && recvBufferLimit < SOCIAL_NORMAL_BUFFER {
+                expandBufferImmediate(to: SOCIAL_NORMAL_BUFFER)
+                log("[Social Warmup] Quick expansion to: \(SOCIAL_NORMAL_BUFFER) bytes")
+            }
+        } else {
+            if age < 3.0 && recvBufferLimit < 128 * 1024 {
+                let target = min(128 * 1024, recvBufferLimit * 2)
+                expandBufferImmediate(to: target)
+                log("[Warmup] Quick expansion: \(recvBufferLimit) bytes")
+            }
+        }
+        
+        if age > 5.0 {
+            isWarmingUp = false
+        }
+    }
+    
+    // MARK: - 核心改进：快速收缩
+    private func checkAndShrinkImmediate() {
+        let idleTime = Date().timeIntervalSince(backpressure.lastDataReceivedTime)
+        
+        // 100ms无数据 + 缓冲区使用率低 = 立即收缩
+        if idleTime > FAST_SHRINK_THRESHOLD {
+            let usage = bufferedBytesForWindow()
+            let utilizationRate = Double(usage) / Double(recvBufferLimit)
+            
+            if utilizationRate < 0.1 && recvBufferLimit > MIN_BUFFER {
+                // 特殊连接保护
+                let minSize = getMinBufferSize()
+                recvBufferLimit = minSize
+                updateAdvertisedWindow()
+                log("[FastShrink] 100ms idle, shrink to \(minSize)")
+                return
+            }
+        }
+        
+        // 500ms无数据 = 强制收缩
+        if idleTime > NORMAL_SHRINK_THRESHOLD && recvBufferLimit > MIN_BUFFER * 2 {
+            let minSize = getMinBufferSize()
+            recvBufferLimit = max(minSize, recvBufferLimit / 4)
+            updateAdvertisedWindow()
+            log("[Shrink] 500ms idle, shrink to \(recvBufferLimit)")
+        }
+    }
+    
+    private func getMinBufferSize() -> Int {
+        if isYouTubeConnection() {
+            return 48 * 1024
+        } else if isSocialMediaConnection() {
+            return SOCIAL_MIN_BUFFER
+        } else {
+            return MIN_BUFFER
+        }
+    }
+    
+    // MARK: - 核心改进：智能扩展
+    private func shouldExpandBuffer() -> Bool {
+        // 必须有实际流量
+        guard isReallyActive() else { return false }
+        
+        // 必须有近期数据（100ms内）
+        guard Date().timeIntervalSince(backpressure.lastDataReceivedTime) < 0.1 else { return false }
+        
+        // 必须有实际使用需求
+        let utilizationRate = Double(bufferedBytesForWindow()) / Double(recvBufferLimit)
+        guard utilizationRate > 0.7 else { return false }
+        
+        // 必须有增长趋势或溢出
+        return backpressure.growthTrend > 0.1 || backpressure.overflowCount > 0
+    }
+    
+    private func intelligentExpand() {
+        guard shouldExpandBuffer() else { return }
+        
+        let targetSize: Int
+        if backpressure.overflowCount > 0 {
+            // 有溢出：激进扩展
+            targetSize = min(MAX_BUFFER, recvBufferLimit * 3)
+        } else if backpressure.growthTrend > 0.3 {
+            // 高增长：2倍扩展
+            targetSize = min(MAX_BUFFER, recvBufferLimit * 2)
+        } else {
+            // 温和扩展
+            targetSize = min(MAX_BUFFER, recvBufferLimit + 32 * 1024)
+        }
+        
+        if targetSize > recvBufferLimit {
+            recvBufferLimit = targetSize
+            updateAdvertisedWindow()
+            maybeSendWindowUpdate(reason: "intelligent-expand")
+            log("[Expand] Based on actual demand to \(targetSize)")
+        }
+    }
+    
+    // 核心改进：精准流量感知
+    private func classifyTraffic(payload: Data) {
+        // 检测Keep-Alive包（通常很小）
+        if payload.count <= 1 {
+            trafficType.isKeepAlive = true
+            trafficType.lastKeepAliveTime = Date()
+        } else {
+            trafficType.isActualData = true
+            trafficType.lastActualDataTime = Date()
+            
+            // 只有实际数据才更新背压指标
+            backpressure.recordDataReceived(payload.count)
+        }
+    }
+    
+    private func isReallyActive() -> Bool {
+        // 必须有实际数据，不只是Keep-Alive
+        guard let lastData = trafficType.lastActualDataTime else { return false }
+        return Date().timeIntervalSince(lastData) < 0.5
+    }
+    
+    // MARK: - 核心改进：零延迟恢复
+    private func handleBufferOverflow() {
+        backpressure.recordOverflow()
+        overflowCount += 1
+        lastOverflowTime = Date()
+        
+        // 立即扩容（不等待）
+        let emergency = min(MAX_BUFFER, recvBufferLimit * 3)
+        if emergency > recvBufferLimit {
+            let oldSize = recvBufferLimit
+            recvBufferLimit = emergency
+            updateAdvertisedWindow()
+            
+            // 立即发送窗口更新
+            sendPureAck()
+            lastAdvertisedWindow = availableWindow
+            
+            log("[EMERGENCY] Overflow detected! Immediate expand: \(oldSize) -> \(emergency)")
+        }
+    }
+    
+    // MARK: - 高频监控任务（50ms）
+    private func startHighFrequencyMonitor() {
+        highFrequencyMonitorTask?.cancel()
+        highFrequencyMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms
+                guard let self = self else { break }
+                
+                await self.rapidAdjustment()
+            }
+        }
+    }
+    
+    private func rapidAdjustment() {
+        let now = Date()
+        let idleTime = now.timeIntervalSince(backpressure.lastDataReceivedTime)
+        let usage = bufferedBytesForWindow()
+        let rate = Double(usage) / Double(recvBufferLimit)
+        
+        // 修正：确保100ms判断生效
+        if idleTime > 0.1 {  // 100ms
+            if rate < 0.1 && recvBufferLimit > getMinBufferSize() {
+                let minSize = getMinBufferSize()
+                recvBufferLimit = minSize
+                updateAdvertisedWindow()
+                log("[FastShrink] 100ms idle detected, shrunk to \(minSize)")
+                return
+            }
+        }
+        
+        // 预防性扩容应该更保守
+        if rate > 0.9 && isReallyActive() && backpressure.growthTrend > 0.3 {
+            let target = min(MAX_BUFFER, recvBufferLimit + 16 * 1024)  // 渐进式增长
+            if target > recvBufferLimit {
+                recvBufferLimit = target
+                updateAdvertisedWindow()
+                log("[Preventive] Buffer expanded by 16KB to \(target)")
+            }
+        }
+    }
 
     // MARK: - Initialization
     init(
@@ -382,12 +839,11 @@ final actor TCPConnection {
         destinationHost: String?,
         initialSequenceNumber: UInt32,
         tunnelMTU: Int = 1400,
-        recvBufferLimit: Int = 16 * 1024, //   60 * 1024, // NEW: 动态窗口的软上限
-        priority: ConnectionPriority = .normal,  // 新增参数
+        recvBufferLimit: Int = 16 * 1024,
+        priority: ConnectionPriority = .normal,
         onBytesBackToTunnel: ((Int) -> Void)? = nil
     ) {
-        // --- Initialization Phase 1: Assign all properties directly ---
-                
+        // 先初始化所有存储属性
         self.key = key
         self.packetFlow = packetFlow
         self.sourceIP = sourceIP
@@ -397,55 +853,111 @@ final actor TCPConnection {
         self.destinationHost = destinationHost
         self.priority = priority
         self.tunnelMTU = tunnelMTU
+        self.connectionStartTime = Date()
+        self.onBytesBackToTunnel = onBytesBackToTunnel
         
-        // Initialize sequence numbers
+        // 初始化序列号
         let initialServerSeq = arc4random()
         self.serverSequenceNumber = initialServerSeq
         self.serverInitialSequenceNumber = initialServerSeq
         self.initialClientSequenceNumber = initialSequenceNumber
         self.clientSequenceNumber = initialSequenceNumber
         self.nextExpectedSequence = initialSequenceNumber
+        self.lastAckedSequence = initialSequenceNumber
         
-        // Calculate and set buffer/window properties
-        // This is the main fix: Calculate 'cap' first, then use it to initialize all dependent properties.
-        let cap = max(8 * 1024, min(recvBufferLimit, Int(MAX_WINDOW_SIZE)))
+        // 计算智能缓冲区大小（使用静态方法）
+        let smartBufferSize = Self.calculateInitialBufferSize(
+            host: destinationHost,
+            port: destPort,
+            baseSize: recvBufferLimit
+        )
+        
+        let cap = max(8 * 1024, min(smartBufferSize, Int(MAX_WINDOW_SIZE)))
+        
+        // 初始化缓冲区相关属性
         self.recvBufferLimit = cap
         self.availableWindow = UInt16(cap)
-        self.lastAdvertisedWindow = UInt16(cap) // FIX: Initialize directly from 'cap', not from another property.
+        self.lastAdvertisedWindow = UInt16(cap)
         
-        // Call the nonisolated helper and assign its result
-        // This must be done BEFORE the initializer exits.
-
-        // --- Initialization Complete ---
-        // Now it's safe to call methods or perform other logic.
+        // 计算 keep-alive 间隔
         let interval: TimeInterval
-           switch (destinationHost, destPort) {
-           case (_, 5223), (_, 5228):  // Push 服务
-               interval = 180.0
-           case let (host, 443) where host?.contains("apple.com") ?? false:
-               interval = 120.0  // Apple 服务特殊处理
-           case (_, 443):   // 普通 HTTPS
-               interval = 60.0
-           case (_, 80):    // HTTP
-               interval = 30.0
-           default:
-               interval = 45.0
-           }
+        switch (destinationHost, destPort) {
+        case (_, 5223), (_, 5228):
+            interval = 180.0
+        case let (host, 443) where host?.contains("apple.com") ?? false:
+            interval = 120.0
+        case (_, 443):
+            interval = 60.0
+        case (_, 80):
+            interval = 30.0
+        default:
+            interval = 45.0
+        }
         self.keepAliveInterval = interval
-        NSLog("[TCPConnection \(key)] Initialized. InitialClientSeq: \(initialSequenceNumber)")
+        
+        NSLog("[TCPConnection \(key)] Initialized. Buffer: \(cap)")
+    }
+    
+    // 静态方法用于计算初始缓冲区大小
+    private static func calculateInitialBufferSize(host: String?, port: UInt16, baseSize: Int) -> Int {
+        guard let h = host?.lowercased() else {
+            return port == 443 ? 64 * 1024 : baseSize
+        }
+        
+        // YouTube相关域名 - 大缓冲区
+        if h.contains("youtube.com") || h.contains("ytimg.com") ||
+           h.contains("ggpht.com") || h.contains("googlevideo.com") ||
+           h.contains("googleusercontent.com") {
+            return YOUTUBE_BUFFER
+        }
+        
+        // 社交媒体
+        if h.contains("twitter") || h.contains("instagram") ||
+           h.contains("facebook") || h.contains("tiktok") ||
+           h.contains("x.com") || h.contains("twimg") {
+            return SOCIAL_NORMAL_BUFFER
+        }
+        
+        // 其他视频服务
+        if h.contains("netflix") || h.contains("hulu") ||
+           h.contains("twitch") || h.contains("vimeo") {
+            return 128 * 1024
+        }
+        
+        // CDN
+        if h.contains("cloudfront") || h.contains("akamai") ||
+           h.contains("fastly") || h.contains("cloudflare") {
+            return 80 * 1024
+        }
+        
+        // 基于端口的默认值
+        switch port {
+        case 5223, 5228:
+            return 32 * 1024
+        case 443:
+            return 64 * 1024
+        case 80:
+            return 48 * 1024
+        default:
+            return baseSize
+        }
+    }
+    
+    deinit {
+        highFrequencyMonitorTask?.cancel()
     }
 
-    // NEW: 当前用于接收重组的已占用字节数
+    // 当前用于接收重组的已占用字节数
     @inline(__always)
     private func bufferedBytesForWindow() -> Int {
         var used = outOfOrderPackets.reduce(0) { $0 + $1.data.count }
         if socksState != .established {
-            used += pendingBytesTotal // SOCKS 未建好前的待转发数据也占用接收缓冲
+            used += pendingBytesTotal
         }
         return used
     }
 
-    // NEW: 依据缓冲占用更新 advertised window（不使用 WS，<= 65535）
+    // 依据缓冲占用更新 advertised window
     @inline(__always)
     private func updateAdvertisedWindow() {
         let cap = min(recvBufferLimit, Int(MAX_WINDOW_SIZE))
@@ -454,24 +966,64 @@ final actor TCPConnection {
         self.availableWindow = UInt16(free)
     }
 
-    // NEW: 若窗口显著增长（或 0->>0），主动发 Window Update（纯 ACK）
+    // 若窗口显著增长，主动发 Window Update
     @inline(__always)
     private func maybeSendWindowUpdate(reason: String) {
         let prev = lastAdvertisedWindow
         updateAdvertisedWindow()
         let nowWnd = availableWindow
+        
+        // 修正：窗口增长超过MSS或从0恢复时才更新
         let grewFromZero = (prev == 0 && nowWnd > 0)
-        let grewByMSS = nowWnd > prev && Int(nowWnd &- prev) >= mss
-        if grewFromZero || grewByMSS {
+        let grewSignificantly = nowWnd > prev && Int(nowWnd - prev) >= mss
+        
+        if grewFromZero || grewSignificantly {
             sendPureAck()
             lastAdvertisedWindow = nowWnd
-            log("Window update (\(reason)): \(nowWnd) bytes")
+            log("Window update (\(reason)): \(prev) -> \(nowWnd) bytes")
         }
+    }
+    
+    // TCPConnection.swift - 更精确的增长趋势计算
+    // TCPConnection.swift - 修正 calculateGrowthTrend 方法
+    private func calculateGrowthTrend() -> Double {
+        guard backpressure.recentDataPoints.count >= 10 else { return 0 }
+            
+        // 使用移动平均
+        let windowSize = 5
+        let older = backpressure.recentDataPoints.prefix(windowSize)
+        let newer = backpressure.recentDataPoints.suffix(windowSize)
+        
+        let olderAvg = Double(older.map { $0.1 }.reduce(0, +)) / Double(windowSize)
+        let newerAvg = Double(newer.map { $0.1 }.reduce(0, +)) / Double(windowSize)
+        
+        guard olderAvg > 0 else { return 0 }
+        
+        let trend = (newerAvg - olderAvg) / olderAvg
+        
+        // 平滑处理，避免过度反应
+        return min(1.0, max(-0.5, trend))
     }
 
     // MARK: - Lifecycle
     func start() async {
         guard socksConnection == nil else { return }
+        
+        // 在 start 时执行优化（init 中不能调用 actor-isolated 方法）
+        if isYouTubeConnection() {
+            optimizeForYouTube()
+        } else if isSocialMediaConnection() {
+            optimizeForSocialMedia()
+        }
+        
+        // 启动高频监控
+        startHighFrequencyMonitor()
+        
+        // 启动预热
+        Task {
+            await warmupConnection()
+        }
+        
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             self.closeContinuation = continuation
             let tcpOptions = NWProtocolTCP.Options()
@@ -500,37 +1052,44 @@ final actor TCPConnection {
 
     func close() {
         guard socksState != .closed else { return }
-      
+        
         socksState = .closed
-        cancelKeepAliveTimer()  // 新增
-        // 确保完全清理
-           outOfOrderPackets.removeAll(keepingCapacity: false)
-           pendingClientBytes.removeAll(keepingCapacity: false)
-           socksConnection?.forceCancel()  // 强制取消
-           socksConnection = nil
-           closeContinuation?.resume()
-           closeContinuation = nil
-            log("Closing connection.")
+        cancelKeepAliveTimer()
+        highFrequencyMonitorTask?.cancel()
+        outOfOrderPackets.removeAll(keepingCapacity: false)
+        pendingClientBytes.removeAll(keepingCapacity: false)
+        socksConnection?.forceCancel()
+        socksConnection = nil
+        closeContinuation?.resume()
+        closeContinuation = nil
+        log("Closing connection.")
     }
 
-    // MARK: - Sequence helpers (wrap-around safe)
+    // MARK: - Sequence helpers
     @inline(__always) private func seqDiff(_ a: UInt32, _ b: UInt32) -> Int32 {
         Int32(bitPattern: a &- b)
     }
     @inline(__always) private func seqLT(_ a: UInt32, _ b: UInt32) -> Bool { seqDiff(a, b) < 0 }
     @inline(__always) private func seqLE(_ a: UInt32, _ b: UInt32) -> Bool { seqDiff(a, b) <= 0 }
 
-    // MARK: - Packet Handling (Optimized)
+    // MARK: - Packet Handling
     func handlePacket(payload: Data, sequenceNumber: UInt32) {
         guard !payload.isEmpty else { return }
 
-        // 检测是否需要紧急收缩
-            if detectClientRefusal() {
-                handleClientRefusal()
-                return
-            }
+        // 分类流量（Keep-Alive vs 实际数据）
+        classifyTraffic(payload: payload)
         
-        updateLastActivity()  // 新增
+        // 检测是否需要紧急收缩
+        if detectClientRefusal() {
+            handleClientRefusal()
+            return
+        }
+        
+        updateLastActivity()
+        
+        // 更新流量模式
+        updateTrafficPattern(payloadSize: payload.count)
+        
         // Start SOCKS connection if needed
         if socksConnection == nil && socksState == .idle {
             Task { await self.start() }
@@ -555,84 +1114,111 @@ final actor TCPConnection {
         }
     }
     
-    // MARK: - 动态缓冲区管理（基于背压）
-    private func evaluateBufferExpansion() {
+    private func updateTrafficPattern(payloadSize: Int) {
+        trafficPattern.requestCount += 1
+        trafficPattern.lastRequestTime = Date()
+        trafficPattern.connectionAge = Date().timeIntervalSince(connectionStartTime ?? Date())
         
-        // 检查是否在拒绝恢复期
-           if let refusalTime = lastRefusalTime {
-               let timeSinceRefusal = Date().timeIntervalSince(refusalTime)
-               if timeSinceRefusal < 5.0 {
-                   // 拒绝后5秒内不允许扩展
-                   log("[Backpressure] Expansion blocked: \(5.0 - timeSinceRefusal)s until recovery")
-                   return
-               }
-           }
+        if payloadSize < 10 * 1024 {
+            trafficPattern.smallPayloadCount += 1
+        } else if payloadSize < 100 * 1024 {
+            trafficPattern.mediumPayloadCount += 1
+        } else {
+            trafficPattern.largePayloadCount += 1
+        }
         
+        trafficPattern.analyze()
+        trafficPattern.detectSocialMediaBehavior()
         
-        let usage = bufferedBytesForWindow()
-        let utilizationRate = Double(usage) / Double(recvBufferLimit)
+        // 如果检测到批量模式或YouTube模式，立即扩展缓冲区
+        if (trafficPattern.isBatchPattern || trafficPattern.isYouTubePattern) &&
+           recvBufferLimit < YOUTUBE_BUFFER {
+            expandForBatchRequests()
+        }
         
-        // 检测突发流量模式
-        let isBurstTraffic = backpressure.recentDataRate > Double(mss * 10) // 高速流量
-        
-        if utilizationRate > 0.75 && backpressure.isActive {
-            // 根据流量模式选择扩展策略
+        // 社交媒体滚动检测
+        if trafficPattern.isScrollingPattern {
+            adjustBufferForScrolling()
+        }
+    }
+    
+    // TCPConnection.swift - 添加防重复检测
+    private var lastBatchExpansionTime: Date?
+    private var batchExpansionCount: Int = 0
+    
+    private func expandForBatchRequests() {
+        // 防止重复扩展
+            if let lastTime = lastBatchExpansionTime,
+               Date().timeIntervalSince(lastTime) < 2.0 {
+                return  // 2秒内不重复扩展
+            }
+            
             let targetSize: Int
-            if isBurstTraffic {
-                // 突发流量：激进扩展（4倍）
-                targetSize = min(BURST_BUFFER, recvBufferLimit * 4)
-            } else if utilizationRate > 0.9 {
-                // 接近满载：快速扩展（3倍）
-                targetSize = min(MAX_BUFFER, recvBufferLimit * 3)
+            
+            if trafficPattern.isYouTubePattern || isYouTubeConnection() {
+                // YouTube渐进式扩展
+                if recvBufferLimit < 96 * 1024 {
+                    targetSize = 96 * 1024
+                } else if recvBufferLimit < YOUTUBE_BUFFER {
+                    targetSize = YOUTUBE_BUFFER
+                } else {
+                    return  // 已达到最大值
+                }
+                log("[YouTube] Batch mode detected, expanding to \(targetSize)")
+            } else if trafficPattern.isSocialMediaPattern || isSocialMediaConnection() {
+                targetSize = SOCIAL_NORMAL_BUFFER
+                log("[Social] Batch mode detected, expanding to \(targetSize)")
             } else {
-                // 常规扩展（2倍）
-                targetSize = min(MAX_BUFFER, recvBufferLimit * 2)
+                targetSize = min(128 * 1024, recvBufferLimit * 2)
+                log("[BatchMode] Expanding to \(targetSize)")
             }
             
             if targetSize > recvBufferLimit {
                 expandBufferImmediate(to: targetSize)
+                lastBatchExpansionTime = Date()
+                batchExpansionCount += 1
+            }
+    }
+    
+    private func evaluateBufferExpansion() {
+        // 检查是否在拒绝恢复期
+        if let refusalTime = lastRefusalTime {
+            let recoveryTime = isYouTubeConnection() ? 2.0 : (isSocialMediaConnection() ? 3.0 : 5.0)
+            let timeSinceRefusal = Date().timeIntervalSince(refusalTime)
+            if timeSinceRefusal < recoveryTime {
+                log("[Backpressure] Expansion blocked: \(recoveryTime - timeSinceRefusal)s until recovery")
+                return
             }
         }
-    }
-    
-    // 添加突发流量检测
-    private func detectTrafficBurst() -> Bool {
-        guard backpressure.recentDataPoints.count >= 3 else { return false }
         
-        let recent = backpressure.recentDataPoints.suffix(3)
-        let avgBytes = recent.map { $0.1 }.reduce(0, +) / recent.count
-        
-        // 如果最近平均流量超过 MSS 的 5 倍，认为是突发流量
-        return avgBytes > mss * 5
+        // 使用智能扩展
+        intelligentExpand()
     }
-    
     
     private func expandBufferImmediate(to size: Int) {
         let oldSize = recvBufferLimit
         recvBufferLimit = size
         updateAdvertisedWindow()
-        maybeSendWindowUpdate(reason: "backpressure-expand")
+        maybeSendWindowUpdate(reason: "immediate-expand")
         log("[Backpressure] Buffer expanded: \(oldSize) -> \(size) bytes")
     }
 
     private func shrinkBufferImmediate() {
-        // 立即收缩到最小值
-        if recvBufferLimit > MIN_BUFFER {
+        let minSize = getMinBufferSize()
+        if recvBufferLimit > minSize {
             let oldSize = recvBufferLimit
-            recvBufferLimit = MIN_BUFFER
+            recvBufferLimit = minSize
             
-            // 清理超出新限制的缓冲数据
-            if bufferedBytesForWindow() > MIN_BUFFER {
+            if bufferedBytesForWindow() > minSize {
                 trimBuffersToFit()
             }
             
             updateAdvertisedWindow()
-            log("[Backpressure] Buffer shrunk: \(oldSize) -> \(MIN_BUFFER) bytes")
+            log("[Backpressure] Buffer shrunk: \(oldSize) -> \(minSize) bytes")
         }
     }
 
     private func trimBuffersToFit() {
-        // 保留最重要的数据，清理其余部分
         while bufferedBytesForWindow() > recvBufferLimit && !outOfOrderPackets.isEmpty {
             outOfOrderPackets.removeFirst()
         }
@@ -647,22 +1233,21 @@ final actor TCPConnection {
     }
 
     private func processInOrderPacket(payload: Data, sequenceNumber: UInt32) {
-        // Update sequence numbers
-        // 记录背压数据
+        // 只有实际数据才记录背压
+        if trafficType.isActualData {
             backpressure.recordDataReceived(payload.count)
-       
-            backpressure.updateGrowthTrend()
+            // 更新增长趋势 - 使用新的计算方法
+            backpressure.growthTrend = calculateGrowthTrend()
+        }
         
         nextExpectedSequence = sequenceNumber &+ UInt32(payload.count)
         clientSequenceNumber = nextExpectedSequence
         lastAckedSequence = nextExpectedSequence
 
-        // Cancel retransmit timer since we got expected data
         cancelRetransmitTimer()
 
         // 检查是否需要立即扩展缓冲区
-            evaluateBufferExpansion()
-        
+        evaluateBufferExpansion()
         
         // Forward data
         if socksState == .established {
@@ -674,32 +1259,33 @@ final actor TCPConnection {
         // Process any buffered packets that are now in order
         processBufferedPackets()
         
-        if backpressure.growthTrend > 0.2 {  // 流量增长超过 20%
+        // 预测性扩展
+        if backpressure.growthTrend > 0.2 {
             let predictedNeed = Int(Double(recvBufferLimit) * (1 + backpressure.growthTrend))
             let targetSize = min(MAX_BUFFER, predictedNeed)
-            let threshold = recvBufferLimit + (recvBufferLimit / 2)  // 相当于 1.5 倍
+            let threshold = recvBufferLimit + (recvBufferLimit / 2)
             if targetSize > threshold {
                 expandBufferImmediate(to: targetSize)
                 log("[Predictive] Buffer expanded based on growth trend: \(backpressure.growthTrend)")
             }
         }
 
-        // ACK policy: tiny payloads 立即 ACK，其它走延迟 ACK
-        if payload.count <= 64 {
+        // ACK policy
+        if isYouTubeConnection() || isSocialMediaConnection() ||
+           trafficPattern.isBatchPattern || payload.count <= 64 {
             cancelDelayedAckTimer()
             sendPureAck()
         } else {
             scheduleDelayedAck()
         }
     }
-
+    
+    
     private func processOutOfOrderPacket(payload: Data, sequenceNumber: UInt32) {
         outOfOrderPacketCount += 1
 
-        // Buffer the packet for later processing
         bufferOutOfOrderPacket(payload: payload, sequenceNumber: sequenceNumber)
 
-        // Send immediate ACK with SACK to trigger fast retransmit
         cancelDelayedAckTimer()
         if sackEnabled && peerSupportsSack {
             sendAckWithSack()
@@ -707,14 +1293,12 @@ final actor TCPConnection {
             sendDuplicateAck()
         }
 
-        // Start retransmit timer if not already running
         if retransmitTimer == nil {
             startRetransmitTimer()
         }
     }
 
     private func processOverlappingPacket(payload: Data, sequenceNumber: UInt32) {
-        // overlap = already-have part length (wrap safe)
         let overlapU32 = nextExpectedSequence &- sequenceNumber
         let overlap = Int(min(UInt32(payload.count), overlapU32))
 
@@ -736,13 +1320,11 @@ final actor TCPConnection {
     private func processDuplicatePacket(sequenceNumber: UInt32) {
         duplicatePacketCount += 1
 
-        // 新增：检测是否需要紧急收缩
         if duplicatePacketCount > 5 && recvBufferLimit > MIN_BUFFER {
             NSLog("[Backpressure] Multiple duplicate ACKs, client may be refusing data")
             shrinkToMinimumImmediate()
         }
-    
-        // Send immediate ACK to update peer's view of our receive window
+        
         cancelDelayedAckTimer()
         sendPureAck()
 
@@ -751,44 +1333,37 @@ final actor TCPConnection {
         }
     }
 
-    // MARK: - Buffer Management (Optimized)
+    // 预检查空间（90%预防性扩容）
     private func bufferOutOfOrderPacket(payload: Data, sequenceNumber: UInt32) {
-        // Check if already buffered (exact same seq)
-            if outOfOrderPackets.contains(where: { $0.seq == sequenceNumber }) { return }
-
-            // Insert in sorted order using wrap-safe comparator
-            let packet = (seq: sequenceNumber, data: payload)
-            let index = outOfOrderPackets.binarySearch { seqLT($0.seq, sequenceNumber) }
-            outOfOrderPackets.insert(packet, at: index)
-
-            // Limit buffer size
-            while outOfOrderPackets.count > MAX_BUFFERED_PACKETS {
-                outOfOrderPackets.removeFirst()
-                log("Buffer overflow: dropped oldest packet")
-            }
-            
-            // 新增：检查总缓冲区使用情况
-            if bufferedBytesForWindow() > recvBufferLimit {
-                trimBuffers()  // 调用 trimBuffers
-                log("Buffer exceeded limit, trimming to \(recvBufferLimit)")
-            }
-            
-            updateAdvertisedWindow() // shrink only
+        // 预检查空间（90%预防性扩容）
+        let willUse = bufferedBytesForWindow() + payload.count
+        if willUse > recvBufferLimit * 9 / 10 {
+            handleBufferOverflow()
+        }
         
-        // 限制缓冲区大小
+        // Check if already buffered
+        if outOfOrderPackets.contains(where: { $0.seq == sequenceNumber }) { return }
+
+        // Insert in sorted order
+        let packet = (seq: sequenceNumber, data: payload)
+        let index = outOfOrderPackets.binarySearch { seqLT($0.seq, sequenceNumber) }
+        outOfOrderPackets.insert(packet, at: index)
+
+        // 如果还是满了
         while outOfOrderPackets.count > MAX_BUFFERED_PACKETS {
             outOfOrderPackets.removeFirst()
-            backpressure.recordOverflow()  // 记录溢出
-            log("Buffer overflow: dropped oldest packet")
+            handleBufferOverflow()  // 每次溢出都尝试扩容
+            log("Buffer overflow: dropped packet and expanded")
         }
         
         // 检查总缓冲区使用情况
         if bufferedBytesForWindow() > recvBufferLimit {
-            backpressure.recordOverflow()  // 记录溢出
+            handleBufferOverflow()
             trimBuffers()
             log("Buffer exceeded limit, trimming to \(recvBufferLimit)")
         }
         
+        updateAdvertisedWindow()
     }
 
     private func processBufferedPackets() {
@@ -798,7 +1373,6 @@ final actor TCPConnection {
             let packet = outOfOrderPackets[0]
 
             if packet.seq == nextExpectedSequence {
-                // now in order
                 outOfOrderPackets.removeFirst()
 
                 nextExpectedSequence = packet.seq &+ UInt32(packet.data.count)
@@ -812,16 +1386,14 @@ final actor TCPConnection {
 
                 processed += 1
             } else if seqLT(packet.seq, nextExpectedSequence) {
-                // old packet, discard
                 outOfOrderPackets.removeFirst()
             } else {
-                // still a gap
                 break
             }
         }
 
         if processed > 0 {
-            updateAdvertisedWindow() // window might grow after draining out-of-order
+            updateAdvertisedWindow()
             cancelDelayedAckTimer()
             sendPureAck()
 
@@ -829,22 +1401,21 @@ final actor TCPConnection {
                 cancelRetransmitTimer()
             }
             
-            // 新增：检查是否需要调整缓冲区
             adaptBufferToFlow()
         }
         
         if outOfOrderPackets.count > 10 && duplicatePacketCount > 5 {
-            // 大量乱序包且重复ACK，可能是客户端问题
             handleClientRefusal()
         }
     }
 
-    // MARK: - ACK Management (Optimized)
+    // MARK: - ACK Management
     private func scheduleDelayedAck() {
         delayedAckPacketsSinceLast += 1
 
-        // Send immediate ACK every 2 packets
-        if delayedAckPacketsSinceLast >= 2 {
+        let ackThreshold = (isYouTubeConnection() || isSocialMediaConnection() || trafficPattern.isBatchPattern) ? 1 : 2
+        
+        if delayedAckPacketsSinceLast >= ackThreshold {
             sendPureAck()
             cancelDelayedAckTimer()
             return
@@ -852,7 +1423,8 @@ final actor TCPConnection {
 
         if delayedAckTimer == nil {
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
-            timer.schedule(deadline: .now() + .milliseconds(DELAYED_ACK_TIMEOUT_MS))
+            let timeout = isYouTubeConnection() ? 10 : DELAYED_ACK_TIMEOUT_MS
+            timer.schedule(deadline: .now() + .milliseconds(timeout))
             timer.setEventHandler { [weak self] in
                 Task { [weak self] in
                     await self?.sendPureAck()
@@ -872,7 +1444,7 @@ final actor TCPConnection {
         sendPureAck()
     }
 
-    // MARK: - SACK Generation (Optimized)
+    // MARK: - SACK Generation
     private func generateSackBlocks() -> [(UInt32, UInt32)] {
         guard !outOfOrderPackets.isEmpty else { return [] }
 
@@ -885,7 +1457,6 @@ final actor TCPConnection {
 
             if let start = currentStart, let end = currentEnd {
                 if seqLE(packet.seq, end) {
-                    // Overlapping or contiguous, extend current block (best-effort; wrap unlikely here)
                     currentEnd = max(end, packetEnd)
                 } else {
                     blocks.append((start, end))
@@ -906,12 +1477,12 @@ final actor TCPConnection {
         return blocks
     }
 
-    // MARK: - Retransmission Timer (Optimized)
+    // MARK: - Retransmission Timer
     private func startRetransmitTimer() {
         cancelRetransmitTimer()
 
         let timer = DispatchSource.makeTimerSource(queue: self.queue)
-        let timeout = RETRANSMIT_TIMEOUT_MS * (1 << min(retransmitRetries, 4)) // Exponential backoff
+        let timeout = RETRANSMIT_TIMEOUT_MS * (1 << min(retransmitRetries, 4))
         timer.schedule(deadline: .now() + .milliseconds(timeout))
         timer.setEventHandler { [weak self] in
             Task { [weak self] in
@@ -927,7 +1498,6 @@ final actor TCPConnection {
         retransmittedPackets += 1
 
         if retransmitRetries > MAX_RETRANSMIT_RETRIES {
-            // 新增：超过重传次数，立即收缩
             shrinkToMinimumImmediate()
             
             if let firstBuffered = outOfOrderPackets.first {
@@ -945,7 +1515,6 @@ final actor TCPConnection {
             return
         }
 
-        // trigger fast retransmit
         for _ in 0..<3 {
             if sackEnabled && peerSupportsSack {
                 sendAckWithSack()
@@ -961,7 +1530,7 @@ final actor TCPConnection {
         guard !synAckSent else { return }
         synAckSent = true
 
-        updateAdvertisedWindow() // NEW
+        updateAdvertisedWindow()
 
         let seq = serverInitialSequenceNumber
         let ackNumber = initialClientSequenceNumber &+ 1
@@ -976,11 +1545,11 @@ final actor TCPConnection {
         tcp[12] = 0xA0  // Data offset = 10 (40 bytes)
         tcp[13] = TCPFlags([.syn, .ack]).rawValue
 
-        tcp[14] = UInt8(availableWindow >> 8)   // NEW: 动态窗口
-        tcp[15] = UInt8(availableWindow & 0xFF) // NEW
+        tcp[14] = UInt8(availableWindow >> 8)
+        tcp[15] = UInt8(availableWindow & 0xFF)
 
-        tcp[16] = 0; tcp[17] = 0        // Checksum
-        tcp[18] = 0; tcp[19] = 0        // Urgent
+        tcp[16] = 0; tcp[17] = 0  // Checksum
+        tcp[18] = 0; tcp[19] = 0  // Urgent
 
         // TCP options
         var offset = 20
@@ -996,7 +1565,7 @@ final actor TCPConnection {
         tcp[offset] = 0x04; tcp[offset+1] = 0x02
         offset += 2
 
-        // Padding with NOPs (no Window Scale)
+        // Padding with NOPs
         while offset < 40 {
             tcp[offset] = 0x01
             offset += 1
@@ -1019,7 +1588,7 @@ final actor TCPConnection {
     }
 
     private func sendPureAck() {
-        updateAdvertisedWindow() // NEW
+        updateAdvertisedWindow()
         let ackNumber = self.clientSequenceNumber
         var tcp = createTCPHeader(
             payloadLen: 0,
@@ -1034,13 +1603,12 @@ final actor TCPConnection {
         ip[10] = UInt8(ipcsum >> 8); ip[11] = UInt8(ipcsum & 0xFF)
         packetFlow.writePackets([ip + tcp], withProtocols: [AF_INET as NSNumber])
 
-        // 更新记录，避免不必要的 Window Update
         lastAdvertisedWindow = availableWindow
         delayedAckPacketsSinceLast = 0
     }
 
     private func sendAckWithSack() {
-        updateAdvertisedWindow() // NEW
+        updateAdvertisedWindow()
         let sackBlocks = generateSackBlocks()
         if sackBlocks.isEmpty {
             sendPureAck()
@@ -1051,7 +1619,7 @@ final actor TCPConnection {
 
         // TCP header size with SACK option
         let sackOptionLength = 2 + (sackBlocks.count * 8)
-        let tcpOptionsLength = 2 + sackOptionLength  // 2 NOPs + SACK
+        let tcpOptionsLength = 2 + sackOptionLength
         let tcpHeaderLength = 20 + tcpOptionsLength
         let paddedLength = ((tcpHeaderLength + 3) / 4) * 4
 
@@ -1062,8 +1630,8 @@ final actor TCPConnection {
         withUnsafeBytes(of: ackNumber.bigEndian) { tcp.replaceSubrange(8..<12, with: $0) }
         tcp[12] = UInt8((paddedLength / 4) << 4)
         tcp[13] = TCPFlags.ack.rawValue
-        tcp[14] = UInt8(availableWindow >> 8)   // NEW
-        tcp[15] = UInt8(availableWindow & 0xFF) // NEW
+        tcp[14] = UInt8(availableWindow >> 8)
+        tcp[15] = UInt8(availableWindow & 0xFF)
         tcp[16] = 0; tcp[17] = 0
         tcp[18] = 0; tcp[19] = 0
 
@@ -1093,15 +1661,13 @@ final actor TCPConnection {
         delayedAckPacketsSinceLast = 0
     }
 
-    // MARK: - Data Forwarding (Optimized)
+    // MARK: - Data Forwarding
     private func writeToTunnel(payload: Data) async {
-        
-        updateAdvertisedWindow() // NEW
+        updateAdvertisedWindow()
         let ackNumber = self.clientSequenceNumber
         var currentSeq = self.serverSequenceNumber
         var packets: [Data] = []
 
-        // Cancel delayed ACK since we're sending data with ACK
         cancelDelayedAckTimer()
 
         // Split into MSS-sized segments
@@ -1127,14 +1693,12 @@ final actor TCPConnection {
             packets.append(ip + tcp + Data(segment))
             currentSeq &+= UInt32(segmentSize)
             offset += segmentSize
-            
         }
 
         if !packets.isEmpty {
             let protocols = Array(repeating: AF_INET as NSNumber, count: packets.count)
             packetFlow.writePackets(packets, withProtocols: protocols)
 
-            // 精确统计：所有 IP+TCP+payload 的总字节
             let total = packets.reduce(0) { $0 + $1.count }
             onBytesBackToTunnel?(total)
 
@@ -1169,7 +1733,6 @@ final actor TCPConnection {
     private func performSocksHandshake() async {
         guard let connection = socksConnection else { return }
 
-        // Send SOCKS5 greeting
         let handshake: [UInt8] = [0x05, 0x01, 0x00]
         connection.send(content: Data(handshake), completion: .contentProcessed({ [weak self] error in
             Task { [weak self] in
@@ -1275,17 +1838,16 @@ final actor TCPConnection {
             
             log("SOCKS tunnel established")
             
-            // 新增：连接建立后可能调整缓冲区
-            // 如果是高优先级连接，可以增大缓冲区
-            if let priority = getConnectionPriority() {
-                let adjustedSize = priority == .high ? recvBufferLimit * 2 : recvBufferLimit
-                adjustBufferSize(adjustedSize)
+            // 连接建立后针对YouTube和社交媒体优化
+            if isYouTubeConnection() && recvBufferLimit < YOUTUBE_BUFFER {
+                adjustBufferSize(YOUTUBE_BUFFER)
+                log("[YouTube] Buffer optimized after SOCKS established")
+            } else if isSocialMediaConnection() && recvBufferLimit < SOCIAL_NORMAL_BUFFER {
+                adjustBufferSize(SOCIAL_NORMAL_BUFFER)
+                log("[Social] Buffer optimized after SOCKS established")
             }
             
-            
-            startKeepAlive()  // 新增
-            
-            
+            startKeepAlive()
             
             await sendSynAckIfNeeded()
             await flushPendingData()
@@ -1307,71 +1869,78 @@ final actor TCPConnection {
         }
     }
     
-    // 添加自适应缓冲区管理
+    // 自适应缓冲区管理
     private func adaptBufferToFlow() {
         let utilizationRate = Double(bufferedBytesForWindow()) / Double(recvBufferLimit)
-            
-        // 增加滞后区间
+        
+        // YouTube和社交媒体连接特殊处理
+        if isYouTubeConnection() || trafficPattern.isYouTubePattern {
+            if utilizationRate > 0.7 && recvBufferLimit < YOUTUBE_BUFFER {
+                adjustBufferSize(YOUTUBE_BUFFER)
+                return
+            }
+        }
+        
+        if isSocialMediaConnection() || trafficPattern.isSocialMediaPattern {
+            if trafficPattern.isScrollingPattern && recvBufferLimit > SOCIAL_SCROLL_BUFFER {
+                adjustBufferSize(SOCIAL_SCROLL_BUFFER)
+                return
+            } else if utilizationRate > 0.7 && recvBufferLimit < SOCIAL_NORMAL_BUFFER {
+                adjustBufferSize(SOCIAL_NORMAL_BUFFER)
+                return
+            }
+        }
+        
+        // 通用逻辑
         if utilizationRate > 0.9 && recvBufferLimit < 64 * 1024 {
-            // 使用率超过90%才扩展
             adjustBufferSize(min(recvBufferLimit * 2, 64 * 1024))
-        } else if utilizationRate < 0.1 && recvBufferLimit > 4 * 1024 {
-            // 使用率低于20%才收缩（原来是30%）
-            adjustBufferSize(max(recvBufferLimit / 2, 4 * 1024))
+        } else if utilizationRate < 0.1 && recvBufferLimit > getMinBufferSize() {
+            adjustBufferSize(max(recvBufferLimit / 2, getMinBufferSize()))
         }
     }
     
-    // 暴露给 ConnectionManager 使用的属性
-        public var remotePort: UInt16? { destPort }
-        public var remoteIPv4: String? {
-            String(describing: destIP)
-        }
-        public var sniHost: String? {
-            // 从 TLS ClientHello 中提取的 SNI（需要实现）
-            return extractedSNI
-        }
-        public var originalHostname: String? { destinationHost }
-        
-        // 存储提取的 SNI
-        private var extractedSNI: String?
-        
-        // 在处理数据包时提取 SNI
-        private func extractSNIFromTLSHandshake(_ data: Data) {
-            // TLS ClientHello 解析逻辑
-            // 这里是简化版本，实际需要完整解析
-            guard data.count > 43,
-                  data[0] == 0x16, // TLS Handshake
-                  data[5] == 0x01  // ClientHello
-            else { return }
-            
-            // 解析 SNI extension（简化示例）
-            // 实际实现需要完整的 TLS 解析
-        }
+    // 公开属性和方法
+    public var remotePort: UInt16? { destPort }
+    public var remoteIPv4: String? { String(describing: destIP) }
+    public var sniHost: String? { extractedSNI }
+    public var originalHostname: String? { destinationHost }
+    public var isHighTraffic: Bool = false
     
+    private var extractedSNI: String?
     
+    private func extractSNIFromTLSHandshake(_ data: Data) {
+        guard data.count > 43,
+              data[0] == 0x16, // TLS Handshake
+              data[5] == 0x01  // ClientHello
+        else { return }
+        // 实际TLS解析逻辑（简化）
+    }
     
-    // 辅助方法：获取连接优先级（可根据端口或域名判断）
     private func getConnectionPriority() -> ConnectionPriority? {
+        if isYouTubeConnection() || isSocialMediaConnection() {
+            return .high
+        }
+        
         switch destPort {
-            case 5223: return .critical  // Apple Push
-            case 443: return .high      // HTTPS
-            case 80: return .normal     // HTTP
-            default: return .low
+        case 5223: return .critical
+        case 443: return .high
+        case 80: return .normal
+        default: return .low
         }
     }
     
+    public func getOverflowCount() async -> Int {
+        return overflowCount
+    }
     
-    // 避免并发重入 flush
     private var isFlushing = false
 
     private func flushPendingData() async {
         guard socksState == .established, !pendingClientBytes.isEmpty else { return }
 
-        // 复制出队列，清空原数组与计数；若部分发送失败，会再回填到队首
         let queue = pendingClientBytes
         pendingClientBytes.removeAll(keepingCapacity: true)
 
-        // 不先清零 pendingBytesTotal，逐块成功后再扣减，失败则回填保持总数正确
         log("Flushing \(pendingBytesTotal) bytes of pending data")
 
         for chunk in queue {
@@ -1385,17 +1954,15 @@ final actor TCPConnection {
                 } else {
                     log("flushPendingData: send failed (attempt \(attempt)), backing off \(backoffNs/1_000_000)ms")
                     try? await Task.sleep(nanoseconds: backoffNs)
-                    backoffNs = min(backoffNs << 1, 200_000_000) // 封顶 ~200ms
+                    backoffNs = min(backoffNs << 1, 200_000_000)
                 }
             }
 
             if sentOK {
-                // 成功：从计数中扣减，并尝试通告窗口扩大（会在显著增长时发纯 ACK）
                 pendingBytesTotal -= chunk.count
                 lastActivityTime = Date()
-                maybeSendWindowUpdate(reason: "post-send") // 会在增长显著时写“Window update (post-send)”日志
+                maybeSendWindowUpdate(reason: "post-send")
             } else {
-                // 仍失败：把当前块放回队首，停止 flush，留待后续条件更好时再发
                 pendingClientBytes.insert(chunk, at: 0)
                 break
             }
@@ -1424,7 +1991,6 @@ final actor TCPConnection {
                     await self.cancelDelayedAckTimer()
                     await self.writeToTunnel(payload: data)
                 } else {
-                    // 没有数据，标记为空闲
                     await self.markFlowIdle()
                 }
                 
@@ -1436,13 +2002,25 @@ final actor TCPConnection {
     private func markFlowIdle() {
         backpressure.markIdle()
         
-        // 如果连续空闲，考虑收缩缓冲区
         if backpressure.consecutiveIdleCycles > 2 {
             evaluateBufferShrinkage()
         }
     }
     
-    // MARK: - 公开方法供外部监控
+    private func evaluateBufferShrinkage() {
+        // 忽略Keep-Alive，只看实际数据
+        if !isReallyActive() && recvBufferLimit > getMinBufferSize() {
+            let timeSinceData = trafficType.lastActualDataTime.map { Date().timeIntervalSince($0) } ?? 999.0
+            
+            if timeSinceData > 0.1 {  // 100ms无实际数据
+                recvBufferLimit = getMinBufferSize()
+                updateAdvertisedWindow()
+                log("[Shrink] No actual data for \(timeSinceData)s")
+            }
+        }
+    }
+    
+    // 公开方法供外部监控
     public func getBackpressureStats() async -> (
         bufferSize: Int,
         usage: Int,
@@ -1458,27 +2036,16 @@ final actor TCPConnection {
     }
 
     public func optimizeBufferBasedOnFlow() async {
-        if !backpressure.isActive && backpressure.timeSinceLastData > 0.2 {
-            // 超过1秒没有数据流，立即收缩到最小
+        if !isReallyActive() && backpressure.timeSinceLastData > 0.1 {
             shrinkBufferImmediate()
         }
     }
-    
 
     // MARK: - Helper Methods
-    private func makeLoopbackParameters() -> NWParameters {
-        let tcpOptions = NWProtocolTCP.Options()
-        tcpOptions.noDelay = true // 禁用 Nagle 算法，降低延迟
-        let p = NWParameters(tls: nil, tcp: tcpOptions) // 使用 TCP 选项初始化参数
-        p.requiredInterfaceType = .loopback
-        p.allowLocalEndpointReuse = true
-        return p
-    }
-
     private func cancelAllTimers() {
         cancelRetransmitTimer()
         cancelDelayedAckTimer()
-        cancelKeepAliveTimer()  // 新增
+        cancelKeepAliveTimer()
     }
 
     private func cancelRetransmitTimer() {
@@ -1500,7 +2067,6 @@ final actor TCPConnection {
         }
         pendingClientBytes.removeAll()
         pendingBytesTotal = 0
-        // 释放缓冲 -> 可能需要发 Window Update
         maybeSendWindowUpdate(reason: "cleanupBuffers")
     }
 
@@ -1508,43 +2074,42 @@ final actor TCPConnection {
         pendingClientBytes.append(data)
         pendingBytesTotal += data.count
 
-        // 检查是否超过软限制
         if pendingBytesTotal > pendingSoftCapBytes {
             trimPendingBuffer()
         }
         
-        // 新增：检查是否超过硬限制（recvBufferLimit）
         if pendingBytesTotal > recvBufferLimit {
-            trimBuffers()  // 调用 trimBuffers 进行更激进的清理
+            trimBuffers()
             log("Pending bytes exceeded recv limit, aggressive trimming")
         }
         
-        updateAdvertisedWindow() // shrink only
+        updateAdvertisedWindow()
     }
     
     private var isEmergencyMemoryPressure: Bool {
-        // TODO: 将来这里可以接 ConnectionManager 的内存监控
         return false
+    }
+
+    private var pendingSoftCapBytes: Int {
+        return (socksState == .established) ? (24 * 1024) : (12 * 1024)
     }
 
     private func trimPendingBuffer() {
         guard !pendingClientBytes.isEmpty else { return }
 
-        if !isEmergencyMemoryPressure { // 新增：常态不丢
+        if !isEmergencyMemoryPressure {
             return
         }
         
         var dropped = 0
-        let idx = 1 // Keep first segment (usually TLS ClientHello)
+        let idx = 1
 
-
-        while pendingBytesTotal > pendingSoftCapBytes && idx < pendingClientBytes.count { // PHASE1
-        let size = pendingClientBytes[idx].count
-        pendingClientBytes.remove(at: idx)
-        pendingBytesTotal -= size
-        dropped += size
+        while pendingBytesTotal > pendingSoftCapBytes && idx < pendingClientBytes.count {
+            let size = pendingClientBytes[idx].count
+            pendingClientBytes.remove(at: idx)
+            pendingBytesTotal -= size
+            dropped += size
         }
-
 
         if dropped > 0 {
             log("Dropped \(dropped) bytes from pending buffer")
@@ -1557,7 +2122,6 @@ final actor TCPConnection {
             if let err = err {
                 Task {
                     await self?.log("SOCKS send error: \(err)")
-                    // 新增：立即收缩
                     await self?.handleClientRefusal()
                     await self?.close()
                 }
@@ -1573,65 +2137,23 @@ final actor TCPConnection {
     
     private func onDataSuccessfullySent(_ bytes: Int) {
         backpressure.lastDataSentTime = Date()
-            
-            let timeSinceLastReceive = backpressure.timeSinceLastData
-            
-            // 更快的收缩判断（原来是 0.1 秒，改为 0.05 秒）
-            if timeSinceLastReceive > 0.05 {
-                // 但只在流量真正停止时才收缩
-                if !backpressure.isActive && bufferedBytesForWindow() < recvBufferLimit / 4 {
-                    evaluateBufferShrinkage()
-                }
-            }
-    }
-
-    private func evaluateBufferShrinkage() {
-        let usage = bufferedBytesForWindow()
-        let utilizationRate = Double(usage) / Double(recvBufferLimit)
         
-        // 只在使用率极低且确认无流量时收缩
-        if utilizationRate < 0.05 && !backpressure.isActive &&
-           backpressure.timeSinceLastData > 1.0 {
-            // 完全空闲，收缩到最小
-            shrinkBufferImmediate()
-        } else if utilizationRate < 0.2 && backpressure.timeSinceLastData > 0.5 {
-            // 低使用率，逐步收缩（但保留更多空间）
-            let newSize = max(MIN_BUFFER * 4, recvBufferLimit / 2)
-            if newSize < recvBufferLimit {
-                recvBufferLimit = newSize
-                updateAdvertisedWindow()
-                log("[Backpressure] Gradual shrink: -> \(newSize) bytes")
+        let timeSinceLastReceive = backpressure.timeSinceLastData
+        
+        if timeSinceLastReceive > 0.05 {
+            if !backpressure.isActive && bufferedBytesForWindow() < recvBufferLimit / 4 {
+                evaluateBufferShrinkage()
             }
-        }
-    }
-    
-    
-    @inline(__always)
-    private func expandWindowAfterSend() {
-        // 1) 重新计算可用空间
-        let cap = min(recvBufferLimit, Int(MAX_WINDOW_SIZE))
-        let used = bufferedBytesForWindow()         // 你已有的函数
-        let free = max(0, cap - used)
-        let target = UInt16(free)
-
-        // 2) 若窗口确实变大了，更新并尝试发 Window Update
-        if target > availableWindow {
-            availableWindow = target
-            maybeSendWindowUpdate(reason: "post-send")  // 现有函数，会内部触发纯 ACK
-            lastAdvertisedWindow = availableWindow      // 与你现有语义对齐
         }
     }
     
     @inline(__always)
     private func recomputeWindowAndMaybeAck(expand: Bool, reason: String) {
         let prev = availableWindow
-        // 统一用“官方”计算：cap - used
-        updateAdvertisedWindow()  // 已存在的方法，会更新 availableWindow（cap-used）
-        // 收缩：只更新数值，不主动发 ACK（TCP 允许窗口收缩；必要时对端会探测）
+        updateAdvertisedWindow()
         if !expand { return }
-        // 扩张：在增长显著（0->正 或 ≥1 MSS）时发 Window Update（纯 ACK）
         if availableWindow > prev {
-            maybeSendWindowUpdate(reason: reason)  // 已存在的方法，内部会更新 lastAdvertisedWindow
+            maybeSendWindowUpdate(reason: reason)
         }
     }
 
@@ -1789,7 +2311,7 @@ final actor TCPConnection {
 
     func retransmitSynAckDueToDuplicateSyn() async {
         guard !handshakeAcked else { return }
-        updateAdvertisedWindow() // NEW
+        updateAdvertisedWindow()
         let seq = serverInitialSequenceNumber
         let ackNumber = initialClientSequenceNumber &+ 1
 
@@ -1804,7 +2326,7 @@ final actor TCPConnection {
         tcp[14] = UInt8(availableWindow >> 8)
         tcp[15] = UInt8(availableWindow & 0xFF)
 
-        // MSS + SACK-permitted, no WS
+        // MSS + SACK-permitted
         var off = 20
         let mssVal = UInt16(self.mss)
         tcp[off] = 0x02; tcp[off+1] = 0x04
@@ -1826,14 +2348,13 @@ final actor TCPConnection {
     }
 
     func onInboundAck(ackNumber: UInt32) {
-        updateLastActivity()  // 新增
+        updateLastActivity()
         
         if !handshakeAcked {
             let expected = serverInitialSequenceNumber &+ 1
             if ackNumber >= expected {
                 handshakeAcked = true
                 nextExpectedSequence = initialClientSequenceNumber &+ 1
-                // Advance our send sequence because SYN consumes one
                 serverSequenceNumber = serverInitialSequenceNumber &+ 1
                 log("Handshake ACK received")
             }
@@ -1842,52 +2363,58 @@ final actor TCPConnection {
     
     func onInboundAckWithWindow(ackNumber: UInt32, windowSize: UInt16) {
         updateLastActivity()
-            
-            // 更新客户端通告窗口
-            let oldWindow = clientAdvertisedWindow
-            clientAdvertisedWindow = windowSize
-            
-            // 检测零窗口
-            if windowSize == 0 {
-                zeroWindowProbeCount += 1
-                log("[Window] Client advertised zero window (probe #\(zeroWindowProbeCount))")
-                
-                // 零窗口持续，考虑收缩
-                if zeroWindowProbeCount > 2 {
-                    handleClientRefusal()
-                }
-            } else if oldWindow == 0 && windowSize > 0 {
-                // 窗口恢复
-                zeroWindowProbeCount = 0
-                log("[Window] Client window recovered: \(windowSize)")
-            }
-            
-            // 调用原有的ACK处理
-            onInboundAck(ackNumber: ackNumber)
-    }
-    
-    
-    // MARK: - 添加收缩原因
-    private func shrinkBufferDueToBackpressure() {
-        let oldSize = recvBufferLimit
         
-        // 基于不同原因选择收缩大小
-        let newSize: Int
-        if zeroWindowProbeCount > 0 {
-            // 客户端窗口问题：收缩到1/4
-            newSize = max(MIN_BUFFER, recvBufferLimit / 4)
-        } else if duplicatePacketCount > 5 {
-            // 重复ACK：收缩到1/2
-            newSize = max(MIN_BUFFER, recvBufferLimit / 2)
-        } else {
-            // 正常收缩：收缩到2/3
-            newSize = max(MIN_BUFFER, recvBufferLimit * 2 / 3)
+        let oldWindow = clientAdvertisedWindow
+        clientAdvertisedWindow = windowSize
+        
+        if windowSize == 0 {
+            zeroWindowProbeCount += 1
+            log("[Window] Client advertised zero window (probe #\(zeroWindowProbeCount))")
+            
+            if zeroWindowProbeCount > 2 {
+                handleClientRefusal()
+            }
+        } else if oldWindow == 0 && windowSize > 0 {
+            zeroWindowProbeCount = 0
+            log("[Window] Client window recovered: \(windowSize)")
         }
         
-        recvBufferLimit = newSize
-        updateAdvertisedWindow()
+        onInboundAck(ackNumber: ackNumber)
+    }
+    
+    func adjustBufferSize(_ newSize: Int) {
+        let oldSize = recvBufferLimit
+        recvBufferLimit = max(getMinBufferSize(), min(newSize, Int(MAX_WINDOW_SIZE)))
         
-        log("[Backpressure] Shrink due to backpressure: \(oldSize) -> \(newSize)")
+        if oldSize != recvBufferLimit {
+            log("Buffer adjusted: \(oldSize) -> \(recvBufferLimit) bytes")
+            updateAdvertisedWindow()
+            
+            if recvBufferLimit < oldSize && bufferedBytesForWindow() > recvBufferLimit {
+                trimBuffers()
+            }
+        }
+    }
+    
+    private func trimBuffers() {
+        while outOfOrderPackets.count > MAX_BUFFERED_PACKETS / 2 {
+            outOfOrderPackets.removeFirst()
+        }
+        
+        if pendingBytesTotal > recvBufferLimit {
+            trimPendingBuffer()
+        }
+        
+        log("Buffers trimmed due to size reduction")
+    }
+    
+    public func handleMemoryPressure(targetBufferSize: Int) async {
+        adjustBufferSize(targetBufferSize)
+        
+        if bufferedBytesForWindow() > recvBufferLimit {
+            trimBuffers()
+            log("Memory pressure: trimmed buffers to \(recvBufferLimit) bytes")
+        }
     }
 
     // MARK: - Packet Creation Helpers
@@ -1965,31 +2492,21 @@ final actor TCPConnection {
     }
 
     func onInboundFin(seq: UInt32) async {
-        // 仅在期望的序号位置上推进一个字节（FIN 消耗一个序号）
         if seq == clientSequenceNumber {
             clientSequenceNumber &+= 1
         }
-        // 立即回 ACK，避免对端重传 FIN
         sendPureAck()
-        // 不主动关闭，由上游（SOCKS/服务端）完成后再走正常关闭流程
     }
     
-
-    // Replace the fixed pending cap constant with a computed property
-    private var pendingSoftCapBytes: Int { // PHASE1: smaller cap before SOCKS up
-        return (socksState == .established) ? (24 * 1024) : (12 * 1024)
-    }
-    
+    // MARK: - Keep-Alive
     private var keepAliveTimer: DispatchSourceTimer?
-    
     private var lastActivityTime = Date()
     private var keepAliveProbesSent = 0
     private let maxKeepAliveProbes = 3
     
     private func startKeepAlive() {
-        
         let interval = computeKeepAliveInterval(host: self.destinationHost, port: self.destPort)
-        self.keepAliveInterval = interval            // ← 统一来源
+        self.keepAliveInterval = interval
         keepAliveTimer = DispatchSource.makeTimerSource(queue: queue)
         keepAliveTimer?.schedule(deadline: .now() + interval, repeating: interval)
         keepAliveTimer?.setEventHandler { [weak self] in
@@ -2003,59 +2520,23 @@ final actor TCPConnection {
         log("Keep-alive started with interval: \(interval)s for port \(destPort)")
     }
     
-    
-    
-    // TCPConnection.swift - 在类的属性部分添加
-    public var isHighTraffic: Bool = false
-    private var overflowCount: Int = 0
-    private var lastOverflowTime: Date?
-
-    // 添加获取溢出计数的方法
-    public func getOverflowCount() async -> Int {
-        return overflowCount
-    }
-
-    // 在处理缓冲区溢出的地方增加计数
-    private func handleBufferOverflow() async {
-        overflowCount += 1
-        lastOverflowTime = Date()
-        
-        let currentSize = recvBufferLimit
-        let newSize = min(currentSize * 2, 1024 * 192) // 最大128KB
-        
-        if currentSize < newSize {
-            log("[Buffer] Overflow detected (#\(overflowCount)), expanding from \(currentSize) to \(newSize)")
-            adjustBufferSize(newSize)
-            isHighTraffic = true
-        } else {
-            log("[Buffer] Maximum size reached, dropping packets (overflow count: \(overflowCount))")
-        }
-    }
-    
-    // MARK: - Keep-Alive Implementation
     private func sendKeepAlive() async {
-        // 检查连接是否活跃
         let timeSinceLastActivity = Date().timeIntervalSince(lastActivityTime)
         
-        
-        // 如果最近有活动，跳过保活
         if timeSinceLastActivity < keepAliveInterval {
-            keepAliveProbesSent = 0 // 重置探测计数
+            keepAliveProbesSent = 0
             return
         }
         
-        // 检查连接状态
         guard socksState == .established else {
             cancelKeepAliveTimer()
             return
         }
         
-        // 发送 TCP Keep-Alive 探测（零字节 ACK）
         await sendKeepAliveProbe()
         
         keepAliveProbesSent += 1
         
-        // 如果超过最大探测次数，关闭连接
         if keepAliveProbesSent >= maxKeepAliveProbes {
             log("Keep-alive timeout after \(maxKeepAliveProbes) probes, closing connection")
             close()
@@ -2063,8 +2544,6 @@ final actor TCPConnection {
     }
 
     private func sendKeepAliveProbe() async {
-        // 发送一个零窗口探测包（TCP Keep-Alive）
-        // 这是一个包含前一个序列号的 ACK 包
         let probeSeq = serverSequenceNumber &- 1
         let ackNumber = clientSequenceNumber
         
@@ -2075,12 +2554,12 @@ final actor TCPConnection {
         withUnsafeBytes(of: probeSeq.bigEndian) { tcp.replaceSubrange(4..<8, with: $0) }
         withUnsafeBytes(of: ackNumber.bigEndian) { tcp.replaceSubrange(8..<12, with: $0) }
         
-        tcp[12] = 0x50  // Data offset = 5 (20 bytes)
+        tcp[12] = 0x50
         tcp[13] = TCPFlags.ack.rawValue
         tcp[14] = UInt8(availableWindow >> 8)
         tcp[15] = UInt8(availableWindow & 0xFF)
-        tcp[16] = 0; tcp[17] = 0  // Checksum
-        tcp[18] = 0; tcp[19] = 0  // Urgent pointer
+        tcp[16] = 0; tcp[17] = 0
+        tcp[18] = 0; tcp[19] = 0
         
         var ip = createIPv4Header(payloadLength: tcp.count)
         let tcpCsum = tcpChecksum(ipHeader: ip, tcpHeader: tcp, payload: Data())
@@ -2092,7 +2571,6 @@ final actor TCPConnection {
         
         log("Keep-alive probe sent (probe #\(keepAliveProbesSent + 1))")
     }
-    
 
     private func cancelKeepAliveTimer() {
         keepAliveTimer?.cancel()
@@ -2100,56 +2578,10 @@ final actor TCPConnection {
         keepAliveProbesSent = 0
     }
 
-    // 更新活动时间
     private func updateLastActivity() {
         lastActivityTime = Date()
-        keepAliveProbesSent = 0  // 重置探测计数
+        keepAliveProbesSent = 0
     }
-    
-    // MARK: - Dynamic Buffer Adjustment
-    func adjustBufferSize(_ newSize: Int) {
-        let oldSize = recvBufferLimit
-        recvBufferLimit = max(4 * 1024, min(newSize, Int(MAX_WINDOW_SIZE)))
-        
-        if oldSize != recvBufferLimit {
-            log("Buffer adjusted: \(oldSize) -> \(recvBufferLimit) bytes")
-            updateAdvertisedWindow()
-            
-            // 如果缓冲区缩小且当前缓存过多，触发清理
-            if recvBufferLimit < oldSize && bufferedBytesForWindow() > recvBufferLimit {
-                trimBuffers()
-            }
-        }
-    }
-    
-    // 清理过多的缓冲数据
-    private func trimBuffers() {
-        // 清理乱序包缓冲区
-        while outOfOrderPackets.count > MAX_BUFFERED_PACKETS / 2 {
-            outOfOrderPackets.removeFirst()
-        }
-        
-        // 清理待发送数据
-        if pendingBytesTotal > recvBufferLimit {
-            trimPendingBuffer()
-        }
-        
-        log("Buffers trimmed due to size reduction")
-    }
-    
-    // 添加一个公开方法供 ConnectionManager 调用
-    public func handleMemoryPressure(targetBufferSize: Int) async {
-        // 调整缓冲区大小
-        adjustBufferSize(targetBufferSize)
-        
-        // 如果缓冲区使用超过新限制，主动清理
-        if bufferedBytesForWindow() > recvBufferLimit {
-            trimBuffers()
-            log("Memory pressure: trimmed buffers to \(recvBufferLimit) bytes")
-        }
-    }
-    
-    
 }
 
 // MARK: - Helper Types
@@ -2183,10 +2615,6 @@ extension Array where Element == (seq: UInt32, data: Data) {
         }
         return left
     }
-
-
-// Client half-close (FIN from client)
-
 }
 
 extension Data {
