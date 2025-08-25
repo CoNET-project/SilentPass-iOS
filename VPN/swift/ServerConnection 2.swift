@@ -21,6 +21,17 @@ public final class ServerConnection {
         case bridged
         case closed
     }
+    
+    /// 该连接是否已切到 LayerMinus 通道（由业务分支显式标记）
+    public private(set) var isLayerMinusRouted: Bool = false
+
+    /// 当确定此连接将经由 LayerMinusBridge 转发时调用
+    public func markAsLayerMinusRouted() {
+        self.isLayerMinusRouted = true
+    }
+    
+    public var onRoutingDecided: ((ServerConnection) -> Void)?
+    
     private var phase: Phase = .methodSelect
     private var closed = false
     private var handedOff = false
@@ -414,6 +425,7 @@ public final class ServerConnection {
             )
             
             self.bridge = newBridge
+            self.onRoutingDecided?(self)
             
             // 传递 Base64 编码的首包给 bridge
             newBridge.start(withFirstBody: b64)
@@ -444,8 +456,9 @@ public final class ServerConnection {
                             self?.close(reason: "Bridge closed")
                         }
                     )
-                    
+                    self.isLayerMinusRouted = true
                     self.bridge = newBridge
+                    self.onRoutingDecided?(self)
                     
                     // 传递 Base64 编码的首包给 bridge
                     newBridge.start(withFirstBody: request.data(using: .utf8)!.base64EncodedString())
