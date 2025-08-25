@@ -28,7 +28,6 @@ public final class LayerMinusBridge {
         client: NWConnection,
         targetHost: String,
         targetPort: Int,
-        LayerMinus: LayerMinus,
         verbose: Bool = true,
         onClosed: ((UInt64) -> Void)? = nil
     ) {

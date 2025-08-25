@@ -42,7 +42,6 @@ public final class ServerConnection {
     init(
         id: UInt64,
         connection: NWConnection,
-        LayerMinus: LayerMinus,
         logger: Logger = Logger(subsystem: "VPN", category: "SOCKS5"),
         verbose: Bool = true,
         layerMinus: LayerMinus,
@@ -452,6 +451,7 @@ public final class ServerConnection {
                         targetHost: entryNode.ip_addr,
                         targetPort: 80,
                         verbose: self.verbose,
+                        
                         onClosed: { [weak self] bridgeId in
                             // 当 bridge 关闭时，关闭 ServerConnection
                             self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")

@@ -142,7 +142,6 @@ final class Server {
         lst.start(queue: queue)
         startStatsTimer()
         
-        log("SOCKS5 Server LayerMinus started \(Server.layerMinus.egressNodes.count) egress nodes, \(Server.layerMinus.entryNodes.count) entry nodes ")
     }
     
     
