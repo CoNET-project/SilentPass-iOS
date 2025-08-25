@@ -110,10 +110,10 @@ final actor ConnectionManager {
     private let maxIdleTime: TimeInterval = 60.0
     
     // 内存管理阈值（MB）
-    private let memoryNormalMB: UInt64 = 20
-    private let memoryWarningMB: UInt64 = 35
-    private let memoryCriticalMB: UInt64 = 45
-    private let memoryEmergencyMB: UInt64 = 55
+    private let memoryNormalMB: UInt64 = 30
+    private let memoryWarningMB: UInt64 = 45
+    private let memoryCriticalMB: UInt64 = 55
+    private let memoryEmergencyMB: UInt64 = 60
     
     // 止血模式
     private var shedding = false
@@ -252,6 +252,19 @@ final actor ConnectionManager {
         logger.info("[ConnectionManager] All subsystems started")
         
         await readPackets()
+        
+        // 添加背压优化任务
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000) // 每500ms检查一次
+                guard let self = self else { break }
+                
+                for (_, conn) in await self.tcpConnections {
+                    await conn.optimizeBufferBasedOnFlow()
+                }
+            }
+        }
+        
     }
     
     private func startHealthMonitor() {
@@ -1234,15 +1247,19 @@ final actor ConnectionManager {
     }
     
     private func calculateBufferSizeForPriority(_ priority: ConnectionPriority) -> Int {
+        // 检查当前内存压力
+        let memoryMB = getCurrentMemoryUsageMB()
+        let scaleFactor = memoryMB < memoryNormalMB ? 1.5 : 1.0
+        
         switch priority {
         case .critical:
-            return 96 * 1024
+            return Int(128 * 1024 * scaleFactor)  // 128KB-192KB
         case .high:
-            return 64 * 1024
+            return Int(96 * 1024 * scaleFactor)   // 96KB-144KB
         case .normal:
-            return 48 * 1024
+            return Int(64 * 1024 * scaleFactor)   // 64KB-96KB
         case .low:
-            return 16 * 1024
+            return Int(32 * 1024 * scaleFactor)   // 32KB-48KB
         }
     }
 
@@ -1650,13 +1667,26 @@ final actor ConnectionManager {
 extension ConnectionManager {
     nonisolated func prepareForStop() {
         Task { [weak self] in
-            guard let self = self else { return }
-            logger.info("[Shutdown] Preparing to stop...")
-            
-            await self.stopTimers()
-            await self.closeAllConnections()
-            
-            logger.info("[Shutdown] Cleanup complete")
+            while !Task.isCancelled {
+                // 更频繁的检查（从 500ms 改为 200ms）
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard let self = self else { break }
+                
+                // 批量优化，减少开销
+                var toOptimize: [(String, TCPConnection)] = []
+                for (key, conn) in await self.tcpConnections {
+                    toOptimize.append((key, conn))
+                }
+                
+                // 并发优化多个连接
+                await withTaskGroup(of: Void.self) { group in
+                    for (_, conn) in toOptimize {
+                        group.addTask {
+                            await conn.optimizeBufferBasedOnFlow()
+                        }
+                    }
+                }
+            }
         }
     }
     

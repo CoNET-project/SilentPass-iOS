@@ -9,8 +9,76 @@ import NetworkExtension
 import Network
 import Foundation
 
+
+private struct BackpressureMetrics {
+    var lastDataReceivedTime = Date()
+    var lastDataSentTime = Date()
+    var consecutiveIdleCycles = 0
+    var recentDataRate: Double = 0
+    var peakDataRate: Double = 0
+    var isActive = false
+    
+    // 滑动窗口记录最近的数据量
+    var recentDataPoints: [(Date, Int)] = []
+    let windowDuration: TimeInterval = 1.0 // 1秒窗口
+    
+    mutating func recordDataReceived(_ bytes: Int) {
+        let now = Date()
+        lastDataReceivedTime = now
+        isActive = true
+        consecutiveIdleCycles = 0
+        
+        // 更新滑动窗口
+        recentDataPoints.append((now, bytes))
+        recentDataPoints = recentDataPoints.filter {
+            now.timeIntervalSince($0.0) <= windowDuration
+        }
+        
+        // 计算当前速率
+        let totalBytes = recentDataPoints.reduce(0) { $0 + $1.1 }
+        recentDataRate = Double(totalBytes) / windowDuration
+        peakDataRate = max(peakDataRate, recentDataRate)
+    }
+    
+    mutating func markIdle() {
+        consecutiveIdleCycles += 1
+        if consecutiveIdleCycles > 3 {
+            isActive = false
+            recentDataRate = 0
+        }
+    }
+    
+    var timeSinceLastData: TimeInterval {
+        Date().timeIntervalSince(lastDataReceivedTime)
+    }
+    
+    var growthTrend: Double = 0  // 流量增长趋势
+       var lastGrowthCheck = Date()
+       
+       mutating func updateGrowthTrend() {
+           guard recentDataPoints.count >= 5 else { return }
+           
+           let firstHalf = recentDataPoints.prefix(recentDataPoints.count / 2)
+           let secondHalf = recentDataPoints.suffix(recentDataPoints.count / 2)
+           
+           let firstAvg = Double(firstHalf.map { $0.1 }.reduce(0, +)) / Double(firstHalf.count)
+           let secondAvg = Double(secondHalf.map { $0.1 }.reduce(0, +)) / Double(secondHalf.count)
+           
+           growthTrend = (secondAvg - firstAvg) / max(firstAvg, 1.0)
+       }
+}
+
+
+
+
 final actor TCPConnection {
 
+    private var backpressure = BackpressureMetrics()
+    private let MIN_BUFFER = 4 * 1024  // 最小4KB
+    private let MAX_BUFFER = 256 * 1024    // 增加到 256KB (原来可能是 64KB)
+    private let BURST_BUFFER = 512 * 1024  // 突发流量缓冲区 512KB
+    
+    
     enum ConnectionPriority: Int, Comparable {
         case low = 0
         case normal = 1
@@ -313,6 +381,77 @@ final actor TCPConnection {
             processDuplicatePacket(sequenceNumber: sequenceNumber)
         }
     }
+    
+    // MARK: - 动态缓冲区管理（基于背压）
+    private func evaluateBufferExpansion() {
+        let usage = bufferedBytesForWindow()
+        let utilizationRate = Double(usage) / Double(recvBufferLimit)
+        
+        // 检测突发流量模式
+        let isBurstTraffic = backpressure.recentDataRate > Double(mss * 10) // 高速流量
+        
+        if utilizationRate > 0.75 && backpressure.isActive {
+            // 根据流量模式选择扩展策略
+            let targetSize: Int
+            if isBurstTraffic {
+                // 突发流量：激进扩展（4倍）
+                targetSize = min(BURST_BUFFER, recvBufferLimit * 4)
+            } else if utilizationRate > 0.9 {
+                // 接近满载：快速扩展（3倍）
+                targetSize = min(MAX_BUFFER, recvBufferLimit * 3)
+            } else {
+                // 常规扩展（2倍）
+                targetSize = min(MAX_BUFFER, recvBufferLimit * 2)
+            }
+            
+            if targetSize > recvBufferLimit {
+                expandBufferImmediate(to: targetSize)
+            }
+        }
+    }
+    
+    // 添加突发流量检测
+    private func detectTrafficBurst() -> Bool {
+        guard backpressure.recentDataPoints.count >= 3 else { return false }
+        
+        let recent = backpressure.recentDataPoints.suffix(3)
+        let avgBytes = recent.map { $0.1 }.reduce(0, +) / recent.count
+        
+        // 如果最近平均流量超过 MSS 的 5 倍，认为是突发流量
+        return avgBytes > mss * 5
+    }
+    
+    
+    private func expandBufferImmediate(to size: Int) {
+        let oldSize = recvBufferLimit
+        recvBufferLimit = size
+        updateAdvertisedWindow()
+        maybeSendWindowUpdate(reason: "backpressure-expand")
+        log("[Backpressure] Buffer expanded: \(oldSize) -> \(size) bytes")
+    }
+
+    private func shrinkBufferImmediate() {
+        // 立即收缩到最小值
+        if recvBufferLimit > MIN_BUFFER {
+            let oldSize = recvBufferLimit
+            recvBufferLimit = MIN_BUFFER
+            
+            // 清理超出新限制的缓冲数据
+            if bufferedBytesForWindow() > MIN_BUFFER {
+                trimBuffersToFit()
+            }
+            
+            updateAdvertisedWindow()
+            log("[Backpressure] Buffer shrunk: \(oldSize) -> \(MIN_BUFFER) bytes")
+        }
+    }
+
+    private func trimBuffersToFit() {
+        // 保留最重要的数据，清理其余部分
+        while bufferedBytesForWindow() > recvBufferLimit && !outOfOrderPackets.isEmpty {
+            outOfOrderPackets.removeFirst()
+        }
+    }
 
     private func initializeSequenceTracking(_ sequenceNumber: UInt32) {
         handshakeAcked = true
@@ -324,6 +463,11 @@ final actor TCPConnection {
 
     private func processInOrderPacket(payload: Data, sequenceNumber: UInt32) {
         // Update sequence numbers
+        // 记录背压数据
+            backpressure.recordDataReceived(payload.count)
+       
+            backpressure.updateGrowthTrend()
+        
         nextExpectedSequence = sequenceNumber &+ UInt32(payload.count)
         clientSequenceNumber = nextExpectedSequence
         lastAckedSequence = nextExpectedSequence
@@ -331,6 +475,10 @@ final actor TCPConnection {
         // Cancel retransmit timer since we got expected data
         cancelRetransmitTimer()
 
+        // 检查是否需要立即扩展缓冲区
+            evaluateBufferExpansion()
+        
+        
         // Forward data
         if socksState == .established {
             sendRawToSocks(payload)
@@ -340,6 +488,16 @@ final actor TCPConnection {
 
         // Process any buffered packets that are now in order
         processBufferedPackets()
+        
+        if backpressure.growthTrend > 0.2 {  // 流量增长超过 20%
+            let predictedNeed = Int(Double(recvBufferLimit) * (1 + backpressure.growthTrend))
+            let targetSize = min(MAX_BUFFER, predictedNeed)
+            let threshold = recvBufferLimit + (recvBufferLimit / 2)  // 相当于 1.5 倍
+            if targetSize > threshold {
+                expandBufferImmediate(to: targetSize)
+                log("[Predictive] Buffer expanded based on growth trend: \(backpressure.growthTrend)")
+            }
+        }
 
         // ACK policy: tiny payloads 立即 ACK，其它走延迟 ACK
         if payload.count <= 64 {
@@ -943,7 +1101,7 @@ final actor TCPConnection {
         if utilizationRate > 0.9 && recvBufferLimit < 64 * 1024 {
             // 使用率超过90%才扩展
             adjustBufferSize(min(recvBufferLimit * 2, 64 * 1024))
-        } else if utilizationRate < 0.3 && recvBufferLimit > 16 * 1024 {
+        } else if utilizationRate < 0.1 && recvBufferLimit > 16 * 1024 {
             // 使用率低于20%才收缩（原来是30%）
             adjustBufferSize(max(recvBufferLimit / 2, 16 * 1024))
         }
@@ -1034,29 +1192,64 @@ final actor TCPConnection {
         socksConnection?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             Task { [weak self] in
                 guard let self else { return }
-
+                
                 if let error = error {
                     await self.log("SOCKS receive error: \(error)")
                     await self.sendFinToClient()
                     await self.close()
                     return
                 }
-
+                
                 if isComplete {
                     await self.sendFinToClient()
                     await self.close()
                     return
                 }
-
+                
                 if let data, !data.isEmpty {
                     await self.cancelDelayedAckTimer()
                     await self.writeToTunnel(payload: data)
+                } else {
+                    // 没有数据，标记为空闲
+                    await self.markFlowIdle()
                 }
-
+                
                 await self.readFromSocks()
             }
         }
     }
+    
+    private func markFlowIdle() {
+        backpressure.markIdle()
+        
+        // 如果连续空闲，考虑收缩缓冲区
+        if backpressure.consecutiveIdleCycles > 2 {
+            evaluateBufferShrinkage()
+        }
+    }
+    
+    // MARK: - 公开方法供外部监控
+    public func getBackpressureStats() async -> (
+        bufferSize: Int,
+        usage: Int,
+        dataRate: Double,
+        isActive: Bool
+    ) {
+        return (
+            recvBufferLimit,
+            bufferedBytesForWindow(),
+            backpressure.recentDataRate,
+            backpressure.isActive
+        )
+    }
+
+    public func optimizeBufferBasedOnFlow() async {
+        if !backpressure.isActive && backpressure.timeSinceLastData > 1.0 {
+            // 超过1秒没有数据流，立即收缩到最小
+            shrinkBufferImmediate()
+        }
+    }
+    
 
     // MARK: - Helper Methods
     private func makeLoopbackParameters() -> NWParameters {
@@ -1151,9 +1344,48 @@ final actor TCPConnection {
                 Task { await self?.log("SOCKS send error: \(err)"); await self?.close() }
                 return
             }
-            Task { await self?.recomputeWindowAndMaybeAck(expand: true, reason: "post-send") }
+            
+            Task {
+                await self?.onDataSuccessfullySent(data.count)
+                await self?.recomputeWindowAndMaybeAck(expand: true, reason: "post-send")
+            }
         }))
     }
+    
+    private func onDataSuccessfullySent(_ bytes: Int) {
+        backpressure.lastDataSentTime = Date()
+            
+            let timeSinceLastReceive = backpressure.timeSinceLastData
+            
+            // 更快的收缩判断（原来是 0.1 秒，改为 0.05 秒）
+            if timeSinceLastReceive > 0.05 {
+                // 但只在流量真正停止时才收缩
+                if !backpressure.isActive && bufferedBytesForWindow() < recvBufferLimit / 4 {
+                    evaluateBufferShrinkage()
+                }
+            }
+    }
+
+    private func evaluateBufferShrinkage() {
+        let usage = bufferedBytesForWindow()
+        let utilizationRate = Double(usage) / Double(recvBufferLimit)
+        
+        // 只在使用率极低且确认无流量时收缩
+        if utilizationRate < 0.05 && !backpressure.isActive &&
+           backpressure.timeSinceLastData > 1.0 {
+            // 完全空闲，收缩到最小
+            shrinkBufferImmediate()
+        } else if utilizationRate < 0.2 && backpressure.timeSinceLastData > 0.5 {
+            // 低使用率，逐步收缩（但保留更多空间）
+            let newSize = max(MIN_BUFFER * 4, recvBufferLimit / 2)
+            if newSize < recvBufferLimit {
+                recvBufferLimit = newSize
+                updateAdvertisedWindow()
+                log("[Backpressure] Gradual shrink: -> \(newSize) bytes")
+            }
+        }
+    }
+    
     
     @inline(__always)
     private func expandWindowAfterSend() {
