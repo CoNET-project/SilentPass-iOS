@@ -17,6 +17,8 @@ import web3swift
 import ObjectivePGP
 import JavaScriptCore
 
+
+
 func getIPAddress() -> String? {
     var address: String?
 
@@ -59,6 +61,13 @@ func getIPAddress() -> String? {
 }
 
 class LayerMinus {
+    
+    @inline(__always)
+    
+    private func log(_ msg: String) {
+        NSLog("[LayerMinus] #%@", msg)
+    }
+    
     static let maxRegionNodes = 5
     var maxEgressNodes = 1
     static let rpc = "https://rpc.conet.network"
@@ -74,7 +83,7 @@ class LayerMinus {
     var privateKey: Data!
     let keyring = Keyring()
     let pgpKey = KeyGenerator().generate(for: "user@conet.network", passphrase: "")
-    
+
     static var currentScanNode = 100
     static var country = Set<String>()
     var entryNodes: [Node] = []
@@ -173,7 +182,7 @@ class LayerMinus {
         return ""
     }
     
-    init (port: Int) {
+    init () {
         
         self.keystoreManager = KeystoreManager([self.tempKeystore!])
         let account = self.keystoreManager.addresses![0]
@@ -187,8 +196,10 @@ class LayerMinus {
             
             UserDefaults.standard.set(self.privateKey, forKey: "privateKey")
             UserDefaults.standard.synchronize()
+            
+            log ("LayerMinus success!")
         } catch {
-            print ("LayerMinus Error getting private key!")
+            log ("LayerMinus Error getting private key!")
             return
         }
         Task{
@@ -208,18 +219,14 @@ class LayerMinus {
         return ret
     }
     
-    func getRandomEntryNodes () -> Node {
-        if entryNodes.isEmpty {
-            return Node(country: "", ip_addr: "", region: "", armoredPublicKey: "", nftNumber: "")
-        }
+    func getRandomEntryNodes () -> Node? {
+        guard !self.entryNodes.isEmpty else { return nil }
         let randomIndex = Int.random(in: 0..<self.entryNodes.count)
-        return entryNodes[randomIndex]
+        return self.entryNodes[randomIndex]
     }
     
-    func getRandomEgressNodes() -> Node {
-        if self.egressNodes.isEmpty {
-            return Node(country: "", ip_addr: "", region: "", armoredPublicKey: "", nftNumber: "")
-        }
+    func getRandomEgressNodes() -> Node? {
+        guard !self.egressNodes.isEmpty else { return nil }
         let randomIndex = Int.random(in: 0..<self.egressNodes.count)
         return self.egressNodes[randomIndex]
     }
@@ -576,4 +583,14 @@ extension Encodable {
 
 func instantiate<T: Decodable>(jsonString: String) -> T? {
     return try? JSONDecoder().decode(T.self, from: jsonString.data(using: .utf8)!)
+}
+
+extension Node {
+    var isEmpty: Bool {
+        return country.isEmpty &&
+               ip_addr.isEmpty &&
+               region.isEmpty &&
+               armoredPublicKey.isEmpty &&
+               nftNumber.isEmpty
+    }
 }

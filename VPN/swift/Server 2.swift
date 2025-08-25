@@ -20,9 +20,8 @@ final class Server {
     private var tickUp = 0
     private var tickDown = 0
     private var statTimer: DispatchSourceTimer?
+    private let layerMinus = LayerMinus()
     
-    static let sharedLayerMinus = LayerMinus(port:8888)
-
     init(host: String = "127.0.0.1",
          port: UInt16 = 8888,
          portLabel: String? = nil,
@@ -46,7 +45,7 @@ final class Server {
             return
         }
 
-        log("SOCKS5 Server starting on \(bindHost):\(portLabel)")
+        //log("SOCKS5 Server starting on \(bindHost):\(portLabel) \(entryNodes.count) \(egressNodes.count)")
 
         let tcp = NWProtocolTCP.Options()
         tcp.enableKeepalive = true
@@ -85,27 +84,49 @@ final class Server {
                 self.nextID &+= 1
                 let id = self.nextID
                 
-                let conn = ServerConnection(
-                    id: id,
-                    connection: nw,
-                    onClosed: { [weak self] connectionId in
-                        // 当 ServerConnection 关闭时，从字典中移除
-                        self?.onConnectionClosed(id: connectionId)
-                    }
-                )
-                
-                self.conns[id] = conn
-                
-                if self.verbose {
-                    self.log("SOCKS5 new conn #\(id), active=\(self.conns.count)")
+                guard let egressNode = self.layerMinus.getRandomEgressNodes(),
+                      let entryNode = self.layerMinus.getRandomEntryNodes(),
+                      !egressNode.isEmpty,
+                      !entryNode.isEmpty else {
+                    
+                        let conn = ServerConnection(
+                            id: id,
+                            connection: nw,
+                            onClosed: { [weak self] connectionId in
+                                // 当 ServerConnection 关闭时，从字典中移除
+                                self?.onConnectionClosed(id: connectionId)
+                            }
+                        )
+                        
+                        self.conns[id] = conn
+                        
+                        if self.verbose {
+                            self.log("SOCKS5 new conn #\(id), active=\(self.conns.count)")
+                        }
+                        
+                        conn.start()
+                        return
                 }
                 
-                conn.start()
+                self.log("SOCKS5 new USE LayerMinus Nodes \(egressNode.ip_addr) \(entryNode.ip_addr)")
+
             }
         }
 
         lst.start(queue: queue)
         startStatsTimer()
+    }
+    
+    
+    
+    func layerMinusInit (
+        privateKey: String, entryNodes: [Node], egressNodes: [Node]
+    ) {
+        self.layerMinus.startInVPN(privateKey: privateKey,
+                                   entryNodes: entryNodes,
+                                   egressNodes: egressNodes,
+                                   port: 8888)
+        self.log("layerMinusInit success privateKey = \(privateKey) entryNodes = \(entryNodes.count) egressNodes = \(egressNodes.count)")
     }
 
     func stop() {
@@ -144,7 +165,7 @@ final class Server {
     }
 
     // Logging & Error
-    func log(_ s: String) { NSLog("%@", s) }
+    func log(_ s: String) { NSLog("[ServerConnection] %@", s) }
     
     static func describe(_ err: Error) -> String {
         if let ne = err as? NWError {

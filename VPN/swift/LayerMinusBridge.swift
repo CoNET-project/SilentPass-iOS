@@ -20,7 +20,8 @@ public final class LayerMinusBridge {
     private var upstream: NWConnection?
     private var closed = false
 
-    public init(
+
+    init(
         id: UInt64,
         client: NWConnection,
         targetHost: String,
@@ -35,7 +36,6 @@ public final class LayerMinusBridge {
         self.verbose = verbose
         self.onClosed = onClosed
         self.queue = DispatchQueue(label: "LayerMinusBridge.\(id)", qos: .userInitiated)
-        
         // 简单的生命周期日志
         log("🟢 CREATED LayerMinusBridge #\(id) for \(targetHost):\(targetPort)")
     }
@@ -74,8 +74,12 @@ public final class LayerMinusBridge {
             
             // 开始连接上游并转发数据
             self.connectUpstreamAndRun(firstBody: firstBody)
+            
         }
     }
+    
+
+    
 
     public func cancel(reason: String) {
         guard !closed else { return }
