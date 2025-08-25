@@ -1101,9 +1101,9 @@ final actor TCPConnection {
         if utilizationRate > 0.9 && recvBufferLimit < 64 * 1024 {
             // 使用率超过90%才扩展
             adjustBufferSize(min(recvBufferLimit * 2, 64 * 1024))
-        } else if utilizationRate < 0.1 && recvBufferLimit > 16 * 1024 {
+        } else if utilizationRate < 0.1 && recvBufferLimit > 4 * 1024 {
             // 使用率低于20%才收缩（原来是30%）
-            adjustBufferSize(max(recvBufferLimit / 2, 16 * 1024))
+            adjustBufferSize(max(recvBufferLimit / 2, 4 * 1024))
         }
     }
     
@@ -1244,7 +1244,7 @@ final actor TCPConnection {
     }
 
     public func optimizeBufferBasedOnFlow() async {
-        if !backpressure.isActive && backpressure.timeSinceLastData > 1.0 {
+        if !backpressure.isActive && backpressure.timeSinceLastData > 0.2 {
             // 超过1秒没有数据流，立即收缩到最小
             shrinkBufferImmediate()
         }
@@ -1839,7 +1839,7 @@ final actor TCPConnection {
     // MARK: - Dynamic Buffer Adjustment
     func adjustBufferSize(_ newSize: Int) {
         let oldSize = recvBufferLimit
-        recvBufferLimit = max(8 * 1024, min(newSize, Int(MAX_WINDOW_SIZE)))
+        recvBufferLimit = max(4 * 1024, min(newSize, Int(MAX_WINDOW_SIZE)))
         
         if oldSize != recvBufferLimit {
             log("Buffer adjusted: \(oldSize) -> \(recvBufferLimit) bytes")
