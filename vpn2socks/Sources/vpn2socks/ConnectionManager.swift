@@ -1039,63 +1039,88 @@ final actor ConnectionManager {
 
     private func handleTCPPacket(_ ipPacket: IPv4Packet) async {
         guard let tcpSegment = TCPSegment(data: ipPacket.payload) else { return }
-        
-        // ✅ 检查目标IP是否为APNs网段
-        if isAPNsIP(ipPacket.destinationAddress) {
-            stats.apnsBypassedConnections += 1
-            logger.debug("[APNs] Bypassing TCP to APNs IP: \(String(describing: ipPacket.destinationAddress)):\(tcpSegment.destinationPort)")
-            return
-        }
-        
-        let packetID = "\(ipPacket.sourceAddress):\(tcpSegment.sourcePort)->\(ipPacket.destinationAddress):\(tcpSegment.destinationPort)-\(tcpSegment.sequenceNumber)"
-        
-        if processedPackets.contains(packetID) {
-            return
-        }
-        
-        processedPackets.insert(packetID)
-        
-        Task {
-            try? await Task.sleep(nanoseconds: UInt64(packetCacheTTL * 1_000_000_000))
-            processedPackets.remove(packetID)
-        }
-        
-        let key = makeConnectionKey(
-            srcIP: ipPacket.sourceAddress,
-            srcPort: tcpSegment.sourcePort,
-            dstIP: ipPacket.destinationAddress,
-            dstPort: tcpSegment.destinationPort
-        )
-        
-        if let expires = recentlyClosed[key], Date() < expires {
-            return
-        }
+            
+            // ✅ 检查目标IP是否为APNs网段
+            if isAPNsIP(ipPacket.destinationAddress) {
+                stats.apnsBypassedConnections += 1
+                logger.debug("[APNs] Bypassing TCP to APNs IP: \(String(describing: ipPacket.destinationAddress)):\(tcpSegment.destinationPort)")
+                return
+            }
+            
+            let packetID = "\(ipPacket.sourceAddress):\(tcpSegment.sourcePort)->\(ipPacket.destinationAddress):\(tcpSegment.destinationPort)-\(tcpSegment.sequenceNumber)"
+            
+            if processedPackets.contains(packetID) {
+                return
+            }
+            
+            processedPackets.insert(packetID)
+            
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(packetCacheTTL * 1_000_000_000))
+                processedPackets.remove(packetID)
+            }
+            
+            let key = makeConnectionKey(
+                srcIP: ipPacket.sourceAddress,
+                srcPort: tcpSegment.sourcePort,
+                dstIP: ipPacket.destinationAddress,
+                dstPort: tcpSegment.destinationPort
+            )
+            
+            // 处理RST包
+            if tcpSegment.isRST {
+                if let connection = tcpConnections[key] {
+                    // 通知连接收到RST
+                    await connection.handleRSTReceived()
+                }
+                await handleConnectionClose(key: key)
+                return
+            }
+            
+            // 处理ACK包并提取窗口大小
+            if tcpSegment.isACK && !tcpSegment.isSYN {
+                if let connection = tcpConnections[key] {
+                    // 从原始TCP数据中提取窗口大小
+                    let tcpData = ipPacket.payload
+                    if tcpData.count >= 16 {
+                        let windowSize = (UInt16(tcpData[14]) << 8) | UInt16(tcpData[15])
+                        await connection.onInboundAckWithWindow(
+                            ackNumber: tcpSegment.acknowledgementNumber,
+                            windowSize: windowSize
+                        )
+                    } else {
+                        // 数据不足时使用默认方法
+                        await connection.onInboundAck(ackNumber: tcpSegment.acknowledgementNumber)
+                    }
+                }
+            }
+            
+            if let expires = recentlyClosed[key], Date() < expires {
+                return
+            }
 
-        if tcpSegment.isSYN && !tcpSegment.isACK {
-            await handleSYN(ipPacket: ipPacket, tcpSegment: tcpSegment, key: key)
-            return
-        }
+            if tcpSegment.isSYN && !tcpSegment.isACK {
+                await handleSYN(ipPacket: ipPacket, tcpSegment: tcpSegment, key: key)
+                return
+            }
 
-        if tcpSegment.isRST {
-            await handleConnectionClose(key: key)
-            return
-        }
+            if tcpSegment.isFIN {
+                if let connection = tcpConnections[key] {
+                    await connection.onInboundFin(seq: tcpSegment.sequenceNumber)
+                } else {
+                    handleOrphanPacket(key: key, tcpSegment: tcpSegment)
+                }
+                return
+            }
 
-        if tcpSegment.isFIN {
             if let connection = tcpConnections[key] {
-                await connection.onInboundFin(seq: tcpSegment.sequenceNumber)
+                await handleEstablishedConnection(connection: connection, tcpSegment: tcpSegment)
             } else {
                 handleOrphanPacket(key: key, tcpSegment: tcpSegment)
             }
-            return
-        }
-
-        if let connection = tcpConnections[key] {
-            await handleEstablishedConnection(connection: connection, tcpSegment: tcpSegment)
-        } else {
-            handleOrphanPacket(key: key, tcpSegment: tcpSegment)
-        }
     }
+    
+    
     
     private func getConnectionPriority(destPort: UInt16) -> ConnectionPriority {
         switch destPort {
@@ -1358,15 +1383,18 @@ final actor ConnectionManager {
         tcpSegment: TCPSegment
     ) async {
         if tcpSegment.payload.isEmpty && tcpSegment.isACK {
-            await connection.onInboundAck(ackNumber: tcpSegment.acknowledgementNumber)
-        } else if !tcpSegment.payload.isEmpty {
-            await connection.handlePacket(
-                payload: tcpSegment.payload,
-                sequenceNumber: tcpSegment.sequenceNumber
-            )
-            stats.bytesReceived += tcpSegment.payload.count
-        }
+                // 纯ACK包处理
+                await connection.onInboundAck(ackNumber: tcpSegment.acknowledgementNumber)
+            } else if !tcpSegment.payload.isEmpty {
+                // 处理带数据的包
+                await connection.handlePacket(
+                    payload: tcpSegment.payload,
+                    sequenceNumber: tcpSegment.sequenceNumber
+                )
+                stats.bytesReceived += tcpSegment.payload.count
+            }
     }
+    
 
     private func handleOrphanPacket(key: String, tcpSegment: TCPSegment) {
         if pendingSyns.contains(key),

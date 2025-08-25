@@ -66,6 +66,21 @@ private struct BackpressureMetrics {
            
            growthTrend = (secondAvg - firstAvg) / max(firstAvg, 1.0)
        }
+    
+    var overflowCount: Int = 0  // 添加溢出计数
+        var lastOverflowTime: Date?
+        
+        mutating func recordOverflow() {
+            overflowCount += 1
+            lastOverflowTime = Date()
+        }
+        
+        var recentOverflowRate: Double {
+            guard let lastTime = lastOverflowTime else { return 0 }
+            let timeSince = Date().timeIntervalSince(lastTime)
+            guard timeSince > 0 else { return Double(overflowCount) }
+            return Double(overflowCount) / timeSince  // 溢出次数/秒
+        }
 }
 
 
@@ -88,6 +103,158 @@ final actor TCPConnection {
         static func < (lhs: ConnectionPriority, rhs: ConnectionPriority) -> Bool {
             return lhs.rawValue < rhs.rawValue
         }
+    }
+    
+    // MARK: - 客户端拒绝检测相关属性
+    private var clientAdvertisedWindow: UInt16 = 65535  // 记录客户端通告的窗口大小
+    private var zeroWindowProbeCount: Int = 0           // 零窗口探测计数
+    private var lastRefusalTime: Date?                  // 上次拒绝时间
+    
+    private func detectClientRefusal() -> Bool {
+        // 严重信号：立即返回true
+        
+        // 检测各种拒绝信号
+            if duplicatePacketCount > 10 {
+                log("[Refusal] Too many duplicate ACKs: \(duplicatePacketCount)")
+                return true
+            }
+        
+            if socksState == .closed || socksConnection == nil {
+                return true
+            }
+            
+            if retransmitRetries >= MAX_RETRANSMIT_RETRIES {
+                return true
+            }
+            
+            // 中等信号：组合判断
+            var refusalScore = 0
+            
+            if duplicatePacketCount > 5 {
+                refusalScore += duplicatePacketCount / 5
+            }
+            
+            if overflowCount > 5 {
+                refusalScore += overflowCount / 5
+            }
+            
+            if clientAdvertisedWindow == 0 {
+                refusalScore += zeroWindowProbeCount
+            }
+            
+            if outOfOrderPackets.count > MAX_BUFFERED_PACKETS / 2 {
+                refusalScore += 2
+            }
+            
+            // 综合评分超过阈值
+            if refusalScore >= 5 {
+                log("[Refusal] Refusal score: \(refusalScore) - client likely refusing data")
+                return true
+            }
+            
+            return false
+    }
+    
+    
+    func handleRSTReceived() {
+        log("[RST] Connection reset by peer")
+        lastRefusalTime = Date()
+        
+        // 立即收缩并清理
+        shrinkToMinimumImmediate()
+        clearAllBuffers()
+    }
+    
+    public func shrinkToMinimumImmediate() {
+        let oldSize = recvBufferLimit
+            
+        // 直接收缩到最小
+        recvBufferLimit = MIN_BUFFER
+        
+        // 立即更新窗口
+        updateAdvertisedWindow()
+        
+        // 如果需要，发送窗口更新
+        if availableWindow < lastAdvertisedWindow / 2 {
+            sendPureAck()  // 通知对端窗口变小了
+            lastAdvertisedWindow = availableWindow
+        }
+        
+        log("[Backpressure] Emergency shrink: \(oldSize) -> \(MIN_BUFFER) bytes")
+    }
+    
+    private func handleSocksError(_ error: Error?) -> Bool {
+        if let error = error {
+            // SOCKS发送失败，说明客户端拒绝
+            return true
+        }
+        
+        // 检查SOCKS连接状态
+        if socksState != .established {
+            return true
+        }
+        
+        return false
+    }
+
+    private func clearAllBuffers() {
+        // 清空乱序包缓冲
+        outOfOrderPackets.removeAll()
+        
+        // 清空待发送数据
+        if socksState != .established {
+            pendingClientBytes.removeAll()
+            pendingBytesTotal = 0
+        }
+        
+        // 重置背压状态
+        backpressure = BackpressureMetrics()
+    }
+    
+    // MARK: - 激进的缓冲区清理
+    private func trimBuffersAggressively() {
+        // 只保留最新的几个包
+        let maxKeep = 2
+        
+        if outOfOrderPackets.count > maxKeep {
+            let toRemove = outOfOrderPackets.count - maxKeep
+            outOfOrderPackets.removeFirst(toRemove)
+            log("[Trim] Aggressively removed \(toRemove) out-of-order packets")
+        }
+        
+        // 清理待发送数据（保留TLS握手等关键数据）
+        if pendingClientBytes.count > 1 {
+            let keepFirst = pendingClientBytes.first
+            pendingClientBytes.removeAll()
+            if let first = keepFirst {
+                pendingClientBytes.append(first)
+                pendingBytesTotal = first.count
+            }
+            log("[Trim] Cleared pending data except handshake")
+        }
+    }
+
+    private func handleClientRefusal() {
+        log("[Refusal] Client refusing data - emergency shrink to \(MIN_BUFFER)")
+            
+            lastRefusalTime = Date()
+            
+            
+            // 立即收缩到最小
+            let oldSize = recvBufferLimit
+            recvBufferLimit = MIN_BUFFER
+            
+            // 立即收缩
+            shrinkToMinimumImmediate()
+        
+            // 清理缓冲
+            if bufferedBytesForWindow() > MIN_BUFFER {
+                trimBuffersAggressively()
+            }
+            
+            // 通知背压管理器
+            backpressure.markIdle()
+            backpressure.consecutiveIdleCycles = 10  // 标记为极度空闲
     }
     
     // MARK: - Constants
@@ -357,6 +524,12 @@ final actor TCPConnection {
     func handlePacket(payload: Data, sequenceNumber: UInt32) {
         guard !payload.isEmpty else { return }
 
+        // 检测是否需要紧急收缩
+            if detectClientRefusal() {
+                handleClientRefusal()
+                return
+            }
+        
         updateLastActivity()  // 新增
         // Start SOCKS connection if needed
         if socksConnection == nil && socksState == .idle {
@@ -384,6 +557,18 @@ final actor TCPConnection {
     
     // MARK: - 动态缓冲区管理（基于背压）
     private func evaluateBufferExpansion() {
+        
+        // 检查是否在拒绝恢复期
+           if let refusalTime = lastRefusalTime {
+               let timeSinceRefusal = Date().timeIntervalSince(refusalTime)
+               if timeSinceRefusal < 5.0 {
+                   // 拒绝后5秒内不允许扩展
+                   log("[Backpressure] Expansion blocked: \(5.0 - timeSinceRefusal)s until recovery")
+                   return
+               }
+           }
+        
+        
         let usage = bufferedBytesForWindow()
         let utilizationRate = Double(usage) / Double(recvBufferLimit)
         
@@ -551,6 +736,12 @@ final actor TCPConnection {
     private func processDuplicatePacket(sequenceNumber: UInt32) {
         duplicatePacketCount += 1
 
+        // 新增：检测是否需要紧急收缩
+        if duplicatePacketCount > 5 && recvBufferLimit > MIN_BUFFER {
+            NSLog("[Backpressure] Multiple duplicate ACKs, client may be refusing data")
+            shrinkToMinimumImmediate()
+        }
+    
         // Send immediate ACK to update peer's view of our receive window
         cancelDelayedAckTimer()
         sendPureAck()
@@ -583,6 +774,21 @@ final actor TCPConnection {
             }
             
             updateAdvertisedWindow() // shrink only
+        
+        // 限制缓冲区大小
+        while outOfOrderPackets.count > MAX_BUFFERED_PACKETS {
+            outOfOrderPackets.removeFirst()
+            backpressure.recordOverflow()  // 记录溢出
+            log("Buffer overflow: dropped oldest packet")
+        }
+        
+        // 检查总缓冲区使用情况
+        if bufferedBytesForWindow() > recvBufferLimit {
+            backpressure.recordOverflow()  // 记录溢出
+            trimBuffers()
+            log("Buffer exceeded limit, trimming to \(recvBufferLimit)")
+        }
+        
     }
 
     private func processBufferedPackets() {
@@ -625,6 +831,11 @@ final actor TCPConnection {
             
             // 新增：检查是否需要调整缓冲区
             adaptBufferToFlow()
+        }
+        
+        if outOfOrderPackets.count > 10 && duplicatePacketCount > 5 {
+            // 大量乱序包且重复ACK，可能是客户端问题
+            handleClientRefusal()
         }
     }
 
@@ -716,6 +927,9 @@ final actor TCPConnection {
         retransmittedPackets += 1
 
         if retransmitRetries > MAX_RETRANSMIT_RETRIES {
+            // 新增：超过重传次数，立即收缩
+            shrinkToMinimumImmediate()
+            
             if let firstBuffered = outOfOrderPackets.first {
                 let gap = firstBuffered.seq &- nextExpectedSequence
                 if gap <= UInt32(mss) {
@@ -1341,7 +1555,12 @@ final actor TCPConnection {
     private func sendRawToSocks(_ data: Data) {
         socksConnection?.send(content: data, completion: .contentProcessed({ [weak self] err in
             if let err = err {
-                Task { await self?.log("SOCKS send error: \(err)"); await self?.close() }
+                Task {
+                    await self?.log("SOCKS send error: \(err)")
+                    // 新增：立即收缩
+                    await self?.handleClientRefusal()
+                    await self?.close()
+                }
                 return
             }
             
@@ -1608,6 +1827,7 @@ final actor TCPConnection {
 
     func onInboundAck(ackNumber: UInt32) {
         updateLastActivity()  // 新增
+        
         if !handshakeAcked {
             let expected = serverInitialSequenceNumber &+ 1
             if ackNumber >= expected {
@@ -1618,6 +1838,56 @@ final actor TCPConnection {
                 log("Handshake ACK received")
             }
         }
+    }
+    
+    func onInboundAckWithWindow(ackNumber: UInt32, windowSize: UInt16) {
+        updateLastActivity()
+            
+            // 更新客户端通告窗口
+            let oldWindow = clientAdvertisedWindow
+            clientAdvertisedWindow = windowSize
+            
+            // 检测零窗口
+            if windowSize == 0 {
+                zeroWindowProbeCount += 1
+                log("[Window] Client advertised zero window (probe #\(zeroWindowProbeCount))")
+                
+                // 零窗口持续，考虑收缩
+                if zeroWindowProbeCount > 2 {
+                    handleClientRefusal()
+                }
+            } else if oldWindow == 0 && windowSize > 0 {
+                // 窗口恢复
+                zeroWindowProbeCount = 0
+                log("[Window] Client window recovered: \(windowSize)")
+            }
+            
+            // 调用原有的ACK处理
+            onInboundAck(ackNumber: ackNumber)
+    }
+    
+    
+    // MARK: - 添加收缩原因
+    private func shrinkBufferDueToBackpressure() {
+        let oldSize = recvBufferLimit
+        
+        // 基于不同原因选择收缩大小
+        let newSize: Int
+        if zeroWindowProbeCount > 0 {
+            // 客户端窗口问题：收缩到1/4
+            newSize = max(MIN_BUFFER, recvBufferLimit / 4)
+        } else if duplicatePacketCount > 5 {
+            // 重复ACK：收缩到1/2
+            newSize = max(MIN_BUFFER, recvBufferLimit / 2)
+        } else {
+            // 正常收缩：收缩到2/3
+            newSize = max(MIN_BUFFER, recvBufferLimit * 2 / 3)
+        }
+        
+        recvBufferLimit = newSize
+        updateAdvertisedWindow()
+        
+        log("[Backpressure] Shrink due to backpressure: \(oldSize) -> \(newSize)")
     }
 
     // MARK: - Packet Creation Helpers
