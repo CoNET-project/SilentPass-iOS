@@ -1,7 +1,6 @@
 import Foundation
 import ZIPFoundation // 导入第三方解压库
-import Web3Core
-import web3swift
+
 
 // MARK: - Data Models (Codable)
 // 用于解析 update.json
@@ -15,37 +14,33 @@ struct AssetManifest: Codable {
     let files: [String: String]
 }
 
-// 假设 Node 结构体已在别处定义
-// struct Node: Codable {
-//     let ip_addr: String
-// }
+
 
 
 class Updater {
-    init (){
-//        initAllnodeInfoABI()
-    }
-    func initAllnodeInfoABI () {
-        if let jsSourcePath = Bundle.main.path(forResource: "CONET_Guardian_NodeInfo_ABI", ofType: "text") {
-            do {
-                let _resData = Data(hex:"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003e8")
-                self.CONET_Guardian_NodeInfo_ABI = try String(contentsOfFile: jsSourcePath)
-                self.CONET_Guardian_NodeInfo_Contract = try EthereumContract(self.CONET_Guardian_NodeInfo_ABI, at: nil)
-                let decodedData = try self.CONET_Guardian_NodeInfo_Contract.decodeReturnData("getNodeInfoById", data: _resData)
-                guard let returnData = decodedData["returnData"] as? [[Any]] else {
-                    throw Web3Error.dataError
-                }
-                NSLog("returnData")
-            } catch {
-                print("readCoNET_nodeInfoABI Error")
-            }
-        }
-    }
+    
+    
     private let fileManager = FileManager.default
     private let jsonDecoder = JSONDecoder()
     private let urlSession = URLSession.shared
-    var CONET_Guardian_NodeInfo_ABI: String!
-    var CONET_Guardian_NodeInfo_Contract: EthereumContract!
+    
+
+    
+
+    
+    func initAllnodeInfoABI () {
+        if let jsSourcePath = Bundle.main.path(forResource: "CONET_Guardian_NodeInfo_ABI", ofType: "text") {
+            
+            
+            
+            
+            
+            NSLog("returnData")
+            
+        }
+    }
+	
+
 
     /// 运行更新程序。
     /// 该方法会自动从本地 'workers/update.json' 读取当前版本，

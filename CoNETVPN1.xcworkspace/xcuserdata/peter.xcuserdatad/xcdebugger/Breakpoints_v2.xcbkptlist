@@ -350,8 +350,8 @@
             filePath = "CoNETVPN1/swiftSever 2/Updater.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "31"
-            endingLineNumber = "31"
+            startingLineNumber = "34"
+            endingLineNumber = "34"
             landmarkName = "initAllnodeInfoABI()"
             landmarkType = "7">
          </BreakpointContent>
@@ -366,8 +366,8 @@
             filePath = "CoNETVPN1/swiftSever 2/Updater.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "34"
-            endingLineNumber = "34"
+            startingLineNumber = "37"
+            endingLineNumber = "37"
             landmarkName = "initAllnodeInfoABI()"
             landmarkType = "7">
          </BreakpointContent>
@@ -391,16 +391,16 @@
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "394B5552-E538-4FDD-86E0-9456B39C8639"
-            shouldBeEnabled = "No"
+            uuid = "9848691B-4529-4F3E-B6D9-7BF34D18F438"
+            shouldBeEnabled = "Yes"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
-            filePath = "CoNETVPN1/swiftSever 2/Updater.swift"
+            filePath = "../../Library/Developer/Xcode/DerivedData/CoNETVPN1-ajflgqojlyzdfdafesxnrdyncrli/SourcePackages/checkouts/web3swift/Tests/web3swiftTests/localTests/ERC20Tests.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "35"
-            endingLineNumber = "35"
-            landmarkName = "initAllnodeInfoABI()"
+            startingLineNumber = "32"
+            endingLineNumber = "32"
+            landmarkName = "testERC20tokenBalance()"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
