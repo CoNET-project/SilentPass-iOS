@@ -2,7 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Network Security Settings -->
+	<key>JetsamPriority</key>
+	<integer>10</integer>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<key>NEProviderConfiguration</key>
+	<dict>
+		<key>BufferSize</key>
+		<integer>32768</integer>
+		<key>IdleTimeout</key>
+		<integer>10</integer>
+		<key>MaxConnections</key>
+		<integer>25</integer>
+	</dict>
+	<key>NSAllowsArbitraryLoadsInWebContent</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -10,73 +26,21 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	
-	<!-- Network Extension Configuration -->
 	<key>NSExtension</key>
 	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>NEDisableConnectionStatistics</key>
+			<true/>
+			<key>NEProviderMemoryManagement</key>
+			<string>aggressive</string>
+			<key>ProcessPriority</key>
+			<string>utility</string>
+		</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.networkextension.packet-tunnel</string>
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).PacketTunnelProvider</string>
-		
-		<!-- Memory and Performance Attributes -->
-		<key>NSExtensionAttributes</key>
-		<dict>
-			<!-- Request lower memory footprint -->
-			<key>NEProviderMemoryManagement</key>
-			<string>aggressive</string>
-			
-			<!-- Disable unnecessary features to save memory -->
-			<key>NEDisableConnectionStatistics</key>
-			<true/>
-			
-			<!-- Run with lower priority to get more lenient limits -->
-			<key>ProcessPriority</key>
-			<string>utility</string>
-		</dict>
-	</dict>
-
-	
-	<!-- Required Capabilities -->
-	<key>UIRequiredDeviceCapabilities</key>
-	<array>
-		<string>armv7</string>
-		<string>arm64</string>
-	</array>
-	
-	<!-- Privacy Descriptions -->
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>VPN需要使用本地网络来转发流量到代理服务器</string>
-	
-	<!-- Optimization Flags -->
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
-	
-	<!-- Minimum OS Version for Memory Management -->
-	<key>MinimumOSVersion</key>
-	<string>15.0</string>
-	
-	<!-- App Transport Security for Local Connections -->
-	<key>NSAllowsArbitraryLoadsInWebContent</key>
-	<false/>
-	
-	<!-- Memory Management Hints -->
-	<key>UIApplicationExitsOnSuspend</key>
-	<false/>
-	
-	<!-- Jetsam Priority (Higher number = killed later) -->
-	<key>JetsamPriority</key>
-	<integer>10</integer>
-	
-	<!-- Performance Settings -->
-	<key>NEProviderConfiguration</key>
-	<dict>
-		<key>MaxConnections</key>
-		<integer>25</integer>
-		<key>BufferSize</key>
-		<integer>32768</integer>
-		<key>IdleTimeout</key>
-		<integer>10</integer>
 	</dict>
 </dict>
 </plist>
