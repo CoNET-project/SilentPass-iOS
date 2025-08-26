@@ -1,0 +1,1571 @@
+default	07:13:21.107230-0700	Preferences	#I Connection interrupted. Attempting to reestablish connection
+default	07:13:21.240926-0700	Preferences	#I Successfully reestablished connection
+default	07:13:21.245117-0700	CommCenter	#I New CTServerConnection from pid 13283 (conn=0x5309a9040)
+default	07:13:21.248557-0700	CommCenter	#I CTServerConnection from pid 13283[<private>] is named '<private>'.
+default	07:13:21.252805-0700	Preferences	Calling _CTServerConnectionGetCellularDataIsEnabled(): isEnabled = 1
+default	07:13:34.218152-0700	CommCenter	#I CTServerConnection from pid 13283 has closed (conn=0x5309a9040)
+default	07:13:37.665923-0700	Preferences	#I Connection interrupted. Attempting to reestablish connection
+default	07:13:38.101030-0700	CommCenter	#I New CTServerConnection from pid 13283 (conn=0x53099d2c0)
+default	07:13:38.101325-0700	CommCenter	#I CTServerConnection from pid 13283[<private>] is named '<private>'.
+default	07:13:38.101682-0700	CommCenter	#I CTServerConnection from pid 13283 has closed (conn=0x53099d2c0)
+default	07:13:44.583185-0700	CommCenter	#I CTServerConnection from pid 13283[<private>] is named '<private>'.
+default	07:13:44.585037-0700	CommCenter	#I CTServerConnection from pid 13283 has closed (conn=0x53099d2c0)
+default	07:13:44.663561-0700	CommCenter	#I New CTServerConnection from pid 13283 (conn=0x53099d2c0)
+default	07:13:44.664433-0700	CommCenter	#I CTServerConnection from pid 13283[<private>] is named '<private>'.
+default	07:13:44.665041-0700	CommCenter	#I CTServerConnection from pid 13283 has closed (conn=0x53099d2c0)
+default	07:13:45.664189-0700	CommCenter	#I CTServerConnection from pid 13283 has closed (conn=0x53099f0c0)
+default	07:13:50.094923-0700	VPN	[ServerConnection] SOCKS5 Server ready on 127.0.0.1:8888
+default	07:13:50.632754-0700	VPN	[ServerConnection] SOCKS5 Server already running on 127.0.0.1:8888
+default	07:13:52.995913-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] Initialized. Buffer: 16384
+default	07:13:52.996432-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:13:52.997519-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:13:52.997613-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] Starting connection to SOCKS proxy...
+default	07:13:52.997652-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] Window update (immediate-expand): 16384 -> 32768 bytes
+default	07:13:52.997692-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] [Backpressure] Buffer expanded: 16384 -> 32768 bytes
+default	07:13:52.997781-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] [After Expansion] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:13:52.997823-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] [Warmup] Quick expansion: 32768 bytes
+default	07:13:53.001095-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] SOCKS connection ready
+default	07:13:53.002898-0700	VPN	[ServerConnection] SOCKS5 new conn #1, active=1
+default	07:13:53.020534-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [EST] SOCKS tunnel established
+default	07:13:53.020730-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [EST] Keep-alive started with interval: 45.0s for port 993
+default	07:13:53.023783-0700	VPN	[ServerConnection] layerMinusInit success privateKey = 0x47b01724c67ab3c36f610ef6566be19943f6dba094382f9b62e40f80d3eefc4a entryNodes = 20 egressNodes = 1
+default	07:13:53.061855-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [EST] Handshake ACK received
+default	07:13:53.099174-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:13:54.330576-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] Initialized. Buffer: 65535
+default	07:13:54.330619-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:13:54.330662-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:13:54.331599-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] Starting connection to SOCKS proxy...
+default	07:13:54.331801-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:13:54.332021-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:13:54.332256-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:13:54.334465-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] Handshake ACK received
+default	07:13:54.335506-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] SOCKS connection ready
+default	07:13:54.336165-0700	VPN	[ServerConnection] SOCKS5 new conn #2, active=2
+default	07:13:54.347465-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [EST] SOCKS tunnel established
+default	07:13:54.347703-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:13:54.437545-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:13:56.159126-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] Initialized. Buffer: 65535
+default	07:13:56.159267-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:13:56.159473-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:13:56.159552-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:13:56.159759-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] [PRE] Starting connection to SOCKS proxy...
+default	07:13:56.163485-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] [PRE] SOCKS connection ready
+default	07:13:56.164352-0700	VPN	[TCPConnection 172.16.0.1:64823->198.18.0.41:443] Initialized. Buffer: 65535
+default	07:13:56.166451-0700	VPN	[TCPConnection 172.16.0.1:64823->198.18.0.41:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:13:56.167563-0700	VPN	[TCPConnection 172.16.0.1:64823->198.18.0.41:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:13:56.168082-0700	VPN	[TCPConnection 172.16.0.1:64823->198.18.0.41:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:13:56.168389-0700	VPN	[TCPConnection 172.16.0.1:64823->198.18.0.41:443] [PRE] Starting connection to SOCKS proxy...
+default	07:13:56.168719-0700	VPN	[ServerConnection] SOCKS5 new conn #3, active=3
+default	07:13:56.170598-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] [PRE] Handshake ACK received
+default	07:13:56.248765-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:13:56.249070-0700	VPN	[TCPConnection 172.16.0.1:64823->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:13:56.431391-0700	VPN	[TCPConnection 172.16.0.1:64825->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:13:56.578128-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] Initialized. Buffer: 65535
+default	07:13:56.578167-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:13:56.578311-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:13:56.578352-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:13:56.578952-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [PRE] Starting connection to SOCKS proxy...
+default	07:13:56.584459-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [PRE] Handshake ACK received
+default	07:13:56.585700-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [PRE] SOCKS connection ready
+default	07:13:56.586198-0700	VPN	[ServerConnection] SOCKS5 new conn #7, active=7
+default	07:13:56.589756-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [EST] SOCKS tunnel established
+default	07:13:56.589832-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:13:56.618690-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] Initialized. Buffer: 65535
+default	07:13:56.618801-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:13:56.618983-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:13:56.619398-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] Starting connection to SOCKS proxy...
+default	07:13:56.619473-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:13:56.619754-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:13:56.620047-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:13:56.621999-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] Handshake ACK received
+default	07:13:56.625298-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] SOCKS connection ready
+default	07:13:56.625902-0700	VPN	[ServerConnection] SOCKS5 new conn #8, active=8
+default	07:13:56.629606-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [EST] SOCKS tunnel established
+default	07:13:56.629756-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:13:56.654454-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:13:56.672748-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:13:57.325475-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] Initialized. Buffer: 65535
+default	07:13:57.326039-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:13:57.326133-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:13:57.326198-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:13:57.326272-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [PRE] Starting connection to SOCKS proxy...
+default	07:13:57.330276-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [PRE] Handshake ACK received
+default	07:13:57.331666-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [PRE] SOCKS connection ready
+default	07:13:57.332094-0700	VPN	[ServerConnection] SOCKS5 new conn #9, active=9
+default	07:13:57.339209-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [EST] SOCKS tunnel established
+default	07:13:57.339253-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:13:57.433168-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:13:58.686722-0700	VPN	[ServerConnection] ⚡️ LayerMinus cutover: closing non-LM connections, keeping LM connections
+default	07:13:58.686988-0700	VPN	[ServerConnection] Cutover: shutting down non-LM connection #9
+default	07:13:58.687092-0700	VPN	[ServerConnection] Connection #9 closed and removed, active=8
+default	07:13:58.687283-0700	VPN	[ServerConnection] Cutover: shutting down non-LM connection #7
+default	07:13:58.687669-0700	VPN	[ServerConnection] Connection #7 closed and removed, active=7
+default	07:13:58.687753-0700	VPN	[ServerConnection] Cutover: shutting down non-LM connection #4
+default	07:13:58.688626-0700	VPN	[ServerConnection] Connection #4 closed and removed, active=6
+default	07:13:58.691045-0700	VPN	[ServerConnection] Cutover: shutting down non-LM connection #8
+default	07:13:58.691242-0700	VPN	[ServerConnection] Connection #8 closed and removed, active=5
+default	07:13:58.691354-0700	VPN	[ServerConnection] Cutover: shutting down non-LM connection #5
+default	07:13:58.691704-0700	VPN	[ServerConnection] Connection #5 closed and removed, active=4
+default	07:13:58.691848-0700	VPN	[ServerConnection] Cutover: shutting down non-LM connection #2
+default	07:13:58.691983-0700	VPN	[ServerConnection] Connection #2 closed and removed, active=3
+default	07:13:58.692269-0700	VPN	[ServerConnection] Cutover: shutting down non-LM connection #3
+default	07:13:58.692379-0700	VPN	[ServerConnection] Connection #3 closed and removed, active=2
+default	07:13:58.692452-0700	VPN	[ServerConnection] Cutover: shutting down non-LM connection #6
+default	07:13:58.692790-0700	VPN	[ServerConnection] Connection #6 closed and removed, active=1
+default	07:13:58.692904-0700	VPN	[ServerConnection] Cutover done: victims=8, now conns=1
+default	07:13:58.708242-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [PRE] Closing connection.
+default	07:13:58.708813-0700	VPN	[TCPConnection 172.16.0.1:64826->198.18.0.36:443] [PRE] Closing connection.
+default	07:13:58.709093-0700	VPN	[TCPConnection 172.16.0.1:64823->198.18.0.41:443] [PRE] Closing connection.
+default	07:13:58.709254-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] Closing connection.
+default	07:13:58.709424-0700	VPN	[TCPConnection 172.16.0.1:64824->198.18.0.99:443] [PRE] Closing connection.
+default	07:13:58.709572-0700	VPN	[TCPConnection 172.16.0.1:64821->198.18.0.1:443] [PRE] Closing connection.
+default	07:13:58.709815-0700	VPN	[TCPConnection 172.16.0.1:64822->198.18.0.38:443] [PRE] Closing connection.
+default	07:13:58.709928-0700	VPN	[TCPConnection 172.16.0.1:64825->198.18.0.40:443] [PRE] Closing connection.
+default	07:13:58.720604-0700	VPN	[TCPConnection 172.16.0.1:64827->198.18.0.102:443] [PRE] SOCKS failed: The operation couldn’t be completed. (Network.NWError error 54 - Connection reset by peer)
+default	07:13:58.720829-0700	VPN	[TCPConnection 172.16.0.1:64828->198.18.0.99:443] [PRE] SOCKS failed: The operation couldn’t be completed. (Network.NWError error 54 - Connection reset by peer)
+default	07:13:58.743969-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] Initialized. Buffer: 65535
+default	07:13:58.744007-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:13:58.744045-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:13:58.744122-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:13:58.744617-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [PRE] Starting connection to SOCKS proxy...
+default	07:13:58.759073-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [PRE] Handshake ACK received
+default	07:13:58.760874-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [PRE] SOCKS connection ready
+default	07:13:58.762068-0700	VPN	[ServerConnection] SOCKS5 new conn #10, active=2
+default	07:13:58.770469-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] SOCKS tunnel established
+default	07:13:58.770541-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:13:58.840593-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:00.151721-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=2, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:14:00.831705-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:14:04.897162-0700	bluetoothd	LeConnectionManager::leAddressChangedCallback dispatched addresses connectable:Random 61:6D:C3:EF:00:FD non-connectable:Random 5C:06:2A:B9:44:63 non-connectable-secondary:Public 00:00:00:00:00:00
+default	07:14:06.034029-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] Initialized. Buffer: 65535
+default	07:14:06.034168-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:06.034509-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:06.034693-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:14:06.035808-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:06.040839-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [PRE] Handshake ACK received
+default	07:14:06.042036-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [PRE] SOCKS connection ready
+default	07:14:06.042778-0700	VPN	[ServerConnection] SOCKS5 new conn #11, active=3
+default	07:14:06.049182-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] SOCKS tunnel established
+default	07:14:06.049288-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:06.140142-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:10.082746-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=3, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+default	07:14:10.474021-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 4)
+default	07:14:10.474136-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 9520/32768 (29.1)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 4
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:10.475868-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 5)
+default	07:14:10.476043-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 10880/32768 (33.2)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 5
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:10.477066-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 6)
+default	07:14:10.477108-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 12240/32768 (37.4)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 6
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:10.477637-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 7)
+default	07:14:10.477760-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 13600/32768 (41.5)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 7
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:10.478329-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 8)
+default	07:14:10.478365-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 14960/32768 (45.7)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 8
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:10.478403-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 9)
+default	07:14:10.478439-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 16320/32768 (49.8)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 9
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+error	07:14:10.849535-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:14:11.144084-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 10)
+default	07:14:11.144596-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 17371/32768 (53.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 10
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.468720-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 11)
+default	07:14:11.469232-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 18731/32768 (57.2)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 11
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.476553-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 12)
+default	07:14:11.477058-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 14651/32768 (44.7)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 12
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: -0.05
+- Connection Type: Social Media
+default	07:14:11.477449-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 13)
+default	07:14:11.478326-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 13291/32768 (40.6)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 13
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.478997-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 14)
+default	07:14:11.479087-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 11931/32768 (36.4)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 14
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.05
+- Connection Type: Social Media
+default	07:14:11.480216-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 15)
+default	07:14:11.480551-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 10571/32768 (32.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 15
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.481115-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 16)
+default	07:14:11.481275-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 9211/32768 (28.1)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 16
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.482332-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 17)
+default	07:14:11.483056-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 7851/32768 (24.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 17
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.483652-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 18)
+default	07:14:11.483885-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 6491/32768 (19.8)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 18
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.485418-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 19)
+default	07:14:11.485642-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 5131/32768 (15.7)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 19
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.485893-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 20)
+default	07:14:11.486146-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 3771/32768 (11.5)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 20
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.487498-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 21)
+default	07:14:11.487704-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 2411/32768 (7.4)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 21
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.491002-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 22)
+default	07:14:11.491241-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1051/32768 (3.2)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 22
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:11.491380-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 23)
+default	07:14:11.491794-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 23
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: -0.07
+- Connection Type: Social Media
+default	07:14:14.718811-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] Initialized. Buffer: 65535
+default	07:14:14.718894-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:14.719203-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:14.719326-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:14:14.720279-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:14.722806-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [PRE] Handshake ACK received
+default	07:14:14.725876-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [PRE] SOCKS connection ready
+default	07:14:14.727894-0700	VPN	[ServerConnection] SOCKS5 new conn #12, active=4
+default	07:14:14.731071-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] SOCKS tunnel established
+default	07:14:14.731108-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:14.820113-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:14.820152-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] Initialized. Buffer: 65535
+default	07:14:14.820245-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:14.820327-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:14.820482-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:14:14.820801-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:14.823065-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [PRE] Handshake ACK received
+default	07:14:14.825654-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [PRE] SOCKS connection ready
+default	07:14:14.826396-0700	VPN	[ServerConnection] SOCKS5 new conn #13, active=5
+default	07:14:14.830708-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [EST] SOCKS tunnel established
+default	07:14:14.830864-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:14.924343-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:15.109457-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] Initialized. Buffer: 65535
+default	07:14:15.109611-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:15.109651-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:15.110090-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:15.110285-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:14:15.110750-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:14:15.110863-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:14:15.113008-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [PRE] Handshake ACK received
+default	07:14:15.114974-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [PRE] SOCKS connection ready
+default	07:14:15.116694-0700	VPN	[ServerConnection] SOCKS5 new conn #14, active=6
+default	07:14:15.120556-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] SOCKS tunnel established
+default	07:14:15.120609-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:15.138919-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] Initialized. Buffer: 65535
+default	07:14:15.139139-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:15.139305-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:15.140117-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:14:15.140625-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:15.143698-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [PRE] Handshake ACK received
+default	07:14:15.145303-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [PRE] SOCKS connection ready
+default	07:14:15.145971-0700	VPN	[ServerConnection] SOCKS5 new conn #15, active=7
+default	07:14:15.148109-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] SOCKS tunnel established
+default	07:14:15.148147-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:15.213864-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:15.244903-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:20.083971-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=7, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+default	07:14:20.364125-0700	CommCenter	#I New CTServerConnection from pid 13695 (conn=0x53099f0c0)
+default	07:14:20.364850-0700	CommCenter	#I CTServerConnection from pid 13695[<private>] is named '<private>'.
+default	07:14:20.375511-0700	CommCenter	#I New CTServerConnection from pid 13703 (conn=0x53099e1c0)
+default	07:14:20.376048-0700	CommCenter	#I CTServerConnection from pid 13703[<private>] is named '<private>'.
+default	07:14:20.376844-0700	CommCenter	#I CTServerConnection from pid 13703 has closed (conn=0x53099e1c0)
+default	07:14:20.376902-0700	CommCenter	#I New CTServerConnection from pid 13703 (conn=0x53099d2c0)
+default	07:14:20.377120-0700	CommCenter	#I CTServerConnection from pid 13703[<private>] is named '<private>'.
+default	07:14:20.377274-0700	CommCenter	#I New CTServerConnection from pid 13703 (conn=0x53099e1c0)
+default	07:14:20.377387-0700	CommCenter	#I CTServerConnection from pid 13703 has closed (conn=0x53099d2c0)
+default	07:14:20.377496-0700	CommCenter	#I CTServerConnection from pid 13703[<private>] is named '<private>'.
+default	07:14:20.377701-0700	CommCenter	#I CTServerConnection from pid 13703 has closed (conn=0x53099e1c0)
+default	07:14:20.381469-0700	CommCenter	#I CTServerConnection from pid 13695 has closed (conn=0x53099f0c0)
+default	07:14:20.420370-0700	CommCenter	#I New CTServerConnection from pid 13695 (conn=0x53099f0c0)
+default	07:14:20.420952-0700	CommCenter	#I CTServerConnection from pid 13695[<private>] is named '<private>'.
+default	07:14:20.423773-0700	CommCenter	#I CTServerConnection from pid 13695 has closed (conn=0x53099f0c0)
+default	07:14:20.449069-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [EST] [RST] Connection reset by peer
+default	07:14:20.449224-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [EST] [Backpressure] Emergency shrink: 32768 -> 32768 bytes
+default	07:14:20.449395-0700	VPN	[TCPConnection 172.16.0.1:64832->198.18.0.34:443] [PRE] Closing connection.
+default	07:14:20.452375-0700	VPN	[ServerConnection] Connection #13 closed and removed, active=6
+default	07:14:20.625154-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:14:20.625303-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:14:20.625376-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:14:20.625607-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:14:20.625734-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:14:20.625844-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:14:20.631088-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:20.684293-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:20.684338-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:20.684375-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:20.684416-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+error	07:14:20.868257-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:14:20.895793-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] [Backpressure] Buffer shrunk: 49152 -> 32768 bytes
+default	07:14:20.896080-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] [After Shrink] Buffer State:
+- Current: 32768 bytes
+- Usage: 7744/32768 (23.6)
+- Last Expansion: never
+- Last Shrink: 0.0s ago
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:22.498460-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:14:22.498574-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:25.430310-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:14:25.430413-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:26.098623-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 4)
+default	07:14:26.099277-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1196/32768 (3.6)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 4
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:26.424034-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 5)
+default	07:14:26.425642-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1626/32768 (5.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 5
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:30.082926-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=6, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:14:30.873258-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:14:36.199717-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:14:36.200160-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:40.082890-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=6, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:14:40.916733-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:14:49.798820-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:14:49.799113-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:49.799413-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 4)
+default	07:14:49.799803-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 4
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:50.082473-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=6, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+default	07:14:50.644159-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:14:50.644434-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:14:50.644507-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:14:50.644581-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:14:50.645242-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:14:50.645354-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:14:50.653419-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:50.697253-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:50.697644-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:50.697721-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:50.697793-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:14:50.697865-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+error	07:14:50.957362-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:14:51.154033-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] Initialized. Buffer: 65535
+default	07:14:51.154072-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:51.154109-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:51.155172-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:51.155313-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:14:51.155509-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:14:51.157169-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:14:51.157677-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] Handshake ACK received
+default	07:14:51.160355-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] SOCKS connection ready
+default	07:14:51.161056-0700	VPN	[ServerConnection] SOCKS5 new conn #16, active=7
+default	07:14:51.164954-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [EST] SOCKS tunnel established
+default	07:14:51.165014-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:51.260164-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:52.967307-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] Initialized. Buffer: 65535
+default	07:14:52.967382-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:52.967459-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:52.967534-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:52.967725-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:14:52.968180-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:14:52.968972-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:14:52.996206-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [PRE] Handshake ACK received
+default	07:14:53.999639-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [PRE] SOCKS connection ready
+default	07:14:53.001048-0700	VPN	[ServerConnection] SOCKS5 new conn #17, active=8
+default	07:14:53.007272-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [EST] SOCKS tunnel established
+default	07:14:53.007334-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:53.052418-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:53.556071-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:14:53.556333-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 793/32768 (2.4)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:53.882370-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 4)
+default	07:14:53.882937-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1179/32768 (3.6)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 4
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:54.230597-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 5)
+default	07:14:54.230706-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 5
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:54.248552-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] Initialized. Buffer: 65535
+default	07:14:54.248717-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:54.248754-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:54.248831-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:54.248955-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:14:54.249080-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:14:54.249197-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:14:54.250857-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] Handshake ACK received
+default	07:14:54.254034-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] SOCKS connection ready
+default	07:14:54.254673-0700	VPN	[ServerConnection] SOCKS5 new conn #18, active=9
+default	07:14:54.263257-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [EST] SOCKS tunnel established
+default	07:14:54.263294-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:54.350402-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:56.377932-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] Initialized. Buffer: 65535
+default	07:14:56.378113-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:14:56.378401-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:14:56.380022-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] Starting connection to SOCKS proxy...
+default	07:14:56.380117-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:14:56.380425-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:14:56.381194-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:14:56.386327-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] Handshake ACK received
+default	07:14:56.391875-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] SOCKS connection ready
+default	07:14:56.393659-0700	VPN	[ServerConnection] SOCKS5 new conn #19, active=10
+default	07:14:56.402570-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [EST] SOCKS tunnel established
+default	07:14:56.402721-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:14:56.488461-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:14:59.776125-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:14:59.776626-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:59.776705-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 4)
+default	07:14:59.776771-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 4
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:14:59.776813-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 5)
+default	07:14:59.776851-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 5
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:00.081790-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=10, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:15:00.965868-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:15:02.141963-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Window update (immediate-expand): 32270 -> 65535 bytes
+default	07:15:02.142002-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Backpressure] Buffer expanded: 32768 -> 65536 bytes
+default	07:15:02.142039-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [After Expansion] Buffer State:
+- Current: 65536 bytes
+- Usage: 0/65536 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 14
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 1.00
+- Connection Type: Social Media
+default	07:15:02.142126-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Predictive] Buffer expanded based on growth trend: 1.0
+default	07:15:02.303478-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:05.081785-0700	airplayd	SetProperty for unsupported key: 'UnusedPropertyToForceServerConnection'
+default	07:15:10.082499-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=10, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:15:10.999453-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:15:13.605534-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:15:13.605680-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 610/32768 (1.9)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:13.630022-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 4)
+default	07:15:13.630141-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 693/32768 (2.1)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 4
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:13.630484-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 5)
+default	07:15:13.630599-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1893/32768 (5.8)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 5
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:13.866990-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 6)
+default	07:15:13.867149-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 2445/32768 (7.5)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 6
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:14.638966-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 7)
+default	07:15:14.640142-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 3645/32768 (11.1)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 7
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:14.640686-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 8)
+default	07:15:14.642492-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 8
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:15.464268-0700	VPN	[ServerConnection] Connection #18 closed and removed, active=9
+default	07:15:15.464359-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [EST] [RST] Connection reset by peer
+default	07:15:15.464505-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [EST] [Backpressure] Emergency shrink: 4096 -> 4096 bytes
+default	07:15:15.464735-0700	VPN	[TCPConnection 172.16.0.1:64837->198.18.2.102:443] [PRE] Closing connection.
+default	07:15:17.133599-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 32768 bytes
+- Usage: 776/32768 (2.4)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 36
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.133877-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [EMERGENCY] Overflow detected! Immediate expand: 32768 -> 98304
+default	07:15:17.134193-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.134542-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 98304 bytes
+- Usage: 776/98304 (0.8)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 37
+- Batch Confirmed: true
+- Overflow: 1
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.134686-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [EMERGENCY] Overflow detected! Immediate expand: 98304 -> 262144
+default	07:15:17.134802-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.135446-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 38
+- Batch Confirmed: true
+- Overflow: 2
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.135556-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.136046-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 39
+- Batch Confirmed: true
+- Overflow: 3
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.136099-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.136576-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 40
+- Batch Confirmed: true
+- Overflow: 4
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.136635-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.137346-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 41
+- Batch Confirmed: true
+- Overflow: 5
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.137468-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.137633-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 42
+- Batch Confirmed: true
+- Overflow: 6
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.137684-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.138045-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 43
+- Batch Confirmed: true
+- Overflow: 7
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.138106-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.138638-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 44
+- Batch Confirmed: true
+- Overflow: 8
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.138693-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.139138-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 45
+- Batch Confirmed: true
+- Overflow: 9
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.139194-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.139622-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 46
+- Batch Confirmed: true
+- Overflow: 10
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.139688-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.140150-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 47
+- Batch Confirmed: true
+- Overflow: 11
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.140193-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.140600-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 48
+- Batch Confirmed: true
+- Overflow: 12
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.140649-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.141537-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 776/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 49
+- Batch Confirmed: true
+- Overflow: 13
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.141613-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.142509-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 262144 bytes
+- Usage: 767/262144 (0.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 50
+- Batch Confirmed: true
+- Overflow: 14
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:17.142589-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:15:17.216298-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer adjusted: 262144 -> 65535 bytes
+default	07:15:17.283130-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:17.453183-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Window update (immediate-expand): 32001 -> 64768 bytes
+default	07:15:17.453548-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Backpressure] Buffer expanded: 32768 -> 65536 bytes
+default	07:15:17.453605-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [After Expansion] Buffer State:
+- Current: 65536 bytes
+- Usage: 767/65536 (1.2)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 51
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 1.00
+- Connection Type: Social Media
+default	07:15:17.453953-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Predictive] Buffer expanded based on growth trend: 1.0
+default	07:15:17.455044-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer adjusted: 65536 -> 32768 bytes
+default	07:15:17.455230-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Backpressure] Buffer expanded: 32768 -> 65536 bytes
+default	07:15:17.455285-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [After Expansion] Buffer State:
+- Current: 65536 bytes
+- Usage: 0/65536 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 52
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 1.00
+- Connection Type: Social Media
+default	07:15:17.455339-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Predictive] Buffer expanded based on growth trend: 1.0
+default	07:15:17.601521-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:17.838197-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] Initialized. Buffer: 65535
+default	07:15:17.838429-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:15:17.838705-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:15:17.840820-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [PRE] Starting connection to SOCKS proxy...
+default	07:15:17.841320-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:15:17.841630-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:15:17.841758-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:15:17.846012-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [PRE] Handshake ACK received
+default	07:15:17.849013-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [PRE] SOCKS connection ready
+default	07:15:17.849637-0700	VPN	[ServerConnection] SOCKS5 new conn #20, active=10
+default	07:15:17.857057-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [EST] SOCKS tunnel established
+default	07:15:17.857228-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:15:17.948858-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:19.015144-0700	audiomxd	-MXSystemController- -[MXSystemController applyCanBeNowPlayingApp:]: <MXSystemController: com.atebits.Tweetie2 PID=15066 InheritingFrom=0 wantsVolumeChanges=NO hasEntitlementToEnableWombat=NO, listOfNotificationSubscriptions={
+    ServerConnectionDiedNotification = 1;
+}> setting CanBeNowPlayingApp to YES
+default	07:15:19.489644-0700	MediaRemoteUI	[ClientConnectionManager] init
+default	07:15:20.083193-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=10, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+default	07:15:20.662347-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] Closing connection.
+default	07:15:20.663870-0700	VPN	[TCPConnection 172.16.0.1:64820->198.18.0.115:993] [PRE] SOCKS receive error: POSIXErrorCode(rawValue: 89): Operation canceled
+default	07:15:20.669728-0700	VPN	[ServerConnection] Connection #1 closed and removed, active=9
+default	07:15:20.680994-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] Initialized. Buffer: 65535
+default	07:15:20.681138-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:15:20.681185-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:15:20.681225-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:15:20.681387-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [PRE] Starting connection to SOCKS proxy...
+default	07:15:20.685861-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [PRE] Handshake ACK received
+default	07:15:20.688621-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [PRE] SOCKS connection ready
+default	07:15:20.689054-0700	VPN	[ServerConnection] SOCKS5 new conn #21, active=10
+default	07:15:20.695501-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [EST] SOCKS tunnel established
+default	07:15:20.695561-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:15:20.782299-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+error	07:15:21.032885-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:15:21.747005-0700	apsd	PCConnectionManager was stopped by client
+default	07:15:21.748507-0700	apsd	PCConnectionManager was stopped by client
+default	07:15:23.542771-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] Initialized. Buffer: 65535
+default	07:15:23.543009-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:15:23.543117-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:15:23.543236-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [PRE] Starting connection to SOCKS proxy...
+default	07:15:23.543320-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:15:23.543437-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:15:23.543899-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:15:23.548293-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [PRE] Handshake ACK received
+default	07:15:23.551297-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [PRE] SOCKS connection ready
+default	07:15:23.552958-0700	VPN	[ServerConnection] SOCKS5 new conn #22, active=11
+default	07:15:23.557389-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [EST] SOCKS tunnel established
+default	07:15:23.557493-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:15:23.647819-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] Initialized. Buffer: 16384
+default	07:15:23.647895-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:15:23.647933-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:15:23.647970-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:23.648051-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] Starting connection to SOCKS proxy...
+default	07:15:23.648282-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] Window update (immediate-expand): 16384 -> 32768 bytes
+default	07:15:23.648477-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] [Backpressure] Buffer expanded: 16384 -> 32768 bytes
+default	07:15:23.648590-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] [After Expansion] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:15:23.648811-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] [Warmup] Quick expansion: 32768 bytes
+default	07:15:23.696675-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] SOCKS connection ready
+default	07:15:23.697676-0700	VPN	[ServerConnection] SOCKS5 new conn #23, active=12
+default	07:15:23.706959-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [EST] SOCKS tunnel established
+default	07:15:23.707437-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [EST] Keep-alive started with interval: 45.0s for port 993
+default	07:15:23.741540-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [EST] Handshake ACK received
+default	07:15:23.755917-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:24.722065-0700	Preferences	#I Connection interrupted. Attempting to reestablish connection
+default	07:15:24.793456-0700	Preferences	#I Successfully reestablished connection
+default	07:15:24.793493-0700	CommCenter	#I New CTServerConnection from pid 13283 (conn=0x53099dcc0)
+default	07:15:24.794262-0700	CommCenter	#I CTServerConnection from pid 13283[<private>] is named '<private>'.
+default	07:15:24.982017-0700	Preferences	Calling _CTServerConnectionGetCellularDataIsEnabled(): isEnabled = 1
+default	07:15:25.054116-0700	CommCenter	#I New CTServerConnection from pid 13283 (conn=0x53099d2c0)
+default	07:15:25.054414-0700	CommCenter	#I CTServerConnection from pid 13283[<private>] is named '<private>'.
+default	07:15:25.055917-0700	CommCenter	#I CTServerConnection from pid 13283 has closed (conn=0x53099d2c0)
+default	07:15:25.972681-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:15:25.972769-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:25.985169-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] Initialized. Buffer: 65535
+default	07:15:25.985207-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:15:25.985285-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:15:25.985945-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [PRE] Starting connection to SOCKS proxy...
+default	07:15:25.986737-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [PRE] [Backpressure] Buffer expanded: 65535 -> 131070 bytes
+default	07:15:25.987687-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [PRE] [After Expansion] Buffer State:
+- Current: 131070 bytes
+- Usage: 0/131070 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:15:25.987904-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [PRE] [Warmup] Quick expansion: 131070 bytes
+default	07:15:25.989192-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [PRE] Handshake ACK received
+default	07:15:25.994138-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [PRE] SOCKS connection ready
+default	07:15:25.998712-0700	VPN	[ServerConnection] SOCKS5 new conn #24, active=13
+default	07:15:26.001347-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [EST] SOCKS tunnel established
+default	07:15:26.001394-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:15:26.062891-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:30.082194-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=13, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:15:31.033838-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:15:31.738980-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [EST] Window update (post-send): 1252 -> 2877 bytes
+default	07:15:40.086400-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=13, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:15:41.033958-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:15:45.394979-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] Initialized. Buffer: 65535
+default	07:15:45.395096-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:15:45.395194-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:15:45.395313-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:15:45.395741-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [PRE] Starting connection to SOCKS proxy...
+default	07:15:45.412647-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [PRE] Handshake ACK received
+default	07:15:45.418096-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [PRE] SOCKS connection ready
+default	07:15:45.421988-0700	VPN	[ServerConnection] SOCKS5 new conn #25, active=14
+default	07:15:45.435513-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [EST] SOCKS tunnel established
+default	07:15:45.435975-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:15:45.460108-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:15:45.460148-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:45.489264-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:45.543385-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [After Expansion] Buffer State:
+- Current: 56871 bytes
+- Usage: 0/56871 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 5
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.74
+- Connection Type: Social Media
+default	07:15:45.543426-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Predictive] Buffer expanded based on growth trend: 0.7355805243445692
+default	07:15:45.650341-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:45.673284-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 6)
+default	07:15:45.673321-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 6
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.74
+- Connection Type: Social Media
+default	07:15:45.673366-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 7)
+default	07:15:45.673404-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 848/32768 (2.6)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 7
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.74
+- Connection Type: Social Media
+default	07:15:46.078361-0700	CommCenter	#I CTServerConnection from pid 13283 has closed (conn=0x53099dcc0)
+default	07:15:46.667700-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 8)
+default	07:15:46.667758-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1661/32768 (5.1)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 8
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.74
+- Connection Type: Social Media
+default	07:15:46.668852-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 9)
+default	07:15:46.668972-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 9
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:47.054287-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 10)
+default	07:15:47.054757-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 10
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:47.054805-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 11)
+default	07:15:47.054846-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1200/32768 (3.7)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 11
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:47.054960-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 12)
+default	07:15:47.054997-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 2400/32768 (7.3)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 12
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:47.055033-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 13)
+default	07:15:47.055069-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 3600/32768 (11.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 13
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:50.081187-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=14, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+default	07:15:50.273659-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:15:50.273718-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:50.274468-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 4)
+default	07:15:50.274743-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1200/32768 (3.7)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 4
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:50.666553-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:15:50.666722-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:15:50.666836-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:15:50.666953-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:15:50.667066-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:15:50.667155-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:15:50.667231-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:15:50.667306-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:15:50.667392-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:15:50.667465-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:15:50.667541-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:15:50.667613-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:15:50.667723-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:15:50.667799-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:15:50.717438-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:50.717508-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:50.717565-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:50.717618-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:50.717772-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:50.717948-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:50.718027-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:50.718090-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:50.718144-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:50.718264-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:50.718460-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:50.718589-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:50.718720-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:15:50.768961-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:50.944920-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 5)
+default	07:15:50.945035-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 1235/32768 (3.8)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 5
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:50.945354-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 6)
+default	07:15:50.945419-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 35/32768 (0.1)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 6
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+error	07:15:51.076379-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:15:51.254112-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] Initialized. Buffer: 65535
+default	07:15:51.254241-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:15:51.254328-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:15:51.254365-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [PRE] [Social] Normal browsing, set to 98304
+default	07:15:51.255053-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [PRE] Starting connection to SOCKS proxy...
+default	07:15:51.258713-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [PRE] Handshake ACK received
+default	07:15:51.264822-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [PRE] SOCKS connection ready
+default	07:15:51.265718-0700	VPN	[ServerConnection] SOCKS5 new conn #26, active=15
+default	07:15:51.271997-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [EST] SOCKS tunnel established
+default	07:15:51.272133-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [EST] Keep-alive started with interval: 80.0s for port 443
+default	07:15:51.336174-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 7)
+default	07:15:51.336380-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 7
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:51.360250-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:51.532944-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 8)
+default	07:15:51.533023-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 381/32768 (1.2)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 8
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:51.533065-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 9)
+default	07:15:51.533111-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 726/32768 (2.2)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 9
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:15:54.290127-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Window update (immediate-expand): 31670 -> 65535 bytes
+default	07:15:54.290220-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Backpressure] Buffer expanded: 32768 -> 65536 bytes
+default	07:15:54.290262-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [After Expansion] Buffer State:
+- Current: 65536 bytes
+- Usage: 0/65536 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 33
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 1.00
+- Connection Type: Social Media
+default	07:15:54.290303-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Predictive] Buffer expanded based on growth trend: 1.0
+default	07:15:54.406591-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:15:54.987895-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Backpressure] Emergency shrink: 32768 -> 32768 bytes
+default	07:16:00.082314-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=15, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:16:01.087100-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:16:01.529727-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 3)
+default	07:16:01.529841-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 3
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:16:01.529941-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [YouTube] Confirmed batch pattern (count: 4)
+default	07:16:01.530009-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [Batch Pattern Detected] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 4
+- Batch Confirmed: true
+- Overflow: 15
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:16:10.083537-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=15, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:16:11.103811-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:16:15.536267-0700	VPN	[ServerConnection] Connection #16 closed and removed, active=14
+default	07:16:15.543262-0700	VPN	[TCPConnection 172.16.0.1:64835->198.18.0.37:443] [PRE] Closing connection.
+default	07:16:20.083672-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=14, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:16:21.114808-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:16:30.081080-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=14, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:16:31.165280-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:16:40.083944-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=14, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:16:41.176013-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:16:42.796114-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Window update (immediate-expand): 32768 -> 65535 bytes
+default	07:16:42.796343-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Backpressure] Buffer expanded: 32768 -> 65536 bytes
+default	07:16:42.796407-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [After Expansion] Buffer State:
+- Current: 65536 bytes
+- Usage: 0/65536 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 132
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 1.00
+- Connection Type: Social Media
+default	07:16:42.796475-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Predictive] Buffer expanded based on growth trend: 1.0
+default	07:16:42.917309-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:16:47.319933-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [EST] [RST] Connection reset by peer
+default	07:16:47.320272-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [EST] [Backpressure] Emergency shrink: 4096 -> 4096 bytes
+default	07:16:47.320389-0700	VPN	[TCPConnection 172.16.0.1:64838->198.18.0.102:443] [PRE] Closing connection.
+default	07:16:47.326576-0700	VPN	[ServerConnection] Connection #19 closed and removed, active=13
+default	07:16:50.081235-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=13, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+default	07:16:50.630458-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Window update (immediate-expand): 32201 -> 65535 bytes
+default	07:16:50.630553-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Backpressure] Buffer expanded: 32768 -> 65536 bytes
+default	07:16:50.630609-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [After Expansion] Buffer State:
+- Current: 65536 bytes
+- Usage: 0/65536 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 150
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 1.00
+- Connection Type: Social Media
+default	07:16:50.630677-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Predictive] Buffer expanded based on growth trend: 1.0
+default	07:16:50.677635-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:16:50.677902-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:16:50.679210-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:16:50.679327-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] Closing connection.
+default	07:16:50.679410-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:16:50.680187-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:16:50.680424-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:16:50.680552-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:16:50.680591-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:16:50.680728-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:16:50.680825-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:16:50.681711-0700	VPN	[TCPConnection 172.16.0.1:64842->198.18.0.115:993] [PRE] SOCKS receive error: POSIXErrorCode(rawValue: 89): Operation canceled
+default	07:16:50.681757-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:16:50.681797-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [EST] Buffer adjusted: 4096 -> 20480 bytes
+default	07:16:50.681834-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] Buffer adjusted: 32768 -> 49152 bytes
+default	07:16:50.684735-0700	VPN	[ServerConnection] Connection #23 closed and removed, active=12
+default	07:16:50.688417-0700	VPN	[TCPConnection 172.16.0.1:64840->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:16:50.688482-0700	VPN	[TCPConnection 172.16.0.1:64844->198.18.0.38:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:16:50.688524-0700	VPN	[TCPConnection 172.16.0.1:64829->198.18.0.99:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:16:50.688563-0700	VPN	[TCPConnection 172.16.0.1:64845->198.18.0.34:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:16:50.688612-0700	VPN	[TCPConnection 172.16.0.1:64831->198.18.0.36:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:16:50.688678-0700	VPN	[TCPConnection 172.16.0.1:64830->198.18.0.40:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:16:50.688740-0700	VPN	[TCPConnection 172.16.0.1:64833->198.18.0.35:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:16:50.688936-0700	VPN	[TCPConnection 172.16.0.1:64841->198.18.0.1:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:16:50.688994-0700	VPN	[TCPConnection 172.16.0.1:64843->198.18.0.60:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:16:50.689059-0700	VPN	[TCPConnection 172.16.0.1:64839->198.18.2.102:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:16:50.689496-0700	VPN	[TCPConnection 172.16.0.1:64836->198.18.0.58:443] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:16:50.742716-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+error	07:16:51.197525-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:16:54.531847-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] Initialized. Buffer: 16384
+default	07:16:54.531897-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] Client SYN options: MSS=1360, SACK=true
+default	07:16:54.531940-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] Sent SYN-ACK with MSS=1360, SACK, no WScale
+default	07:16:54.532035-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] Starting connection to SOCKS proxy...
+default	07:16:54.532252-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] Window update (immediate-expand): 16384 -> 32768 bytes
+default	07:16:54.532483-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] [Backpressure] Buffer expanded: 16384 -> 32768 bytes
+default	07:16:54.532629-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] [After Expansion] Buffer State:
+- Current: 32768 bytes
+- Usage: 0/32768 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 0
+- Batch Confirmed: false
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: General
+default	07:16:54.533097-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] [Warmup] Quick expansion: 32768 bytes
+default	07:16:54.539340-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] SOCKS connection ready
+default	07:16:54.540924-0700	VPN	[ServerConnection] SOCKS5 new conn #27, active=13
+default	07:16:54.544069-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [PRE] Handshake ACK received
+default	07:16:54.546474-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [EST] SOCKS tunnel established
+default	07:16:54.546653-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [EST] Keep-alive started with interval: 45.0s for port 993
+default	07:16:54.631419-0700	VPN	[TCPConnection 172.16.0.1:64846->198.18.0.115:993] [EST] [FastShrink] 100ms idle detected, shrunk to 4096
+default	07:17:00.081401-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=13, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:17:01.208030-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:17:02.721164-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Window update (immediate-expand): 32768 -> 65535 bytes
+default	07:17:02.721237-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Backpressure] Buffer expanded: 32768 -> 65536 bytes
+default	07:17:02.721287-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [After Expansion] Buffer State:
+- Current: 65536 bytes
+- Usage: 0/65536 (0.0)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 173
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 1.00
+- Connection Type: Social Media
+default	07:17:02.721460-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Predictive] Buffer expanded based on growth trend: 1.0
+default	07:17:02.956619-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [FastShrink] 100ms idle detected, shrunk to 32768
+default	07:17:10.084400-0700	VPN	[ServerConnection] SOCKS5 8888 stats: active=13, 10s up=0B(0.0 KB/s), down=0B(0.0 KB/s), total up=0B, down=0B
+error	07:17:11.207624-0700	VPN	[Monitor] Missing Push ports: <private>
+default	07:17:12.137603-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Before Overflow Handling] Buffer State:
+- Current: 32768 bytes
+- Usage: 1590/32768 (4.9)
+- Last Expansion: never
+- Last Shrink: never
+- Batch Count: 218
+- Batch Confirmed: true
+- Overflow: 0
+- Growth Trend: 0.00
+- Connection Type: Social Media
+default	07:17:12.137947-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [EMERGENCY] Overflow detected! Immediate expand: 32768 -> 98304
+default	07:17:12.138003-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] Buffer overflow: dropped packet and expanded
+default	07:17:12.153934-0700	VPN	[TCPConnection 172.16.0.1:64834->198.18.0.41:443] [EST] [Before Overflow Handling] Buffer State:
