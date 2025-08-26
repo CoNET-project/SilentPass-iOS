@@ -47,7 +47,14 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
         v4.includedRoutes = [
 //            NEIPv4Route.default(),
             NEIPv4Route(destinationAddress: "172.16.0.2", subnetMask: "255.255.255.255"),
-            NEIPv4Route(destinationAddress: "198.18.0.0", subnetMask: "255.254.0.0") // 仅 FakeIP /15
+            NEIPv4Route(destinationAddress: "198.18.0.0", subnetMask: "255.254.0.0"), // 仅 FakeIP /15
+            // Telegram 段也需要流入隧道
+               NEIPv4Route(destinationAddress: "91.108.4.0", subnetMask: "255.255.252.0"),
+               NEIPv4Route(destinationAddress: "91.108.8.0", subnetMask: "255.255.252.0"),
+               NEIPv4Route(destinationAddress: "91.108.12.0", subnetMask: "255.255.252.0"),
+               NEIPv4Route(destinationAddress: "91.108.16.0", subnetMask: "255.255.252.0"),
+               NEIPv4Route(destinationAddress: "91.108.56.0", subnetMask: "255.255.252.0"),
+               NEIPv4Route(destinationAddress: "149.154.160.0", subnetMask: "255.255.240.0"),
         ]
         NSLog("[PacketTunnelProvider] Routing includes 198.18.0.0/15 for fake IPs")
         
