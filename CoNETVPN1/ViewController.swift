@@ -32,6 +32,9 @@ class ViewController: UIViewController, WKNavigationDelegate {
     var vPNManager: VPNManager!
     var port: Int = 8888
     var webServer = LocalWebServer()
+    
+    // 1. 在 ViewController 里加一个静态 token，保证它不会跟随 VC 释放
+    private static var vpnObserverToken: NSObjectProtocol?
     override func viewDidLoad() {
         super.viewDidLoad()
         // 创建按钮
@@ -237,28 +240,29 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //               )
         
     }
-    
-    
+    // 2. 把 setupVPNStatusListener 改成「一次性」注册
     func setupVPNStatusListener() {
-        NETunnelProviderManager.loadAllFromPreferences { managers, error in
-            guard error == nil, let managers = managers else {
-                print("Failed to load managers: \(error?.localizedDescription ?? "Unknown error")")
-                return
-            }
+        // 如果已经注册过就直接返回
+        guard Self.vpnObserverToken == nil else { return }
 
-            for manager in managers {
-                if manager.localizedDescription == "CoNET VPN" {
-                    // 监听 VPN 状态变化通知
-                    NotificationCenter.default.addObserver(
-                        self,
-                        selector: #selector(self.vpnStatusDidChange(_:)),
-                        name: .NEVPNStatusDidChange,
-                        object: manager.connection
-                    )
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
+            guard let self = self,
+                  error == nil,
+                  let managers = managers,
+                  let manager = managers.first(where: { $0.localizedDescription == "CoNET VPN" })
+            else { return }
 
-                    // 初始同步一次状态
-                    self.handleVPNStatus(manager.connection.status)
-                }
+            // 初始状态打印一次
+            self.handleVPNStatus(manager.connection.status)
+
+            // 用全局 token 挂通知，object 传 nil 保证任何 connection 都能收到
+            Self.vpnObserverToken = NotificationCenter.default.addObserver(
+                forName: .NEVPNStatusDidChange,
+                object: nil,               // ⚠️ 传 nil，避免 connection 对象不匹配
+                queue: .main
+            ) { note in
+                guard let conn = note.object as? NEVPNConnection else { return }
+                self.handleVPNStatus(conn.status)
             }
         }
     }
