@@ -18,7 +18,6 @@ import Swifter
 
 class ViewController: UIViewController, WKNavigationDelegate {
     var webView: WKWebView!
-    var localServer: Server?
     var timer: Timer?
     var egressNodes: [String] = []
     var entryNodes: [String] = []
@@ -88,7 +87,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //        }
         
         SVProgressHUD.setDefaultStyle(.dark)
-        SVProgressHUD.show(withStatus: "Loding......")
+        SVProgressHUD.show(withStatus: "Loading......")
         
         
        
