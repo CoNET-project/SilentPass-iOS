@@ -32,23 +32,28 @@ class VPNManager {
         }
     }
 
-    private func createTunnelWithRetry(retryCount: Int = 5, delay: TimeInterval = 1.5) {
+    private func createTunnelWithRetry(retryCount: Int = 2, delay: TimeInterval = 1.5) {
         let manager = makeManager()
 
         func saveAndLoad(retriesLeft: Int) {
             manager.saveToPreferences { error in
                 if let error = error {
                     NSLog("❌ Failed to save VPN config: \(error.localizedDescription)")
+                    
                     if retriesLeft > 0 {
                         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                             saveAndLoad(retriesLeft: retriesLeft - 1)
                         }
+                        return
                     }
+                    print("当前 VPN 状态 为 Failed to save VPN config 发送关闭状态！")
+                    
                     return
                 }
 
                 manager.loadFromPreferences { error in
                     if let error = error {
+                        
                         NSLog("❌ Failed to load VPN config after save: \(error.localizedDescription)")
                         return
                     }

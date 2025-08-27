@@ -105,6 +105,10 @@ class ViewController: UIViewController, WKNavigationDelegate {
 
                // 设置 WebView 的全屏布局
                webView.translatesAutoresizingMaskIntoConstraints = false
+        
+//        //      设置捕获JavaScript错误
+//        webView.navigationDelegate = self
+        
         self.view.addSubview(webView)
 //        webView.frame = CGRect(x: 0, y: 0, width: self.view.frame.size.width, height: self.view.frame.size.height)
         
@@ -275,12 +279,15 @@ class ViewController: UIViewController, WKNavigationDelegate {
 
     private func handleVPNStatus(_ status: NEVPNStatus) {
         // 这里处理你的状态回传逻辑，比如给 H5 发
+        if status.rawValue == 2 {
+            return print("VPN 状态变化：\(status.rawValue) 不发送 JS")
+        }
         NotificationCenter.default.post(
             name: Notification.Name("VPNStatusChanged"),
             object: status
         )
 
-        print("VPN 状态变化：\(status.rawValue)")
+        
     }
     
     @objc func getVPNConfigurationStatus() {
@@ -298,12 +305,15 @@ class ViewController: UIViewController, WKNavigationDelegate {
             for manager in managers {
                 if manager.localizedDescription == "CoNET VPN" {
                     let status = manager.connection.status
-                    print("当前 VPN 状态: \(status.rawValue)")
-
+                    var sendStatus = status.rawValue
+                    if status.rawValue == 2 {
+                        sendStatus = 3
+                    }
                     // 把状态通知给 H5
+                    print("当前 VPN 状态 为 : \(sendStatus) 发送状态！")
                     NotificationCenter.default.post(
                         name: Notification.Name("VPNStatusChanged"),
-                        object: status
+                        object: sendStatus
                     )
                     break
                 }
