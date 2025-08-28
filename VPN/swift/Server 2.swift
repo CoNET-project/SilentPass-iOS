@@ -50,7 +50,7 @@ final class Server {
          port: UInt16 = 8888,
          portLabel: String? = nil,
          queue: DispatchQueue = DispatchQueue(label: "socks5.server.queue"),
-         maxActiveConnections: Int = 256,
+         maxActiveConnections: Int = 1024,
          verbose: Bool = true) {
         self.bindHost = host
         self.port = NWEndpoint.Port(rawValue: port)!
@@ -123,7 +123,7 @@ final class Server {
                     self.conns[id] = conn
                     
                     if self.verbose {
-                        self.log("SOCKS5 new conn #\(id), active=\(self.conns.count)")
+                        //self.log("SOCKS5 new conn #\(id), active=\(self.conns.count)")
                     }
                         
                         
@@ -191,7 +191,7 @@ final class Server {
 
     // Logging & Error
     func log(_ s: String) {
-        NSLog("[ServerConnection] %@", s)
+        //NSLog("[ServerConnection] %@", s)
     }
     
     static func describe(_ err: Error) -> String {

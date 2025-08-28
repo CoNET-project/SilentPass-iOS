@@ -58,10 +58,10 @@
 		D06663F62E28443F007D010D /* LocalWebServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06663F52E28443F007D010D /* LocalWebServer.swift */; };
 		D06663F92E284A9C007D010D /* Swifter in Frameworks */ = {isa = PBXBuildFile; productRef = D06663F82E284A9C007D010D /* Swifter */; };
 		D06663FB2E284BC0007D010D /* Updater.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06663FA2E284BC0007D010D /* Updater.swift */; };
+		D07EA43D2E60EDF100558394 /* build3.zip in Resources */ = {isa = PBXBuildFile; fileRef = D07EA43C2E60EDF100558394 /* build3.zip */; };
 		D0850B2A2E52C1D700BC1BF4 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0850B292E52C1D700BC1BF4 /* vpn2socks */; };
 		D0850B2E2E52CC4C00BC1BF4 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0850B2D2E52CC4C00BC1BF4 /* vpn2socks */; };
 		D0850B302E52CCC900BC1BF4 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0850B2F2E52CCC900BC1BF4 /* vpn2socks */; };
-		D0A4E9882E5ECF5A001E5C87 /* build3.zip in Resources */ = {isa = PBXBuildFile; fileRef = D0A4E9872E5ECF5A001E5C87 /* build3.zip */; };
 		D0D33D5F2E298A9000E849BC /* LocalServerFirstSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */; };
 		D0D33D632E298BCE00E849BC /* CodableCachedData.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D622E298BCD00E849BC /* CodableCachedData.swift */; };
 		D0E605702E56DA2300167745 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0E6056F2E56DA2300167745 /* vpn2socks */; };
@@ -166,8 +166,8 @@
 		D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeManager.swift; sourceTree = "<group>"; };
 		D06663F52E28443F007D010D /* LocalWebServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWebServer.swift; sourceTree = "<group>"; };
 		D06663FA2E284BC0007D010D /* Updater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Updater.swift; sourceTree = "<group>"; };
+		D07EA43C2E60EDF100558394 /* build3.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = build3.zip; sourceTree = "<group>"; };
 		D0850B272E52C06600BC1BF4 /* vpn2socks */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = vpn2socks; sourceTree = "<group>"; };
-		D0A4E9872E5ECF5A001E5C87 /* build3.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = build3.zip; sourceTree = "<group>"; };
 		D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServerFirstSchemeHandler.swift; sourceTree = "<group>"; };
 		D0D33D622E298BCD00E849BC /* CodableCachedData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableCachedData.swift; sourceTree = "<group>"; };
 		E04572E9846C75F10876B175 /* Pods-CoNETVPN1.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1.debug.xcconfig"; sourceTree = "<group>"; };
@@ -286,10 +286,10 @@
 				765717FC2DCB112A00A40770 /* GoogleService-Info.plist */,
 				D06663F52E28443F007D010D /* LocalWebServer.swift */,
 				765B0EC42CE476E1007ACC57 /* SceneDelegate.swift */,
+				D07EA43C2E60EDF100558394 /* build3.zip */,
 				D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */,
 				D0D33D622E298BCD00E849BC /* CodableCachedData.swift */,
 				765B0EC52CE476E1007ACC57 /* ViewController.swift */,
-				D0A4E9872E5ECF5A001E5C87 /* build3.zip */,
 				7678A40B2DADED4900A7C16C /* Constants.swift */,
 				7606D6F32D2EBC7700224EC8 /* swiftSever 2 */,
 			);
@@ -521,7 +521,7 @@
 				765717FD2DCB112A00A40770 /* GoogleService-Info.plist in Resources */,
 				765B0ECC2CE476E1007ACC57 /* LaunchScreen.storyboard in Resources */,
 				765B0ECD2CE476E1007ACC57 /* Main.storyboard in Resources */,
-				D0A4E9882E5ECF5A001E5C87 /* build3.zip in Resources */,
+				D07EA43D2E60EDF100558394 /* build3.zip in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

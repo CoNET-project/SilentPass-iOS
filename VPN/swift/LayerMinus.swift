@@ -65,7 +65,7 @@ class LayerMinus {
     @inline(__always)
     
     private func log(_ msg: String) {
-        NSLog("[LayerMinus] #%@", msg)
+        //NSLog("[LayerMinus] #%@", msg)
     }
     
     static let maxRegionNodes = 5

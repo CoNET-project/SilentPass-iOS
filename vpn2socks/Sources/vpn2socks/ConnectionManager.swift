@@ -9,7 +9,15 @@ import NetworkExtension
 import Network
 import os.log
 
-private let logger = Logger(subsystem: "com.vpn2socks", category: "ConnectionManager")
+struct SilentLogger {
+    func debug(_ message: @autoclosure () -> String) {}
+    func info(_ message: @autoclosure () -> String) {}
+    func warning(_ message: @autoclosure () -> String) {}
+    func error(_ message: @autoclosure () -> String) {}
+    func critical(_ message: @autoclosure () -> String) {}
+}
+private let logger = SilentLogger()
+//private let logger = Logger(subsystem: "com.vpn2socks", category: "ConnectionManager")
 
 final actor ConnectionManager {
     

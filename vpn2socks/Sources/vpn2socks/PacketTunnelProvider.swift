@@ -114,7 +114,17 @@ open class PacketTunnelProvider: NEPacketTunnelProvider {
         ]
         settings.ipv4Settings = v4
         
-        // ✅ DNS设置保持不变，但会在应用层做域名判断
+        
+        //  系统级 HTTP/HTTPS 代理直接分流走本地代理
+        let proxy = NEProxySettings()
+        proxy.httpEnabled = true
+        proxy.httpServer = NEProxyServer(address: "127.0.0.1", port: 8888)
+        
+        proxy.httpsEnabled = true
+        proxy.httpsServer = NEProxyServer(address: "127.0.0.1", port: 8888)
+        
+        settings.proxySettings = proxy
+        
         let dns = NEDNSSettings(servers: [fakeDNS])
         dns.matchDomains = [""] // 关键：让所有域名查询都走fakeDNS
         settings.dnsSettings = dns

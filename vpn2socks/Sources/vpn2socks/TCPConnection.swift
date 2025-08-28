@@ -2743,8 +2743,9 @@ final actor TCPConnection {
     }
 
     private func log(_ message: String) {
-        let context = socksState == .established ? "[EST]" : "[PRE]"
-        NSLog("[TCPConnection \(key)] \(context) \(message)")
+        
+//        let context = socksState == .established ? "[EST]" : "[PRE]"
+//        NSLog("[TCPConnection \(key)] \(context) \(message)")
     }
 
     func onInboundFin(seq: UInt32) async {

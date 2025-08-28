@@ -2,11 +2,14 @@ import Foundation
 import Network
 import os
 
+
+
 public final class ServerConnection {
 
     public let id: UInt64
     public let client: NWConnection
     private let onClosed: ((UInt64) -> Void)?
+    var httpConnect = true
 
     private let logger: Logger
     private let queue: DispatchQueue
@@ -54,7 +57,7 @@ public final class ServerConnection {
         self.queue = DispatchQueue(label: "ServerConnection.\(id)", qos: .userInitiated)
         self.layerMinus = layerMinus
         // 简单的生命周期日志
-        log("🟢 CREATED ServerConnection #\(id)")
+//        log("🟢 CREATED ServerConnection #\(id)")
     }
 
     @inline(__always)
@@ -108,7 +111,7 @@ public final class ServerConnection {
     deinit {
         log("🔴 DESTROYED ServerConnection #\(id)")
         if !closed {
-            print("⚠️ WARNING: ServerConnection #\(id) destroyed without proper closing!")
+            log("⚠️ WARNING: ServerConnection #\(id) destroyed without proper closing!")
         }
     }
 
@@ -126,14 +129,14 @@ public final class ServerConnection {
             }
             
             if let chunk = data, !chunk.isEmpty {
-                self.log("recv \(chunk.count)B, buffer before: \(self.recvBuffer.count)B, phase: \(self.phase)")
+                //self.log("recv \(chunk.count)B, buffer before: \(self.recvBuffer.count)B, phase: \(self.phase)")
                 self.recvBuffer.append(chunk)
-                self.log("buffer after append: \(self.recvBuffer.count)B")
+                //self.log("buffer after append: \(self.recvBuffer.count)B")
                 
                 // 打印接收到的数据的前几个字节（用于调试）
                 if chunk.count > 0 && self.verbose {
                     let preview = chunk.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
-                    self.log("recv data preview: \(preview)")
+                    //self.log("recv data preview: \(preview)")
                 }
                 
                 self.parseBuffer()
@@ -157,7 +160,7 @@ public final class ServerConnection {
             return
         }
         
-        log("parseBuffer: phase=\(phase), buffer size=\(recvBuffer.count)")
+        //log("parseBuffer: phase=\(phase), buffer size=\(recvBuffer.count)")
         
         var advanced = true
         while advanced, !closed, !handedOff {
@@ -168,7 +171,22 @@ public final class ServerConnection {
             
             switch phase {
             case .methodSelect:
-                advanced = parseMethodSelect()
+                // HTTP/HTTPS proxy support added
+                
+                // 先尝试 SOCKS5；若不是，则尝试 HTTP 代理首包解析
+                if let first = recvBuffer.first, first == 0x05 {
+                   advanced = parseMethodSelect()
+                    self.httpConnect = false
+               } else {
+                    // 可能是 HTTP/HTTPS 显式代理（GET/POST/CONNECT ...）
+                    advanced = tryParseHTTPProxyRequest()
+                    if !advanced {
+                        // 还不足以解析 HTTP 首部，继续等待更多数据
+                        // 避免误关连接
+                        log("methodSelect: waiting for more bytes (maybe HTTP proxy)")
+                    }
+                }
+                
                 if advanced {
                     log("parseBuffer: methodSelect consumed \(bufferSizeBefore - recvBuffer.count) bytes")
                 }
@@ -184,7 +202,9 @@ public final class ServerConnection {
                 }
             case .connected(let host, let port):
                 if !recvBuffer.isEmpty {
-                    log("parseBuffer: processing first body, \(recvBuffer.count) bytes")
+                    
+                    
+                    
                     let first = recvBuffer
                     recvBuffer.removeAll(keepingCapacity: false)
                     processFirstBody(host: host, port: port, firstBody: first)
@@ -198,6 +218,163 @@ public final class ServerConnection {
         
         log("parseBuffer: done, remaining buffer=\(recvBuffer.count) bytes")
     }
+    
+    // MARK: HTTP/HTTPS Proxy 解析与改写（绝对URI → origin-form）
+    private func tryParseHTTPProxyRequest() -> Bool {
+        // 我们至少需要一行（\r\n）来判断方法，且处理非 CONNECT 时需要首部结束（\r\n\r\n）
+        let CRLF = Data([0x0d, 0x0a])
+        let CRLFCRLF = Data([0x0d, 0x0a, 0x0d, 0x0a])
+
+        guard let firstLineEnd = recvBuffer.range(of: CRLF) else { return false }
+
+        
+        let firstLineData = recvBuffer.subdata(in: recvBuffer.startIndex..<firstLineEnd.lowerBound)
+        guard let firstLine = String(data: firstLineData, encoding: .utf8) else { return false }
+
+        
+        // 支持的方法（大小写不敏感）：CONNECT / GET / POST / PUT / DELETE / HEAD / OPTIONS / PATCH / TRACE
+        let upper = firstLine.uppercased()
+        let httpMethods = ["CONNECT", "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "TRACE"]
+        guard httpMethods.first(where: { upper.hasPrefix($0 + " ") }) != nil else { return false }
+
+        
+        // CONNECT 单独处理（只需第一行 + 可选首部）
+        if upper.hasPrefix("CONNECT ") {
+            // CONNECT host:port HTTP/x.y
+            let parts = firstLine.split(separator: " ")
+            guard parts.count >= 2 else { return false }
+            let hostPort = String(parts[1])
+            let hp = splitHostPort(hostPort, defaultPort: 443)
+            // 等待到首部结束后再消费（更稳妥）
+            guard let headerEnd = recvBuffer.range(of: CRLFCRLF) else { return false }
+
+            
+            // 丢弃 CONNECT 请求首部
+            recvBuffer.removeSubrange(recvBuffer.startIndex..<headerEnd.upperBound)
+
+            
+            // 发送 200 Established
+            let established = "HTTP/1.1 200 Connection Established\r\nProxy-Agent: vpn2socks\r\n\r\n"
+            client.send(content: established.data(using: .utf8), completion: .contentProcessed({ [weak self] err in
+                if let err = err { self?.log("send CONNECT 200 err: \(err)") }
+            }))
+
+            
+            // 进入 connected，等待 TLS 首包进入再统一走 processFirstBody → LayerMinusBridge
+            self.phase = .connected(host: hp.host, port: hp.port)
+                return true
+            }
+
+        
+            // 其它明文 HTTP：需至少拿到完整首部（避免误改正文）
+            guard let headerEnd = recvBuffer.range(of: CRLFCRLF) else { return false }
+
+        
+            // 解析第一行：METHOD SP PATH SP HTTP/x.y
+            let lineParts = firstLine.split(separator: " ", maxSplits: 2)
+            guard lineParts.count == 3 else { return false }
+            let method = String(lineParts[0])
+            let rawPath = String(lineParts[1]) // 可能是绝对URI
+            var version = String(lineParts[2]) // HTTP/1.1
+            if version.hasPrefix("HTTP/") { version.removeFirst(5) }
+    
+            // 解析 Host 首部（用于 origin-form 与默认端口判断）
+            let headerData = recvBuffer.subdata(in: firstLineEnd.upperBound..<headerEnd.lowerBound)
+            guard let headerText = String(data: headerData, encoding: .utf8) else { return false }
+            var hostHeader = ""
+            for line in headerText.split(separator: "\r\n") {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if t.lowercased().hasPrefix("host:") {
+                    hostHeader = t.dropFirst("host:".count).trimmingCharacters(in: .whitespaces)
+                    break
+                }
+            }
+
+        
+            // 目标主机/端口与改写后的 PATH
+            let (targetHost, targetPort, originPath) = normalizeAbsoluteOrOriginPath(
+                rawPath: rawPath,
+                hostHeader: hostHeader
+            )
+
+            // 重写第一行：METHOD SP originPath SP HTTP/version
+            let newFirstLine = "\(method) \(originPath) HTTP/\(version)"
+            guard let newFirstLineData = (newFirstLine + "\r\n").data(using: .utf8) else { return false }
+    
+            // 将首行替换为改写后的内容，其余首部与（可能存在的）正文原样透传
+            // 原数据 = [firstLine + CRLF] + [headers.. + CRLFCRLF] + [body...]
+            let restData = recvBuffer.subdata(in: firstLineEnd.upperBound..<recvBuffer.endIndex)
+            var rewritten = Data()
+            rewritten.append(newFirstLineData)
+            rewritten.append(restData)
+    
+            // 消费缓冲并移交给 LayerMinusBridge
+            recvBuffer.removeAll(keepingCapacity: false)
+        
+        
+            
+            handoffToBridge(host: targetHost, port: targetPort, firstBody: rewritten)
+            return true
+        }
+
+        private func splitHostPort(_ hostPort: String, defaultPort: Int) -> (host: String, port: Int) {
+            if let idx = hostPort.lastIndex(of: ":"), idx < hostPort.endIndex {
+                let h = String(hostPort[..<idx])
+                let pStr = String(hostPort[hostPort.index(after: idx)...])
+                if let p = Int(pStr), p > 0 && p < 65536 { return (h, p) }
+            }
+            return (hostPort, defaultPort)
+        }
+    
+        /// 将绝对URI（http://h[:p]/x）改写为 origin-form（/x），并返回目标 host/port
+        private func normalizeAbsoluteOrOriginPath(rawPath: String, hostHeader: String) -> (String, Int, String) {
+            var host = hostHeader
+            var port = 80
+            var path = rawPath
+
+            
+            if rawPath.hasPrefix("http://") || rawPath.hasPrefix("https://") {
+                // 绝对URI：解析 scheme://host[:port]/path?query
+                let isHTTPS = rawPath.hasPrefix("https://")
+                port = isHTTPS ? 443 : 80
+                let schemeEnd = rawPath.index(rawPath.startIndex, offsetBy: isHTTPS ? 8 : 7)
+                let afterScheme = rawPath[schemeEnd...]            // host[:port]/path...
+                if let slash = afterScheme.firstIndex(of: "/") {
+                    let hp = String(afterScheme[..<slash])
+                    let tail = String(afterScheme[slash...])      // /path?query
+                    let sp = splitHostPort(hp, defaultPort: port)
+                    host = sp.host
+                    port = sp.port
+                    path = tail.isEmpty ? "/" : tail
+                } else {
+                    // 没有路径，按根路径处理
+                    let hp = String(afterScheme)
+                    let sp = splitHostPort(hp, defaultPort: port)
+                    host = sp.host
+                    port = sp.port
+                    path = "/"
+                }
+            } else {
+                // origin-form：需要从 Host 首部补全目标
+                let sp = splitHostPort(hostHeader, defaultPort: 80)
+                host = sp.host
+                port = sp.port
+            }
+            if path.isEmpty { path = "/" }
+            return (host, port, path)
+        }
+    
+        private func handoffToBridge(host: String, port: Int, firstBody: Data) {
+            if self.httpConnect {
+                log("🟢 HTTP/HTTPS proxy #\(id) \(host):\(port) ")
+            } else {
+                log("🟢 SOCKS v5 proxy #\(id) \(host):\(port) ")
+            }
+            
+            processFirstBody(host: host, port: port, firstBody: firstBody)
+        }
+    
+    
 
     // MARK: Method Select
     private func parseMethodSelect() -> Bool {
@@ -211,8 +388,7 @@ public final class ServerConnection {
         let n = Int(bytes[1])
 
         guard ver == 0x05 else {
-            log("non-socks5 ver=\(ver)")
-            close(reason: "non-socks5")
+            // 非 SOCKS5：交由 HTTP 解析流程（上层已调用），这里不再关闭连接
             return false
         }
         
@@ -398,14 +574,14 @@ public final class ServerConnection {
         
         // 将首包转换为 Base64
         let b64 = firstBody.base64EncodedString()
-        log("Converting first body to Base64: \(b64.prefix(100))... (total: \(b64.count) chars)")
-        log("Protocol detection: \(detectedInfo), isSSL=\(isSSL)")
+        //log("Converting first body to Base64: \(b64.prefix(100))... (total: \(b64.count) chars)")
+        //log("Protocol detection: \(detectedInfo), isSSL=\(isSSL)")
         
         // 标记已移交，停止接收
         handedOff = true
         phase = .bridged
         
-        log("Handing off to LayerMinusBridge, no longer receiving from client")
+        //log("Handing off to LayerMinusBridge, no longer receiving from client")
         guard let egressNode = self.layerMinus.getRandomEgressNodes(),
               let entryNode = self.layerMinus.getRandomEntryNodes(),
               !egressNode.isEmpty,
@@ -431,7 +607,13 @@ public final class ServerConnection {
             newBridge.start(withFirstBody: b64)
             return
         }
-        self.log("Layer Minus start \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
+        if self.httpConnect {
+            self.log("Layer Minus start by HTTP/HTTPS PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
+        } else {
+            self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
+        }
+            
+        
         let message = self.layerMinus.makeSocksRequest(host: host, port: port, body: b64, command: "CONNECT")
         let messageData = message.data(using: .utf8)!
         let account = self.layerMinus.keystoreManager.addresses![0]
