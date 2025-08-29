@@ -193,7 +193,24 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //        }
         
        
-        
+        let monitor = NWPathMonitor()
+        let queue = DispatchQueue.global(qos: .background)
+        monitor.start(queue: queue)
+
+        monitor.pathUpdateHandler = { path in
+            if path.status == .satisfied {
+                print("输出✅ 网络可用")
+              
+                // 启动本地服务器是一个异步任务，所以在一个 Task 中执行
+                Task {
+                    await self.webServer.prepareAndStart()
+                }
+                
+                
+            } else {
+                print("输出❌ 网络不可用")
+            }
+        }
         
         
         NotificationCenter.default.addObserver(self,
@@ -216,10 +233,11 @@ class ViewController: UIViewController, WKNavigationDelegate {
             )
         
         
+        
         // 启动本地服务器是一个异步任务，所以在一个 Task 中执行
-        Task {
-            await self.webServer.prepareAndStart()
-        }
+//        Task {
+//            await self.webServer.prepareAndStart()
+//        }
         
         
         
