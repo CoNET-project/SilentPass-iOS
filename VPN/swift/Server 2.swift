@@ -108,6 +108,7 @@ final class Server {
                 self.nextID &+= 1
                 let id = self.nextID
                 
+
                
                     
                     let conn = ServerConnection(
@@ -140,6 +141,7 @@ final class Server {
 
         lst.start(queue: queue)
         startStatsTimer()
+        
     }
     
     

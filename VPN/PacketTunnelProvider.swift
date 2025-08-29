@@ -22,15 +22,14 @@ func nodeJSON (nodeJsonStr: String) -> [Node] {
 
 class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     private var socksServer: Server?
-    let port = 8888
-    var server: Server!
+    var server = Server(port: 8888)
 
     override init() {
         super.init()
-        let s = Server(port: 8888)
-        self.socksServer = s
         do {
+
 //                    try self.socksServer?.start(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
+
             try self.socksServer?.start()
             NSLog("PacketTunnelProvider SOCKS server started.")
         } catch {
@@ -42,7 +41,7 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
         
         super.startTunnel(options: options) { error in
             // 5. 在核心逻辑完成后，你可以执行后续的自定义操作
-            if let error = error {
+            if error != nil {
                 NSLog("PacketTunnelProvider Target: Core logic failed. Cleaning up.")
                 // 处理错误
             } else {
@@ -55,16 +54,23 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let entryNodesStr = options["entryNodes"] as? String ?? ""
                 let egressNodesStr = options["egressNodes"] as? String ?? ""
                 let privateKey = options["privateKey"] as? String ?? ""
+
                 let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
                 let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
+
                 do {
 //                    try self.socksServer?.start(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
                     try self.socksServer?.start()
+
                     self.socksServer?.layerMinusInit(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
+
                     NSLog("PacketTunnelProvider SOCKS server started.")
                 } catch {
                     NSLog("Failed to start SOCKS server: \(error)")
                 }
+                
+                
+
                 
                 // 最后，调用 completionHandler 通知系统
                 completionHandler(error)

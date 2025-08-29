@@ -146,44 +146,27 @@ class ViewController: UIViewController, WKNavigationDelegate {
         // 加载网址
         self.nativeBridge = NativeBridge(webView: webView, viewController: self)
         
-//        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-//            if let url = URL(string: Constants.baseURL) {
-//                let request = URLRequest(url: url)
-//                self.webView.load(request)
-//            }
-//        }
- 
-//        let monitor = NWPathMonitor()
-//        
-//        // 开始监听网络状态
-//                monitor.pathUpdateHandler = { path in
-//                    if path.status == .satisfied {
-//                        DispatchQueue.main.async {
-//                            monitor.cancel()
-//                            print("网络已恢复，重新加载 WebView")
-//                            
-//                            
-//                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-//                                if let url = URL(string: Constants.baseURL) {
-//                                    let request = URLRequest(url: url)
-//                                    self.webView.load(request)
-//                                }
-//                            }
-//
-//                            
-//                        }
-//                    }
-//                }
+
+        let monitor = NWPathMonitor()
+        let queue = DispatchQueue.global(qos: .background)
+        monitor.start(queue: queue)
+
+        monitor.pathUpdateHandler = { path in
+            if path.status == .satisfied {
+                print("输出✅ 网络可用")
+              
+                // 启动本地服务器是一个异步任务，所以在一个 Task 中执行
+                Task {
+                    await self.webServer.prepareAndStart()
+                }
+                
+                
+            } else {
+                print("输出❌ 网络不可用")
+            }
+        }
         
-        
-        
-//        let queue = DispatchQueue.global(qos: .background)
-//                monitor.start(queue: queue)
-//        DispatchQueue.main.async{
-//
-//            
-//        }
-        
+
        
         
         
@@ -208,10 +191,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
             )
         
         
-        // 启动本地服务器是一个异步任务，所以在一个 Task 中执行
-        Task {
-            await self.webServer.prepareAndStart()
-        }
+        
         
         
         

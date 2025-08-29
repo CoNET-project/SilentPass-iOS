@@ -21,7 +21,9 @@ public final class LayerMinusBridge {
     private var closed = false
 
 
+
     init(
+
         id: UInt64,
         client: NWConnection,
         targetHost: String,
@@ -67,10 +69,12 @@ public final class LayerMinusBridge {
             self.log("firstBody decoded bytes=\(firstBody.count)")
             
             // 打印前几个字节用于调试
-            if firstBody.count > 0 {
-                let preview = firstBody.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
-                self.log("firstBody preview: \(preview)")
-            }
+//            if firstBody.count > 0 {
+//                let preview = firstBody.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
+//                self.log("firstBody preview: \(preview)")
+//            }
+            
+            //let message = self.LayerMinus.makeSocksRequest(host: targetHost, port: targetPort, body: firstBodyBase64)
             
             // 开始连接上游并转发数据
             self.connectUpstreamAndRun(firstBody: firstBody)
