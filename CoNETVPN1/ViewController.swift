@@ -234,9 +234,8 @@ class ViewController: UIViewController, WKNavigationDelegate {
         
 
 
-        let monitor = NWPathMonitor()
-        let queue = DispatchQueue.global(qos: .background)
-        monitor.start(queue: queue)
+
+
 
         monitor.pathUpdateHandler = { path in
             if path.status == .satisfied {
