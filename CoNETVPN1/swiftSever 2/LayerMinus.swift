@@ -179,22 +179,22 @@ class LayerMinus {
         let account = self.keystoreManager.addresses![0]
         self.walletAddress = account.address.lowercased()
         self.initializeJS()
-        self.miningProcess = MiningProcess(layerMinus: self, post: port, message: "test")
+        //self.miningProcess = MiningProcess(layerMinus: self, post: port, message: "test")
         self.readCoNET_nodeInfoABI()
         
-        do {
-            self.privateKey = try self.keystoreManager.UNSAFE_getPrivateKeyData(password: "", account: account)
-            self.privateKeyAromed = self.privateKey.toHexString()
-            
-            UserDefaults.standard.set(self.privateKey, forKey: "privateKey")
-            UserDefaults.standard.synchronize()
-        } catch {
-            print ("Error getting private key")
-        }
-        Task{
-            self.web3 = try await Web3.new(LayerMinus.rpcUrl)
-            web3.addKeystoreManager(self.keystoreManager)
-        }
+//        do {
+//            self.privateKey = try self.keystoreManager.UNSAFE_getPrivateKeyData(password: "", account: account)
+//            self.privateKeyAromed = self.privateKey.toHexString()
+//            
+//            UserDefaults.standard.set(self.privateKey, forKey: "privateKey")
+//            UserDefaults.standard.synchronize()
+//        } catch {
+//            print ("Error getting private key")
+//        }
+//        Task{
+//            self.web3 = try await Web3.new(LayerMinus.rpcUrl)
+//            web3.addKeystoreManager(self.keystoreManager)
+//        }
         //self.localIpaddress =  getIPAddress()!
     }
     

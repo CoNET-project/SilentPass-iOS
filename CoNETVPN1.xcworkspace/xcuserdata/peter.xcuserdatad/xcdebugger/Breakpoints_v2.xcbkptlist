@@ -15,7 +15,9 @@
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "505"
-            endingLineNumber = "505">
+            endingLineNumber = "505"
+            landmarkName = "vpnStatusChanged(_:)"
+            landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
       <BreakpointProxy
@@ -414,7 +416,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "267"
             endingLineNumber = "267"
-            landmarkName = "getVPNConfigurationStatus()"
+            landmarkName = "setupVPNStatusListener()"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>

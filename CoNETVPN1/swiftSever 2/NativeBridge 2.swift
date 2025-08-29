@@ -20,6 +20,7 @@ struct pay: Codable {
     var transactionId: String
     var productId: String
     var total: String
+    var receipt: String?
 }
 
 struct postPay: Codable {
@@ -51,6 +52,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         webView.configuration.userContentController.add(self, name: "openUrl")
 
         webView.configuration.userContentController.add(self, name: "pay")
+        webView.configuration.userContentController.add(self, name: "restorePurchases")
         
         webView.configuration.userContentController.add(self, name: "general")
         
@@ -59,6 +61,9 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         webView.configuration.userContentController.add(self, name: "nativeBridge")
         webView.configuration.userContentController.add(self, name: "webviewMessage")
         webView.configuration.userContentController.add(self, name: "updateVPNUI")
+        
+        webView.configuration.userContentController.add(self, name: "startCheckUpdate")
+        
         webView.navigationDelegate = self
         
     }
@@ -98,7 +103,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
     
         // 处理来自 H5 的消息
         if message.name == "webviewMessage" {
-            print("开始支startVPN");
+            print("开始 startVPN");
             if let body = message.body as? String, let data = body.data(using: .utf8) {
                 // 解析 JSON 数据
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -145,17 +150,40 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
        
         
         if (message.name == "ReactNativeWebView") {
-            return print("h5掉原生 \(message.body)")
+            print("h5掉原生 \(message.body)")
         }
         
         //  聆聽 JavaScript  初始化完成信號
         if (message.name == "ready") {
-            return print("初始化完成信號 ready \(message.body)")
+            print("初始化完成信號 ready \(message.body)")
         }
         
         //      JavaScript控制台輸出
         if (message.name == "error") {
-            return print("message from JavaScript \(message.body)")
+            print("message from JavaScript \(message.body)")
+        }
+        
+        if (message.name == "startCheckUpdate") {
+            let base64EncodedString: String = message.body as! String
+            let base64EncodedData = base64EncodedString.data(using: .utf8)!
+            if let jsonText = Data(base64Encoded: base64EncodedData) {
+                let clearText = String(data: jsonText, encoding: .utf8)!
+
+                let data = clearText.data(using: .utf8)!
+                do {
+                    let _data = try JSONDecoder().decode(startVPNFromUI.self, from: data)
+                    self.viewController.layerMinus.entryNodes = _data.entryNodes
+
+                    Task {
+                        await self.updater.runUpdater(nodes: _data.entryNodes)
+                    }
+                    
+                    
+                } catch {
+                    print(error)
+                }
+                
+            }
         }
         
         if (message.name == "updateVPNUI") {
@@ -182,7 +210,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         
         //      UI JavaScript console
         if (message.name == "startVPN") {
-            print("开始支startVPN");
+            print("开始 startVPN");
             
             
             let base64EncodedString: String = message.body as! String
@@ -208,7 +236,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                 
             }
             
-            return print("VPN 初始化完成 message from UI JavaScript startVPN \(message.body)")
+            print("VPN 初始化完成 message from UI JavaScript startVPN")
         }
         
         //      UI JavaScript console
@@ -235,12 +263,65 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         }
         
         
+        if (message.name == "restorePurchases") {
+            
+            print("恢复订阅")
+
+            let base64EncodedString: String = message.body as! String
+                let base64EncodedData = base64EncodedString.data(using: .utf8)!
+                if let jsonText = Data(base64Encoded: base64EncodedData) {
+                    let clearText = String(data: jsonText, encoding: .utf8)!
+                    print(clearText)
+                    let data = clearText.data(using: .utf8)!
+                    do {
+                        let payObj = try JSONDecoder().decode(pay.self, from: data)
+
+                        if #available(iOS 15.0, *) {
+                            Task {
+                                // 仅在用户点击“恢复”时同步
+                                do { try await AppStore.sync() } catch { /* 不阻塞，继续收集 JWS */ }
+
+                                var jwss: [String] = []
+                                for await entitlement in Transaction.currentEntitlements {
+                                    jwss.append(entitlement.jwsRepresentation)
+                                }
+
+                                // 如果没有任何 JWS，就认为恢复失败
+                                guard !jwss.isEmpty else {
+                                    return self.handleRestoreError(nil)
+                                }
+
+                                // 组装并上报到你的后端
+                                
+                                
+                                var payload = payObj
+                                payload.receipt = jwss.joined(separator: "\n")
+                                    
+                                
+                                self.postToAPIServerForRecover(payload)
+                            }
+                        } else {
+                            // iOS < 15 无法获取 JWS
+                            SVProgressHUD.showInfo(withStatus: "恢复失败：需要 iOS 15 及以上")
+                            SVProgressHUD.dismiss(withDelay: 2)
+                        }
+                    } catch {
+                        print(error)
+                        SVProgressHUD.showInfo(withStatus: "恢复失败：参数错误")
+                        SVProgressHUD.dismiss(withDelay: 2)
+                    }
+                }
+                return
+        }
+        
+        
+        
         
         //      UI JavaScript console
         if (message.name == "stopVPN") {
             
             self.viewController.vPNManager.stopVPN()
-            return print("message from UI JavaScript stopVPN \(message.body)")
+            print("message from UI JavaScript stopVPN \(message.body)")
         }
         
         if (message.name == "openUrl") {
@@ -259,6 +340,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                         }
                  
             }
+            
         }
         
         
@@ -288,25 +370,10 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
             let task = URLSession.shared.dataTask(with: request) { data, response, error in
                 let statusCode = (response as! HTTPURLResponse).statusCode
                 if statusCode == 200 {
-                    print("SUCCESS")
-                    
-                    DispatchQueue.main.async{
-                        //                        self.webView?.goBack();
-                        self.viewController.vPNManager.stopVPN()
-                        SVProgressHUD.showInfo(withStatus: "Your purchase was successful and your duration has been increased,Please reconnect to the vpn")
-                        SVProgressHUD.dismiss(withDelay: 2)
-                        self.webView?.reload();
-                        //                        self.webView?.goBack();
-                    }
+                    print("postToAPIServer SUCCESS")
                     
                 } else {
-                    print("FAILURE")
-                    
-                    DispatchQueue.main.async{
-                        //                        self.webView?.goBack();
-                        self.webView?.goBack();
-                        //                        self.webView?.goBack();
-                    }
+                    print("postToAPIServer FAILURE")
                     
                 }
             }
@@ -314,6 +381,131 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         }
         
     }
+    
+    func postToAPIServerForRecover (_ payObj: pay) {
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let postDataString = try? encoder.encode(payObj) {
+            let url = URL(string: "https://hooks.conet.network/api/applePayUserRecover")!
+            var request = URLRequest(url: url)
+            print(payObj)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpMethod = "POST"
+            request.httpBody = postDataString
+            let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                let statusCode = (response as! HTTPURLResponse).statusCode
+                if statusCode == 200 {
+                    print("SUCCESS")
+                    
+                    
+                } else {
+                    print("FAILURE")
+                
+                    
+                }
+            }
+            task.resume()
+        }
+        
+    }
+    
+    
+    // 验证恢复的购买项
+    
+    // 验证恢复的购买项
+    
+    func getReceiptData() -> String? {
+        // 获取Receipt URL
+        guard let receiptURL = Bundle.main.appStoreReceiptURL,
+              FileManager.default.fileExists(atPath: receiptURL.path) else {
+            print("Receipt不存在")
+            return nil
+        }
+        
+        do {
+            // 读取Receipt数据
+            let receiptData = try Data(contentsOf: receiptURL)
+            // 转换为Base64字符串
+            let receiptString = receiptData.base64EncodedString(options: [])
+            return receiptString
+        } catch {
+            print("读取Receipt失败: \(error)")
+            return nil
+        }
+    }
+    
+    private func verifySubscription(productIds: Set<String>, payObj: pay) {
+        let validator = AppleReceiptValidator(
+            service: .production,               // 调试用 .sandbox
+            sharedSecret: "4ac82b1e23144df483e4bfab8b419792"  // App Store Connect -> In-App Purchases -> App-Specific Shared Secret
+        )
+
+        let verifyBlock = {
+            SwiftyStoreKit.verifyReceipt(using: validator) { result in
+                switch result {
+                case .success(let receipt):
+                    let status = SwiftyStoreKit.verifySubscriptions(
+                        ofType: .autoRenewable,
+                        productIds: productIds,
+                        inReceipt: receipt
+                    )
+                    switch status {
+                    case .purchased(let expiryDate, let items):
+                        // ✅ 订阅有效
+                        print("Active until: \(expiryDate). Items: \(items.count)")
+                        
+
+                        // 3) 所有内购项（一次性购买也在这里）
+                        if let rec = receipt["receipt"] as? [String: AnyObject],
+                           let inApps = rec["in_app"] as? [[String: AnyObject]], let latestReceiptB64 = receipt["latest_receipt"] as? String  {
+                            
+                            var postServer = false
+                            if latestReceiptB64.count > 0 {
+                                postServer = true
+                            }
+                            for item in inApps {
+                                let productId = item["006"] as? String
+                                if productId != nil {
+                                    postServer = true
+                                }
+                            }
+                            if postServer, let receipt = self.getReceiptData() {
+                                if receipt != nil {
+                                    var updatedPayObj = payObj
+                                    updatedPayObj.receipt = receipt
+                                    return self.postToAPIServerForRecover(updatedPayObj)
+                                }
+                            }
+                        }
+
+                    case .expired(let expiryDate, let items):
+                        // ⏰ 已过期
+                        print("Expired at: \(expiryDate). Items: \(items.count)")
+                        self.handleRestoreError(nil)
+
+                    case .notPurchased:
+                        // 🚫 从未购买（或非当前 Apple ID）
+                        print("Not purchased")
+                        self.handleRestoreError(nil)
+                    }
+
+                case .error(let error):
+                    print("Receipt verify error: \(error)")
+                    // 可能是没有收据 / 网络问题，尝试刷新收据
+                    
+                }
+            }
+        }
+
+        // 先试着直接校验（有时系统已下发收据）
+        verifyBlock()
+    }
+        
+    
+    
+    
+    
     
     func payWithApplePay(_ payObj: pay)
     {
@@ -359,13 +551,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                 
             case .error(let error):
                 
-                DispatchQueue.main.async{
-                    print("购买失败: \(error.localizedDescription)")
-                    SVProgressHUD.showInfo(withStatus: "Purchase failed, please try again")
-                    self.webView?.goBack();
-                    
-                    SVProgressHUD.dismiss(withDelay: 2)
-                }
+                self.handleRestoreError(error)
                 
                 //if let url = URL(string: Constants.baseURL) {
                 //let request = URLRequest(url: url)
@@ -379,6 +565,31 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         //    manager.restoreSubscriptions()
         
     }
+    
+    /// 统一处理“恢复/购买失败”提示，允许 error 为 nil
+    func handleRestoreError(_ error: Error?) {
+        // 先生成要显示/打印的文案
+        let consoleMsg: String
+        let hudMsg: String
+
+        if let error {
+            consoleMsg = "❌ 恢复失败: \(error)"
+            hudMsg = humanReadableMessage(for: error)
+        } else {
+            consoleMsg = "❌ 恢复失败: (error = nil)"
+            hudMsg = "恢复失败，请稍后再试"
+        }
+
+        // 控制台详细信息
+        print(consoleMsg)
+
+        // UI 提示在主线程
+        DispatchQueue.main.async {
+            SVProgressHUD.showInfo(withStatus: hudMsg)
+            SVProgressHUD.dismiss(withDelay: 2)
+        }
+    }
+
 
     // --- WKNavigationDelegate 方法 ---
 
@@ -669,6 +880,48 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
             }
             
         }
+    }
+    
+    private func humanReadableMessage(for error: Error) -> String {
+        // StoreKit 2 错误：注意没有 verificationFailed 这个 case
+        if #available(iOS 15.0, *), let sk2 = error as? StoreKitError {
+            switch sk2 {
+            case .userCancelled:
+                return "已取消"
+            case .networkError(_):
+                return "网络错误，请检查连接"
+            case .notAvailableInStorefront:
+                return "该商品在当前地区不可用"
+            case .notEntitled:
+                return "未获得购买权限"
+            case .systemError(_):
+                return "系统错误，请稍后再试"
+            default:
+                break
+            }
+        }
+
+        // 旧版 StoreKit
+        if let sk = error as? SKError {
+            switch sk.code {
+            case .paymentCancelled:         return "已取消"
+            case .storeProductNotAvailable: return "该商品暂不可购买"
+            case .paymentNotAllowed:        return "设备不允许购买"
+            case .cloudServiceNetworkConnectionFailed:
+                return "网络错误，请检查连接"
+            default:
+                break
+            }
+        }
+
+        // 网络层
+        let nsErr = error as NSError
+        if nsErr.domain == NSURLErrorDomain {
+            return "网络连接异常（\(nsErr.code)），请稍后再试"
+        }
+
+        // 兜底
+        return error.localizedDescription.isEmpty ? "发生未知错误，请稍后再试" : error.localizedDescription
     }
 
 
