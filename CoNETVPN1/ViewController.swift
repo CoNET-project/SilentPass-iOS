@@ -18,6 +18,7 @@ import Swifter
 
 class ViewController: UIViewController, WKNavigationDelegate {
     var webView: WKWebView!
+    var localServer: Server?
     var timer: Timer?
     var egressNodes: [String] = []
     var entryNodes: [String] = []
@@ -90,7 +91,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //        }
         
         SVProgressHUD.setDefaultStyle(.dark)
-        SVProgressHUD.show(withStatus: "Loading......")
+        SVProgressHUD.show(withStatus: "Loding......")
         
         
        
@@ -153,27 +154,44 @@ class ViewController: UIViewController, WKNavigationDelegate {
         // 加载网址
         self.nativeBridge = NativeBridge(webView: webView, viewController: self)
         
-
-        let monitor = NWPathMonitor()
-        let queue = DispatchQueue.global(qos: .background)
-        monitor.start(queue: queue)
-
-        monitor.pathUpdateHandler = { path in
-            if path.status == .satisfied {
-                print("输出✅ 网络可用")
-              
-                // 启动本地服务器是一个异步任务，所以在一个 Task 中执行
-                Task {
-                    await self.webServer.prepareAndStart()
-                }
-                
-                
-            } else {
-                print("输出❌ 网络不可用")
-            }
-        }
+//        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+//            if let url = URL(string: Constants.baseURL) {
+//                let request = URLRequest(url: url)
+//                self.webView.load(request)
+//            }
+//        }
+ 
+//        let monitor = NWPathMonitor()
+//
+//        // 开始监听网络状态
+//                monitor.pathUpdateHandler = { path in
+//                    if path.status == .satisfied {
+//                        DispatchQueue.main.async {
+//                            monitor.cancel()
+//                            print("网络已恢复，重新加载 WebView")
+//
+//
+//                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+//                                if let url = URL(string: Constants.baseURL) {
+//                                    let request = URLRequest(url: url)
+//                                    self.webView.load(request)
+//                                }
+//                            }
+//
+//
+//                        }
+//                    }
+//                }
         
-
+        
+        
+//        let queue = DispatchQueue.global(qos: .background)
+//                monitor.start(queue: queue)
+//        DispatchQueue.main.async{
+//
+//
+//        }
+        
        
         let monitor = NWPathMonitor()
         let queue = DispatchQueue.global(qos: .background)
@@ -214,10 +232,6 @@ class ViewController: UIViewController, WKNavigationDelegate {
                 object: nil
             )
         
-<<<<<<< HEAD
-        
-        
-=======
 
 
 
@@ -237,7 +251,6 @@ class ViewController: UIViewController, WKNavigationDelegate {
                 print("输出❌ 网络不可用")
             }
         }
->>>>>>> from-d8e15483d0abb6ee985b03c354039c859f1efdb6
         
         
         
@@ -493,9 +506,9 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //            switch status {
 //            case .connected:
 //                print("VPN 已连接")
-//                
 //
-//                
+//
+//
 //            case .connecting:
 //                print("VPN 正在连接")
 //            case .disconnected:
@@ -539,4 +552,3 @@ class ViewController: UIViewController, WKNavigationDelegate {
         NotificationCenter.default.removeObserver(self)
         }
 }
-
