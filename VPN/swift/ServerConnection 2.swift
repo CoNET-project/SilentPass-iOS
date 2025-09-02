@@ -586,6 +586,7 @@ public final class ServerConnection {
               let entryNode = self.layerMinus.getRandomEntryNodes(),
               !egressNode.isEmpty,
               !entryNode.isEmpty else {
+            let connectInfo = "origin=\(host):\(port) layerMinus node isEmpty, using DIRECT CONNECT"
             // 创建并启动 LayerMinusBridge，保存引用
             let newBridge = LayerMinusBridge(
                 id: self.id,
@@ -593,6 +594,7 @@ public final class ServerConnection {
                 targetHost: host,
                 targetPort: port,
                 verbose: self.verbose,
+                connectInfo: connectInfo,
                 onClosed: { [weak self] bridgeId in
                     // 当 bridge 关闭时，关闭 ServerConnection
                     self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
@@ -629,13 +631,14 @@ public final class ServerConnection {
                     let request = self.layerMinus.makeRequest(host: entryNode.ip_addr, data: pre_request)
                     
                     self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryNode.ip_addr) egress=\(egressNode.ip_addr)")
-                    
+                    let connectInfo = "origin=\(host):\(port) entry=\(entryNode.ip_addr) egress=\(egressNode.ip_addr)"
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,
                         targetHost: entryNode.ip_addr,
                         targetPort: 80,
                         verbose: self.verbose,
+                        connectInfo: connectInfo,
                         onClosed: { [weak self] bridgeId in
                             // 当 bridge 关闭时，关闭 ServerConnection
                             self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
