@@ -603,8 +603,9 @@ public final class ServerConnection {
             self.bridge = newBridge
             self.onRoutingDecided?(self)
             
-            // KPI：标记 handoff 时刻（与 Bridge.tStart 对齐）
-            
+            // KPI：标记 handoff 时刻（与 Bridge.start 的 tStart 对齐，用于 handoff->start）
+            self.log("KPI handoff -> LM host=\(host):\(port) ")
+            newBridge.markHandoffNow()
             // 传递 Base64 编码的首包给 bridge
             newBridge.start(withFirstBody: b64)
             return

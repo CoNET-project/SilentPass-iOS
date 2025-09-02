@@ -63,11 +63,25 @@ public final class LayerMinusBridge {
         NSLog("[LayerMinusBridge \(id)] %@", msg)
     }
     
+    // --- 追加KPI ---
+    private var tHandoff: DispatchTime?
+    private var tFirstSend: DispatchTime?
+    
     public func start(withFirstBody firstBodyBase64: String) {
         queue.async { [weak self] in
             guard let self = self else { return }
             
+            // KPI: 记录会话起点，用于计算 hsRTT / TTFB / 总时长
+            self.tStart = .now()
             self.log("start -> \(self.targetHost):\(self.targetPort), firstBody(Base64) len=\(firstBodyBase64.count)")
+            
+            
+            
+            // KPI: handoff -> start（应用层排队/解析耗时）
+            if let th = self.tHandoff {
+                let ms = Double(self.tStart.uptimeNanoseconds &- th.uptimeNanoseconds) / 1e6
+                self.log(String(format: "KPI handoff_to_start_ms=%.1f", ms))
+            }
             
             guard let firstBody = Data(base64Encoded: firstBodyBase64) else {
                 self.log("firstBody base64 decode failed")
@@ -137,9 +151,12 @@ public final class LayerMinusBridge {
             switch st {
             case .ready:
                 self.log("upstream ready to \(self.targetHost):\(self.targetPort)")
-                
+                // KPI: 记录上游就绪时刻（握手完成）
+                self.tReady = .now()
                 // 发送首包到上游
                 if !firstBody.isEmpty {
+                    
+                    // 记录首包发送完成时刻（用于 firstSend -> firstRecv）
                     self.sendToUpstream(firstBody, remark: "firstBody")
                 }
                 
@@ -165,6 +182,13 @@ public final class LayerMinusBridge {
         
         up.start(queue: queue)
     }
+
+	// 来自 ServerConnection 的 handoff 瞬间标记
+	public func markHandoffNow() {
+		queue.async { [weak self] in
+			self?.tHandoff = .now()
+		}
+	}
     
     private func pumpClientToUpstream() {
         if closed { return }
@@ -225,7 +249,19 @@ public final class LayerMinusBridge {
             
             if let d = data, !d.isEmpty {
                 self.log("recv from upstream: \(d.count)B")
-                if self.tFirstByte == nil { self.tFirstByte = .now() }
+                if self.tFirstByte == nil {
+                    self.tFirstByte = .now()
+                    // KPI: 即时打印首字节到达延迟 (TTFB)
+                    let ttfbMs = Double(self.tFirstByte!.uptimeNanoseconds &- self.tStart.uptimeNanoseconds) / 1e6
+                    self.log(String(format: "KPI immediate TTFB_ms=%.1f", ttfbMs))
+                    // KPI: 首包发送完成 -> 首字节回流（纯传输/排队段）
+                    if let ts = self.tFirstSend {
+                        let segMs = Double(self.tFirstByte!.uptimeNanoseconds &- ts.uptimeNanoseconds) / 1e6
+                        self.log(String(format: "KPI firstSend_to_firstRecv_ms=%.1f", segMs))
+                    }
+                }
+                
+
                 self.bytesDown &+= d.count
                 self.sendToClient(d, remark: "u->c")
             }
@@ -256,7 +292,13 @@ public final class LayerMinusBridge {
                 self?.log("upstream send err: \(err)")
                 self?.cancel(reason: "upstream send err")
             } else {
-                self?.log("sent \(remark) successfully")
+                // 标记首包发送完成时刻，用于 KPI: firstSend -> firstRecv
+                    if remark == "firstBody", let strong = self, strong.tFirstSend == nil {
+                        strong.tFirstSend = .now()
+                        strong.log("sent firstBody successfully (mark tFirstSend)")
+                    } else {
+                        self?.log("sent \(remark) successfully")
+                    }
             }
         }))
     }
