@@ -57,12 +57,12 @@ public final class ServerConnection {
         self.queue = DispatchQueue(label: "ServerConnection.\(id)", qos: .userInitiated)
         self.layerMinus = layerMinus
         // 简单的生命周期日志
-//        log("🟢 CREATED ServerConnection #\(id)")
+        log("🟢 CREATED ServerConnection #\(id)")
     }
 
     @inline(__always)
     private func log(_ msg: String) {
-        //NSLog("[ServerConnection] #\(id) %@", msg)
+        NSLog("[ServerConnection] #\(id) %@", msg)
     }
 
     public func start() {
@@ -136,7 +136,7 @@ public final class ServerConnection {
                 // 打印接收到的数据的前几个字节（用于调试）
                 if chunk.count > 0 && self.verbose {
                     let preview = chunk.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
-                    //self.log("recv data preview: \(preview)")
+                    self.log("recv data preview: \(preview)")
                 }
                 
                 self.parseBuffer()
