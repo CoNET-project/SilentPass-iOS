@@ -18,8 +18,8 @@ public final class LayerMinusBridge {
     private let CU_FLUSH_BYTES = 64 * 1024
     private let CU_FLUSH_MS = 12
     // 当定时到点但缓冲小于该值时，允许再延一次以攒到更“胖”的报文
-    private let CU_MIN_FLUSH_BYTES = 4 * 1024
-    private let CU_EXTRA_MS = 6
+    private let CU_MIN_FLUSH_BYTES = 8 * 1024
+    private let CU_EXTRA_MS = 10
     
     private let connectInfo: String?
     // 路由元信息（用于统计/打点）
@@ -37,7 +37,11 @@ public final class LayerMinusBridge {
     private var bytesUp: Int = 0
     private var bytesDown: Int = 0
     private var drainTimer: DispatchSourceTimer?
-    private let drainGrace: TimeInterval = 1.0  // 半关闭后等待对端残留数据的守护时间（秒）
+    // 半关闭后的“空闲超时”窗口：只要仍有对向数据活动就续期，空闲 >= 25s 才收尾
+    private let drainGrace: TimeInterval = 25.0
+    // 记录哪一侧先 EOF，用于判断是否处于 half-close
+    private var eofUpstream = false
+    private var eofClient = false
     
     
     private let onClosed: ((UInt64) -> Void)?
@@ -45,6 +49,13 @@ public final class LayerMinusBridge {
     private let queue: DispatchQueue
     private var upstream: NWConnection?
     private var closed = false
+    
+    // —— 生存门闸：所有回调入口先判存活，避免已取消后仍访问资源
+    private let stateLock = NSLock()
+    @inline(__always) private func alive() -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return !closed
+    }
     
     // 数据面日志（仅在 verbose 为 true 时打印）
     @inline(__always)
@@ -100,6 +111,8 @@ public final class LayerMinusBridge {
         queue.async { [weak self] in
             guard let self = self else { return }
             
+            guard self.alive() else { return }
+            
             // KPI: 记录会话起点，用于计算 hsRTT / TTFB / 总时长
             self.tStart = .now()
             self.log("start -> \(self.targetHost):\(self.targetPort), firstBody(Base64) len=\(firstBodyBase64.count)")
@@ -113,8 +126,9 @@ public final class LayerMinusBridge {
             }
             
             guard let firstBody = Data(base64Encoded: firstBodyBase64) else {
+                
                 self.log("firstBody base64 decode failed")
-                self.cancel(reason: "Invalid Base64")
+                self.queue.async { self.cancel(reason: "Invalid Base64") }
                 return
             }
             
@@ -136,18 +150,22 @@ public final class LayerMinusBridge {
     
     
     public func cancel(reason: String) {
-        guard !closed else { return }
+        // 幂等关闭，防止重入/竞态
+        stateLock.lock()
+        if closed { stateLock.unlock(); return }
         closed = true
+        stateLock.unlock()
         
-        // 停止所有守护/缓冲
-        
-        // 统一在真正取消前清理所有定时器，避免回调晚到再次触发
+        // 停止所有守护/缓冲（置空 handler 防循环引用）
+        firstByteWatchdog?.setEventHandler {}
         firstByteWatchdog?.cancel(); firstByteWatchdog = nil
+        drainTimer?.setEventHandler {}
         drainTimer?.cancel(); drainTimer = nil
-        
-        
+        cuFlushTimer?.setEventHandler {}
         cuFlushTimer?.cancel(); cuFlushTimer = nil
-        drainTimer?.cancel(); drainTimer = nil
+        
+        
+        
         cuBuffer.removeAll(keepingCapacity: false)
         
         kpiLog(reason: reason)
@@ -189,6 +207,10 @@ public final class LayerMinusBridge {
         
         up.stateUpdateHandler = { [weak self] st in
             guard let self = self else { return }
+            
+            guard self.alive() else { return }
+            
+            
             switch st {
             case .ready:
                 self.log("upstream ready to \(self.targetHost):\(self.targetPort)")
@@ -210,11 +232,11 @@ public final class LayerMinusBridge {
                 
             case .failed(let error):
                 self.log("upstream failed: \(error)")
-                self.cancel(reason: "upstream failed")
+                self.queue.async { self.cancel(reason: "upstream failed") }
                 
             case .cancelled:
                 self.log("upstream cancelled")
-                self.cancel(reason: "upstream cancelled")
+                self.queue.async { self.cancel(reason: "upstream cancelled") }
                 
             default:
                 self.log("upstream state: \(st)")
@@ -235,14 +257,22 @@ public final class LayerMinusBridge {
         cuFlushTimer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + .milliseconds(CU_FLUSH_MS))
+        
         t.setEventHandler { [weak self] in
-            guard let s = self else { return }
-            // 若到点仍然很小且允许再延一次，则小幅延时后再冲刷
+            guard let s = self, s.alive() else { return }
+            
+            // 若到点仍很小且允许再延一次，则小幅延时后再冲刷
             if !s.closed, allowExtend, s.cuBuffer.count > 0, s.cuBuffer.count < s.CU_MIN_FLUSH_BYTES {
                 s.cuFlushTimer?.cancel()
                 let t2 = DispatchSource.makeTimerSource(queue: s.queue)
                 t2.schedule(deadline: .now() + .milliseconds(s.CU_EXTRA_MS))
-                t2.setEventHandler { [weak self] in self?.flushCUBuffer() }
+                
+                t2.setEventHandler { [weak s] in
+                    guard let s = s, s.alive() else { return }
+                    s.flushCUBuffer()
+                }
+                
+                
                 s.cuFlushTimer = t2
                 t2.resume()
             } else {
@@ -264,8 +294,10 @@ public final class LayerMinusBridge {
         if closed { return }
         
         client.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
+            
+            
             guard let self = self else { return }
-            if self.closed { return }
+            if !self.alive() { return }
             
             if let err = err {
                 self.log("client recv err: \(err)")
@@ -280,6 +312,7 @@ public final class LayerMinusBridge {
             }
             
             if let d = data, !d.isEmpty {
+                
                 self.vlog("recv from client: \(d.count)B")
                 // 上行微批：累积到缓冲，达到阈值立即冲刷，否则启动一个很短的定时器
                 self.cuBuffer.append(d)
@@ -290,11 +323,17 @@ public final class LayerMinusBridge {
                 } else {
                     self.scheduleCUFlush()
                 }
+                
+                // 若上游已 EOF（half-close），但客户端仍在发数据，则刷新空闲计时器，避免早收尾
+                if self.eofUpstream {
+                    self.scheduleDrainCancel(hint: "upstream EOF (client->upstream activity)")
+                }
             }
             
             
             if isComplete {
                 self.log("client EOF")
+                self.eofClient = true
                 // 先把缓冲冲刷出去，再半关闭上游写入，进入排水期
                 self.flushCUBuffer()
                 self.upstream?.send(content: nil, completion: .contentProcessed({ _ in }))
@@ -308,12 +347,16 @@ public final class LayerMinusBridge {
     }
     
     private func scheduleDrainCancel(hint: String) {
-        // 如果对向也尽快 EOF，会先走到另一个分支触发；否则在 grace 到时统一取消
+        // half-close 空闲计时器：每次调用都会重置，确保有活动就不收尾
         drainTimer?.cancel()
+        
         let timer = DispatchSource.makeTimerSource(queue: queue)
+        
+        
         timer.schedule(deadline: .now() + drainGrace)
         timer.setEventHandler { [weak self] in
-            self?.cancel(reason: "drain timeout after \(hint)")
+            guard let s = self, s.alive() else { return }
+            s.cancel(reason: "drain timeout after \(hint)")
         }
         drainTimer = timer
         timer.resume()
@@ -323,7 +366,10 @@ public final class LayerMinusBridge {
         if closed { return }
         
         upstream?.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
+            
             guard let self = self else { return }
+            if !self.alive() { return }
+            
             if self.closed { return }
             
             if let err = err {
@@ -352,10 +398,17 @@ public final class LayerMinusBridge {
 
                 self.bytesDown &+= d.count
                 self.sendToClient(d, remark: "u->c")
+                
+                // 若客户端已 EOF（half-close），但上游仍在下发数据，则刷新空闲计时器，避免早收尾
+                if self.eofClient {
+                    self.scheduleDrainCancel(hint: "client EOF (upstream->client activity)")
+                }
+                
             }
             
             if isComplete {
                 self.log("upstream EOF")
+                self.eofUpstream = true
                 // 半关闭客户端写入，进入排水期
                 self.client.send(content: nil, completion: .contentProcessed({ _ in }))
                 self.scheduleDrainCancel(hint: "upstream EOF")
@@ -371,7 +424,8 @@ public final class LayerMinusBridge {
     private var firstByteWatchdog: DispatchSourceTimer?
     
     private func sendToUpstream(_ data: Data, remark: String) {
-        guard let up = upstream, !closed else {
+        
+        guard let up = upstream, alive() else {
             log("Cannot send to upstream: upstream=\(upstream != nil), closed=\(closed)")
             return
         }
@@ -383,7 +437,9 @@ public final class LayerMinusBridge {
         vlog("send \(remark) \(data.count)B -> upstream #\(seq)")
         
         up.send(content: data, completion: .contentProcessed({ [weak self] err in
-            guard let self = self else { return }
+            
+            guard let self = self, self.alive() else { return }
+            
             // 去重：只处理一次完成回调
             guard self.inflight.remove(seq) != nil else {
                 self.log("WARN dup completion for #\(seq), ignore")
@@ -414,7 +470,9 @@ public final class LayerMinusBridge {
                 let wd = DispatchSource.makeTimerSource(queue: self.queue)
                 wd.schedule(deadline: .now() + watchdogDelay)
                 wd.setEventHandler { [weak self] in
-                    guard let s = self, !s.closed else { return }
+                    
+                    guard let s = self, s.alive() else { return }
+                    
                     s.log("KPI watchdog: no first byte within \(Int(watchdogDelay*1000))ms after firstBody; fast-fail")
                     s.cancel(reason: "first_byte_timeout")
                 }
@@ -435,20 +493,20 @@ public final class LayerMinusBridge {
     
 
     private func sendToClient(_ data: Data, remark: String) {
-        guard !closed else {
+        guard alive() else {
             log("Cannot send to client: closed=\(closed)")
             return
         }
         
-        log("send \(remark) \(data.count)B -> client")
+        vlog("send \(remark) \(data.count)B -> client")
         
         client.send(content: data, completion: .contentProcessed({ [weak self] err in
-            
+            guard let self = self, self.alive() else { return }
             if let err = err {
-                self?.log("client send err: \(err)")
-                self?.queue.async { self?.cancel(reason: "client send err") }
+                self.log("client send err: \(err)")
+                self.queue.async { self.cancel(reason: "client send err") }
             } else {
-                self?.vlog("sent \(remark) successfully")
+                self.vlog("sent \(remark) successfully")
             }
         }))
     }
