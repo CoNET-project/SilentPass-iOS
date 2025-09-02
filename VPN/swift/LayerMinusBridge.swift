@@ -9,6 +9,18 @@ enum L {
 
 public final class LayerMinusBridge {
     
+    private var sendSeq: UInt64 = 0
+    private var inflight = Set<UInt64>()
+    
+    // --- 上行(c->u)微批：64KB 或 5ms 触发 ---
+    private var cuBuffer = Data()
+    private var cuFlushTimer: DispatchSourceTimer?
+    private let CU_FLUSH_BYTES = 64 * 1024
+    private let CU_FLUSH_MS = 12
+    // 当定时到点但缓冲小于该值时，允许再延一次以攒到更“胖”的报文
+    private let CU_MIN_FLUSH_BYTES = 4 * 1024
+    private let CU_EXTRA_MS = 6
+    
     private let connectInfo: String?
     // 路由元信息（用于统计/打点）
     
@@ -34,13 +46,20 @@ public final class LayerMinusBridge {
     private var upstream: NWConnection?
     private var closed = false
     
+    // 数据面日志（仅在 verbose 为 true 时打印）
+    @inline(__always)
+    private func vlog(_ msg: String) {
+        guard verbose else { return }
+        log(msg)
+    }
+    
     
     init(
         id: UInt64,
         client: NWConnection,
         targetHost: String,
         targetPort: Int,
-        verbose: Bool = true,
+        verbose: Bool = false,
         connectInfo: String? = nil,
         onClosed: ((UInt64) -> Void)? = nil
     ) {
@@ -53,7 +72,7 @@ public final class LayerMinusBridge {
         self.connectInfo = connectInfo
         self.queue = DispatchQueue(label: "LayerMinusBridge.\(id)", qos: .userInitiated)
         // 简单的生命周期日志
-        NSLog("🟢 CREATED LayerMinusBridge #\(id) for \(targetHost):\(targetPort)")
+        NSLog("🟢 CREATED LayerMinusBridge #\(id) for \(targetHost):\(targetPort)\(infoTag())")
     }
     
     deinit {
@@ -120,8 +139,16 @@ public final class LayerMinusBridge {
         guard !closed else { return }
         closed = true
         
-        firstByteWatchdog?.cancel()
-        firstByteWatchdog = nil
+        // 停止所有守护/缓冲
+        
+        // 统一在真正取消前清理所有定时器，避免回调晚到再次触发
+        firstByteWatchdog?.cancel(); firstByteWatchdog = nil
+        drainTimer?.cancel(); drainTimer = nil
+        
+        
+        cuFlushTimer?.cancel(); cuFlushTimer = nil
+        drainTimer?.cancel(); drainTimer = nil
+        cuBuffer.removeAll(keepingCapacity: false)
         
         kpiLog(reason: reason)
         log("cancel: \(reason)")
@@ -136,9 +163,6 @@ public final class LayerMinusBridge {
         // 通知 ServerConnection
         onClosed?(id)
     }
-    
-    private var cuBuffer = Data()
-    private var cuFlushTimer: DispatchSourceTimer?
     
     private func connectUpstreamAndRun(firstBody: Data) {
         guard let port = NWEndpoint.Port(rawValue: UInt16(targetPort)) else {
@@ -207,20 +231,33 @@ public final class LayerMinusBridge {
 		}
 	}
     
-    private func scheduleCUFlush() {
+    private func scheduleCUFlush(allowExtend: Bool = true) {
         cuFlushTimer?.cancel()
-        let t = DispatchSource.makeTimerSource(queue: self.queue)
-        t.schedule(deadline: .now() + .milliseconds(2))
-        t.setEventHandler { [weak self] in self?.flushCUBuffer() }
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + .milliseconds(CU_FLUSH_MS))
+        t.setEventHandler { [weak self] in
+            guard let s = self else { return }
+            // 若到点仍然很小且允许再延一次，则小幅延时后再冲刷
+            if !s.closed, allowExtend, s.cuBuffer.count > 0, s.cuBuffer.count < s.CU_MIN_FLUSH_BYTES {
+                s.cuFlushTimer?.cancel()
+                let t2 = DispatchSource.makeTimerSource(queue: s.queue)
+                t2.schedule(deadline: .now() + .milliseconds(s.CU_EXTRA_MS))
+                t2.setEventHandler { [weak self] in self?.flushCUBuffer() }
+                s.cuFlushTimer = t2
+                t2.resume()
+            } else {
+                s.flushCUBuffer()
+            }
+        }
         cuFlushTimer = t
         t.resume()
     }
 
     private func flushCUBuffer() {
-        guard !cuBuffer.isEmpty else { return }
+        guard !cuBuffer.isEmpty, !closed else { return }
         let payload = cuBuffer
         cuBuffer.removeAll(keepingCapacity: true)
-        self.sendToUpstream(payload, remark: "c->u") // 仍走同一发送函数
+        self.sendToUpstream(payload, remark: "c->u")
     }
     
     private func pumpClientToUpstream() {
@@ -232,18 +269,23 @@ public final class LayerMinusBridge {
             
             if let err = err {
                 self.log("client recv err: \(err)")
-                self.cancel(reason: "client recv err")
+                
+                // 避免在 receive 回调栈内同步取消，引发重入/竞态
+                self.queue.async { self.cancel(reason: "client recv err") }
+                
+                
+                
+                
                 return
             }
             
             if let d = data, !d.isEmpty {
+                self.vlog("recv from client: \(d.count)B")
+                // 上行微批：累积到缓冲，达到阈值立即冲刷，否则启动一个很短的定时器
+                self.cuBuffer.append(d)
                 
-                self.log("recv from client: \(d.count)B")
                 
-                self.bytesUp &+= d.count
-                
-                self.cuBuffer.append(d)      // ✅ 先拆包为 d: Data
-                if self.cuBuffer.count >= 16 * 1024 {
+                if self.cuBuffer.count >= self.CU_FLUSH_BYTES {
                     self.flushCUBuffer()
                 } else {
                     self.scheduleCUFlush()
@@ -253,7 +295,8 @@ public final class LayerMinusBridge {
             
             if isComplete {
                 self.log("client EOF")
-                // 半关闭：仅关闭上游写入，继续读对端，等待残留数据
+                // 先把缓冲冲刷出去，再半关闭上游写入，进入排水期
+                self.flushCUBuffer()
                 self.upstream?.send(content: nil, completion: .contentProcessed({ _ in }))
                 self.scheduleDrainCancel(hint: "client EOF")
                 return
@@ -285,14 +328,17 @@ public final class LayerMinusBridge {
             
             if let err = err {
                 self.log("upstream recv err: \(err)")
-                self.cancel(reason: "upstream recv err")
+                self.queue.async { self.cancel(reason: "upstream recv err") }
                 return
             }
             
             if let d = data, !d.isEmpty {
-                self.log("recv from upstream: \(d.count)B")
+                self.vlog("recv from upstream: \(d.count)B")
                 if self.tFirstByte == nil {
                     self.tFirstByte = .now()
+                    
+                    
+                    self.firstByteWatchdog?.cancel(); self.firstByteWatchdog = nil
                     // KPI: 即时打印首字节到达延迟 (TTFB)
                     let ttfbMs = Double(self.tFirstByte!.uptimeNanoseconds &- self.tStart.uptimeNanoseconds) / 1e6
                     self.log(String(format: "KPI immediate TTFB_ms=%.1f", ttfbMs))
@@ -310,7 +356,7 @@ public final class LayerMinusBridge {
             
             if isComplete {
                 self.log("upstream EOF")
-                // 半关闭：仅关闭客户端写入，继续读客户端，等待尾部
+                // 半关闭客户端写入，进入排水期
                 self.client.send(content: nil, completion: .contentProcessed({ _ in }))
                 self.scheduleDrainCancel(hint: "upstream EOF")
                 return
@@ -330,45 +376,50 @@ public final class LayerMinusBridge {
             return
         }
         
-        log("send \(remark) \(data.count)B -> upstream")
+        let seq = { sendSeq &+= 1; return sendSeq }()
+        
+        inflight.insert(seq)
+        
+        vlog("send \(remark) \(data.count)B -> upstream #\(seq)")
         
         up.send(content: data, completion: .contentProcessed({ [weak self] err in
+            guard let self = self else { return }
+            // 去重：只处理一次完成回调
+            guard self.inflight.remove(seq) != nil else {
+                self.log("WARN dup completion for #\(seq), ignore")
+                return
+            }
             if let err = err {
-                self?.log("upstream send err: \(err)")
-                self?.cancel(reason: "upstream send err")
+                self.log("upstream send err: \(err)")
+                self.queue.async { self.cancel(reason: "upstream send err") }
+                return
+            }
+            // 发送成功日志 + 计数
+            if remark == "firstBody", self.tFirstSend == nil {
+                self.tFirstSend = .now()
+                self.log("sent firstBody successfully (mark tFirstSend)")
             } else {
-                // 标记首包发送完成时刻，用于 KPI: firstSend -> firstRecv
-                    if remark == "firstBody", let strong = self, strong.tFirstSend == nil {
-                        strong.tFirstSend = .now()
-                        strong.log("sent firstBody successfully (mark tFirstSend)")
-                    } else {
-                        // 发送成功
-                        self?.log("sent \(remark) successfully")
-                        // 仅在首包时设置 TTFB 看门狗
-                        if remark == "firstBody", let strong = self {
-                            // 识别测速上传：常见 8080 / *.ooklaserver.net / *.speedtest.net / *measurementlab*
-                            let isSpeedtestHost =
-                            strong.targetHost.hasSuffix("ooklaserver.net") ||
-                            strong.targetHost.hasSuffix("speedtest.net") ||
-                            strong.targetHost.contains("measurementlab")
-                            // 8080 的测速上传通常需要先发大量数据才有回包 → 放宽或禁用
-                            let disableWatchdog = (strong.targetPort == 8080) && isSpeedtestHost
-                            let watchdogDelay: TimeInterval = disableWatchdog ? 15.0 : 2.5
-    
-                            // 启动/或放宽首包回包看门狗
-                            strong.firstByteWatchdog?.cancel()
-                            let wd = DispatchSource.makeTimerSource(queue: strong.queue)
-                            wd.schedule(deadline: .now() + watchdogDelay)
-                            wd.setEventHandler { [weak strong] in
-                                guard let s = strong, !s.closed else { return }
-                                // 仍未收到上游首字节
-                                s.log("KPI watchdog: no first byte within \(Int(watchdogDelay*1000))ms after firstBody; fast-fail")
-                                s.cancel(reason: "first_byte_timeout")
-                            }
-                            strong.firstByteWatchdog = wd
-                            wd.resume()
-                        }
-                    }
+                self.vlog("sent \(remark) successfully")
+            }
+            self.bytesUp &+= data.count
+            // 仅在首包时设置 TTFB 看门狗
+            if remark == "firstBody" {
+                let isSpeedtestHost =
+                    self.targetHost.hasSuffix("ooklaserver.net") ||
+                    self.targetHost.hasSuffix("speedtest.net") ||
+                    self.targetHost.contains("measurementlab")
+                let disableWatchdog = (self.targetPort == 8080) && isSpeedtestHost
+                let watchdogDelay: TimeInterval = disableWatchdog ? 15.0 : 2.5
+                
+                let wd = DispatchSource.makeTimerSource(queue: self.queue)
+                wd.schedule(deadline: .now() + watchdogDelay)
+                wd.setEventHandler { [weak self] in
+                    guard let s = self, !s.closed else { return }
+                    s.log("KPI watchdog: no first byte within \(Int(watchdogDelay*1000))ms after firstBody; fast-fail")
+                    s.cancel(reason: "first_byte_timeout")
+                }
+                self.firstByteWatchdog = wd
+                wd.resume()
             }
         }))
     }
@@ -392,11 +443,12 @@ public final class LayerMinusBridge {
         log("send \(remark) \(data.count)B -> client")
         
         client.send(content: data, completion: .contentProcessed({ [weak self] err in
+            
             if let err = err {
                 self?.log("client send err: \(err)")
-                self?.cancel(reason: "client send err")
+                self?.queue.async { self?.cancel(reason: "client send err") }
             } else {
-                self?.log("sent \(remark) successfully")
+                self?.vlog("sent \(remark) successfully")
             }
         }))
     }

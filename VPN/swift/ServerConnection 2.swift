@@ -5,7 +5,7 @@ import os
 
 
 public final class ServerConnection {
-
+    
     public let id: UInt64
     public let client: NWConnection
     private let onClosed: ((UInt64) -> Void)?
