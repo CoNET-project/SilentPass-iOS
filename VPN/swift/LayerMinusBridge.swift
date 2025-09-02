@@ -115,7 +115,7 @@ public final class LayerMinusBridge {
     
     @inline(__always)
     private func log(_ msg: String) {
-        NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
+        //NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
     }
     
     // --- 追加KPI ---

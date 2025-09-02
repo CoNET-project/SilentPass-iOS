@@ -443,7 +443,7 @@ public final class ServerConnection {
 
     @inline(__always)
     private func log(_ msg: String) {
-        NSLog("[ServerConnection] #\(id) %@", msg)
+        //NSLog("[ServerConnection] #\(id) %@", msg)
     }
 
     public func start() {
