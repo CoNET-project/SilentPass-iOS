@@ -9,6 +9,10 @@ enum L {
 
 public final class LayerMinusBridge {
     
+    // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
+    private var saw100Continue = false
+    private var bodyBytesAfter100: Int = 0
+    
     private var sendSeq: UInt64 = 0
     private var inflight = Set<UInt64>()
     
@@ -316,6 +320,10 @@ public final class LayerMinusBridge {
                 self.vlog("recv from client: \(d.count)B")
                 // 上行微批：累积到缓冲，达到阈值立即冲刷，否则启动一个很短的定时器
                 self.cuBuffer.append(d)
+                // 若已收到上游的 100-Continue，则统计 100 之后客户端是否真的发了实体
+                if self.saw100Continue {
+                    self.bodyBytesAfter100 &+= d.count
+                }
                 
                 
                 if self.cuBuffer.count >= self.CU_FLUSH_BYTES {
@@ -333,11 +341,23 @@ public final class LayerMinusBridge {
             
             if isComplete {
                 self.log("client EOF")
+                
                 self.eofClient = true
+                
+                self.flushCUBuffer()
+                
                 // 先把缓冲冲刷出去，再半关闭上游写入，进入排水期
                 self.flushCUBuffer()
-                self.upstream?.send(content: nil, completion: .contentProcessed({ _ in }))
-                self.scheduleDrainCancel(hint: "client EOF")
+                // ★ 若已观测到上游发过 100-Continue，但客户端尚未发送任何实体，
+                //   暂不 half-close 上游（避免把请求体“宣告写完”）；仅进入空闲计时，等待自然收尾
+                if self.saw100Continue && self.bodyBytesAfter100 == 0 {
+                    self.scheduleDrainCancel(hint: "client EOF (deferred half-close due to 100-Continue)")
+                } else {
+                    // 常规路径：half-close 上游写端，再进入排水
+                    self.upstream?.send(content: nil, completion: .contentProcessed({ _ in }))
+                    self.scheduleDrainCancel(hint: "client EOF")
+                }
+                
                 return
             }
             
@@ -392,6 +412,15 @@ public final class LayerMinusBridge {
                     if let ts = self.tFirstSend {
                         let segMs = Double(self.tFirstByte!.uptimeNanoseconds &- ts.uptimeNanoseconds) / 1e6
                         self.log(String(format: "KPI firstSend_to_firstRecv_ms=%.1f", segMs))
+                    }
+                }
+                
+                // ★ 轻量识别 100-Continue（只看明文前缀；TLS 情况下这里拿到的是解密后的应用数据）
+                if !self.saw100Continue {
+                    if let s = String(data: d.prefix(16), encoding: .ascii),
+                       s.hasPrefix("HTTP/1.1 100") || s.hasPrefix("HTTP/1.0 100") {
+                        self.saw100Continue = true
+                        self.log("observed upstream HTTP 100-Continue")
                     }
                 }
                 
