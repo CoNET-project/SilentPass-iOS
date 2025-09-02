@@ -603,6 +603,8 @@ public final class ServerConnection {
             self.bridge = newBridge
             self.onRoutingDecided?(self)
             
+            // KPI：标记 handoff 时刻（与 Bridge.tStart 对齐）
+            
             // 传递 Base64 编码的首包给 bridge
             newBridge.start(withFirstBody: b64)
             return
@@ -625,7 +627,8 @@ public final class ServerConnection {
                     let pre_request = self.layerMinus.createValidatorData(node: egressNode, responseData: cmd)
                     let request = self.layerMinus.makeRequest(host: entryNode.ip_addr, data: pre_request)
                     
-                    self.log("Layer Minus \(self.id) \(host):\(port) packaged success: \(entryNode.ip_addr), egress \(egressNode.ip_addr) \(request)")
+                    self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryNode.ip_addr) egress=\(egressNode.ip_addr)")
+                    
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,
