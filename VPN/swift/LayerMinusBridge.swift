@@ -12,7 +12,23 @@ public final class LayerMinusBridge {
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0
-    
+
+    // —— Speedtest 特征流：直发与“上行卡住”探测
+    private var smallC2UEvents = 0
+    private var bytesUpAtFirstSend = 0
+    private var uploadStuckTimer: DispatchSourceTimer?
+    private var uploadStuck = false
+    @inline(__always)
+    private var isSpeedtestTarget: Bool {
+        // 仅对 8080/443 且域名命中测速特征的连接生效
+        let h = targetHost.lowercased()
+        return (targetPort == 8080 || targetPort == 443) &&
+               (h.hasSuffix("ooklaserver.net")
+                 || h.hasSuffix("speedtest.net")
+                 || h.contains("measurementlab")
+                 || h.contains("mlab"))
+    }
+
     private var sendSeq: UInt64 = 0
     private var inflight = Set<UInt64>()
     
@@ -165,6 +181,10 @@ public final class LayerMinusBridge {
         firstByteWatchdog?.cancel(); firstByteWatchdog = nil
         drainTimer?.setEventHandler {}
         drainTimer?.cancel(); drainTimer = nil
+
+        uploadStuckTimer?.setEventHandler {}
+        uploadStuckTimer?.cancel(); uploadStuckTimer = nil
+
         cuFlushTimer?.setEventHandler {}
         cuFlushTimer?.cancel(); cuFlushTimer = nil
         
@@ -318,23 +338,32 @@ public final class LayerMinusBridge {
             if let d = data, !d.isEmpty {
                 
                 self.vlog("recv from client: \(d.count)B")
-                // 上行微批：累积到缓冲，达到阈值立即冲刷，否则启动一个很短的定时器
-                self.cuBuffer.append(d)
+
+                // —— 仅对测速流的 30–100B 小块“直发”，其余仍按微批策略处理
+                if self.isSpeedtestTarget && (30...100).contains(d.count) {
+                    self.smallC2UEvents &+= 1
+                    self.sendToUpstream(d, remark: "c->u")
+                } else {
+                    // 其它：累积到缓冲，达到阈值立即冲刷，否则启动短定时器
+                    self.cuBuffer.append(d)
+                }
+
+
                 // 若已收到上游的 100-Continue，则统计 100 之后客户端是否真的发了实体
                 if self.saw100Continue {
                     self.bodyBytesAfter100 &+= d.count
                 }
-                
-                
-                if self.cuBuffer.count >= self.CU_FLUSH_BYTES {
-                    self.flushCUBuffer()
-                } else {
-                    self.scheduleCUFlush()
+
+
+                if !self.isSpeedtestTarget {
+                    if self.cuBuffer.count >= self.CU_FLUSH_BYTES { self.flushCUBuffer() }
+                    else { self.scheduleCUFlush() }
                 }
-                
-                // 若上游已 EOF（half-close），但客户端仍在发数据，则刷新空闲计时器，避免早收尾
-                if self.eofUpstream {
-                    self.scheduleDrainCancel(hint: "upstream EOF (client->upstream activity)")
+
+                // 仅当本次不是“测速小块直发”时，才参与微批触发判断
+                if !(self.isSpeedtestTarget && (30...100).contains(d.count)) {
+                    if self.cuBuffer.count >= self.CU_FLUSH_BYTES { self.flushCUBuffer() }
+                    else { self.scheduleCUFlush() }
                 }
             }
             
@@ -343,14 +372,14 @@ public final class LayerMinusBridge {
                 self.log("client EOF")
                 
                 self.eofClient = true
-                
+
+                // 先把缓冲冲刷出去，再进入排水期/或酌情 half-close
                 self.flushCUBuffer()
-                
-                // 先把缓冲冲刷出去，再半关闭上游写入，进入排水期
-                self.flushCUBuffer()
+
+
                 // ★ 若已观测到上游发过 100-Continue，但客户端尚未发送任何实体，
                 //   暂不 half-close 上游（避免把请求体“宣告写完”）；仅进入空闲计时，等待自然收尾
-                if self.saw100Continue && self.bodyBytesAfter100 == 0 {
+                if (self.saw100Continue && self.bodyBytesAfter100 == 0) || self.uploadStuck {
                     self.scheduleDrainCancel(hint: "client EOF (deferred half-close due to 100-Continue)")
                 } else {
                     // 常规路径：half-close 上游写端，再进入排水
@@ -479,13 +508,41 @@ public final class LayerMinusBridge {
                 self.queue.async { self.cancel(reason: "upstream send err") }
                 return
             }
+
+
             // 发送成功日志 + 计数
-            if remark == "firstBody", self.tFirstSend == nil {
+            if remark == "firstBody" && self.tFirstSend == nil {
                 self.tFirstSend = .now()
                 self.log("sent firstBody successfully (mark tFirstSend)")
+
+                // —— Speedtest “上行卡住”探测：首包发出后启动 8s 观察窗口
+                if self.isSpeedtestTarget {
+                    self.bytesUpAtFirstSend = self.bytesUp
+                    self.uploadStuckTimer?.cancel()
+                    let t = DispatchSource.makeTimerSource(queue: self.queue)
+
+                    t.schedule(deadline: .now() + .seconds(8))
+                    t.setEventHandler { [weak self] in
+                        guard let s = self, s.alive() else { return }
+                        let upDelta = max(0, s.bytesUp - s.bytesUpAtFirstSend)
+                        if upDelta < 8 * 1024 && s.smallC2UEvents >= 6 && !s.uploadStuck {
+                            s.uploadStuck = true
+                            s.log("UPLOAD_STUCK origin=\(s.targetHost):\(s.targetPort) up=\(upDelta)B down=\(s.bytesDown)B small_events=\(s.smallC2UEvents)")
+                            // 仅延后收尾由 drain idle 控制（不主动 half-close）
+                            s.scheduleDrainCancel(hint: "UPLOAD_STUCK")
+                        }
+                    }
+                    
+                    self.uploadStuckTimer = t
+                    t.resume()
+                }
+
+
             } else {
                 self.vlog("sent \(remark) successfully")
             }
+
+
             self.bytesUp &+= data.count
             // 仅在首包时设置 TTFB 看门狗
             if remark == "firstBody" {

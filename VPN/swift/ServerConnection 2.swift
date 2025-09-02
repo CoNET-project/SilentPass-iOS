@@ -240,7 +240,7 @@ private struct AdBlacklist {
 private struct Allowlist {
     // 可按需扩充；示例以常见业务域/必要依赖为主，避免误伤
     static let patterns: [String] = [
-       "conet.network",
+        "conet.network",
         "silentpass.io",
         "openpgp.online",
         "comm100vue.com",
@@ -330,17 +330,24 @@ private struct Allowlist {
     static let regexps: [NSRegularExpression] = [] // 如需正则白名单可补充
     @inline(__always)
     static func matches(_ host: String) -> Bool {
+        // 统一用“标签后缀匹配”：root 或者以 ".root" 结尾都算命中
+        @inline(__always)
+        func labelSuffixMatch(_ h: String, _ root: String) -> Bool {
+            if h == root { return true }
+            return h.hasSuffix("." + root)
+        }
+
         let h = host.lowercased()
         for p in patterns {
-            let pat = p.lowercased()
-            if pat.hasPrefix("*.") {
-                let suf = String(pat.dropFirst(1))      // ".google.com"
-                let root = String(suf.dropFirst(1))     // "google.com"
-                if h == root || h.hasSuffix(suf) { return true }
-            } else if h == pat {
-                return true
+            var root = p.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if root.hasPrefix("*.") {
+                root.removeFirst(2)        // "*.example.com" -> "example.com"
             }
+            guard !root.isEmpty else { continue }
+            if labelSuffixMatch(h, root) { return true }
+
         }
+        
         for re in regexps {
             let r = NSRange(location: 0, length: h.utf16.count)
             if re.firstMatch(in: h, options: [], range: r) != nil { return true }
