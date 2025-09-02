@@ -3,8 +3,260 @@ import Network
 import os
 
 
+// --- 广告黑名单（支持精确与前缀 *. 通配后缀匹配） ---
+private struct AdBlacklist {
+    // 可继续扩充；保持短小，命中即废止代理
+    static let patterns: [String] = [
+        "doubleclick.net",
+        "googleadservices.com",
+        "googlesyndication.com",
+        "googletagmanager.com",
+        "googletagservices.com",
+        "google-analytics.com",
+        "googleanalytics.com",
+        "adsystem.com",
+        "adsrvr.org",
+        "onetrust.com",
+        "liadm.com",
+
+        // Facebook/Meta
+        "facebook-analytics.com",
+        "fbcdn.net",
+
+        // Amazon
+        "amazon-adsystem.com",
+        "amazontrust.com",
+
+        // Microsoft
+        "adsrvr.org",
+        "bing.com",
+        "msftconnecttest.com",
+
+        // 通用广告网络
+        "adsrvr.org",
+        "adnxs.com",
+        "adzerk.net",
+        "pubmatic.com",
+        "criteo.com",
+        "criteo.net",
+        "casalemedia.com",
+        "openx.net",
+        "rubiconproject.com",
+        "serving-sys.com",
+        "taboola.com",
+        "outbrain.com",
+        "media.net",
+        "yieldmo.com",
+        "3lift.com",
+        "indexexchange.com",
+        "sovrn.com",
+        "sharethrough.com",
+        "spotx.tv",
+        "springserve.com",
+        "tremor.io",
+        "tribalfusion.com",
+        "undertone.com",
+        "yieldlab.net",
+        "yieldmanager.com",
+        "zedo.com",
+        "zemanta.com",
+
+        // 分析和跟踪
+        "scorecardresearch.com",
+        "quantserve.com",
+        "imrworldwide.com",
+        "nielsen.com",
+        "alexa.com",
+        "hotjar.com",
+        "mouseflow.com",
+        "luckyorange.com",
+        "clicktale.com",
+        "demdex.net",
+        "krxd.net",
+        "bluekai.com",
+        "exelator.com",
+        "mathtag.com",
+        "turn.com",
+        "acuityplatform.com",
+        "adform.net",
+        "bidswitch.net",
+        "contextweb.com",
+        "districtm.io",
+        "emxdgt.com",
+        "gumgum.com",
+        "improve-digital.com",
+        "inmobi.com",
+        "loopme.com",
+        "mobfox.com",
+        "nexage.com",
+        "rhythmone.com",
+        "smaato.com",
+        "smartadserver.com",
+        "stroeer.io",
+        "teads.tv",
+        "triplelift.com",
+        "verizonmedia.com",
+        "vertamedia.com",
+        "video.io",
+        "viralize.com",
+        "weborama.com",
+        "widespace.com",
+
+        // 中国广告网络
+        "baidu.com",
+        "tanx.com",
+        "mediav.com",
+        "admaster.com.cn",
+        "dsp.com",
+        "vamaker.com",
+        "allyes.com",
+        "ipinyou.com",
+        "irs01.com",
+        "istreamsche.com",
+        "jusha.com",
+        "knet.cn",
+        "madserving.com",
+        "miaozhen.com",
+        "mmstat.com",
+        "moad.cn",
+        "mobaders.com",
+        "mydas.mobi",
+        "n.shifen.com",
+        "netease.gg",
+        "newrelic.com",
+        "nexac.com",
+        "ntalker.com",
+        "nylalobghyhirgh.com",
+        "o2omobi.com",
+        "oimagea2.ydstatic.com",
+        "optaim.com",
+        "optimix.asia",
+        "optimizely.com",
+        "overture.com",
+        "p0y.cn",
+        "pagead.l.google.com",
+        "pageadimg.l.google.com",
+        "pbcdn.com",
+        "pingdom.net",
+        "pixanalytics.com",
+        "ppjia55.com",
+        "punchbox.org",
+        "qchannel01.cn",
+        "qiyou.com",
+        "qtmojo.com",
+        "quantcount.com",
+
+        // 恶意软件和垃圾邮件
+        "2o7.net",
+        "omtrdc.net",
+        "everesttech.net",
+        "everest-tech.net",
+        "rubiconproject.com",
+        "adsafeprotected.com",
+        "adsymptotic.com",
+        "adtechjp.com",
+        "advertising.com",
+        "evidon.com",
+        "voicefive.com",
+        "buysellads.com",
+        "carbonads.com",
+        "cdn.ampproject.org",
+
+        // 更多跟踪器
+        "mixpanel.com",
+        "kissmetrics.com",
+        "segment.com",
+        "segment.io",
+        "keen.io",
+        "amplitude.com",
+        "appsflyer.com",
+        "branch.io",
+        "adjust.com",
+        "kochava.com",
+        "tenjin.io",
+        "singular.net",
+        "apptentive.com",
+        "appboy.com",
+        "braze.com",
+        "customer.io",
+        "intercom.io",
+        "drift.com",
+        "zendesk.com"
+    ]
+    
+static let regexps: [NSRegularExpression] = {
+    let raw = [
+    ".*\\.(doubleclick|googleadservices|googlesyndication|google-analytics|adsrvr|adnxs|pubmatic|criteo|casalemedia|openx|rubiconproject|taboola|outbrain|scorecardresearch|quantserve|demdex|krxd)\\..*",
+    "^ad[sxvmn]?\\d*[.-].*",
+    "^.*[.-]ad[sxvmn]?\\d*[.-].*",
+    "^banner[sz]?[.-].*",
+    "^.*[.-]banner[sz]?[.-].*",
+	"^track(er|ing)?[.-].*",
+	"^.*[.-]track(er|ing)?[.-].*",
+	"^stat[sz]?[.-].*",
+	"^.*[.-]stat[sz]?[.-].*",
+	"^analytics?[.-].*",
+	"^.*[.-]analytics?[.-].*",
+	"^metric[sz]?[.-].*",
+	"^.*[.-]metric[sz]?[.-].*",
+	"^telemetry[.-].*",
+	"^.*[.-]telemetry[.-].*",
+	"^pixel[.-].*",
+	"^.*[.-]pixel[.-].*",
+	"^click[.-].*",
+	"^.*[.-]click[.-].*",
+	"^counter[.-].*",
+	"^.*[.-]counter[.-].*",
+	"^beacon[.-].*",
+	"^.*[.-]beacon[.-].*"
+	]
+	return raw.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+}()
+
+    @inline(__always)
+    static func matches(_ host: String) -> Bool {
+        let h = host.lowercased()
+        for p in patterns {
+            let pat = p.lowercased()
+            if pat.hasPrefix("*.") {
+                let suf = String(pat.dropFirst(1)) // ".example.com"
+                if h.hasSuffix(suf) { return true }
+            } else if h == pat {
+                return true
+            }
+        }
+		// 额外正则匹配
+		for re in regexps {
+			let range = NSRange(location: 0, length: h.utf16.count)
+			if re.firstMatch(in: h, options: [], range: range) != nil {
+				return true
+			}
+		}
+		return false
+    }
+}
+
 
 public final class ServerConnection {
+    
+    // 命中黑名单 → 立即废止（HTTP 返回 403；SOCKS5 返回 0x02），统一在 ServerConnection 的 queue 上执行
+    @inline(__always)
+    private func shouldBlock(host: String) -> Bool {
+        return AdBlacklist.matches(host)
+    }
+    private func blockHTTPForbiddenAndClose(_ reason: String) {
+        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        client.send(content: resp.data(using: .utf8), completion: .contentProcessed({ [weak self] _ in
+            self?.close(reason: "blocked by blacklist (\(reason))")
+        }))
+    }
+    private func blockSocksAndClose(_ reason: String) {
+        // 0x02: connection not allowed by ruleset
+        let reply = Data([0x05, 0x02, 0x00, 0x01, 0,0,0,0, 0,0])
+        client.send(content: reply, completion: .contentProcessed({ [weak self] _ in
+            self?.close(reason: "blocked by blacklist (\(reason))")
+        }))
+    }
     
     public let id: UInt64
     public let client: NWConnection
@@ -248,6 +500,14 @@ public final class ServerConnection {
             // 等待到首部结束后再消费（更稳妥）
             guard let headerEnd = recvBuffer.range(of: CRLFCRLF) else { return false }
 
+            // --- 黑名单：直接 403 并关闭 ---
+            if shouldBlock(host: hp.host) {
+                // 丢弃首部以免后续误处理
+                recvBuffer.removeSubrange(recvBuffer.startIndex..<headerEnd.upperBound)
+                log("HTTP CONNECT \(hp.host):\(hp.port) blocked by blacklist")
+                blockHTTPForbiddenAndClose("HTTP CONNECT \(hp.host)")
+                return true
+            }
             
             // 丢弃 CONNECT 请求首部
             recvBuffer.removeSubrange(recvBuffer.startIndex..<headerEnd.upperBound)
@@ -255,6 +515,8 @@ public final class ServerConnection {
             
             // 发送 200 Established
             let established = "HTTP/1.1 200 Connection Established\r\nProxy-Agent: vpn2socks\r\n\r\n"
+            
+            
             client.send(content: established.data(using: .utf8), completion: .contentProcessed({ [weak self] err in
                 if let err = err { self?.log("send CONNECT 200 err: \(err)") }
             }))
@@ -296,6 +558,15 @@ public final class ServerConnection {
                 rawPath: rawPath,
                 hostHeader: hostHeader
             )
+        
+            // --- 黑名单：明文 HTTP 直接 403 并关闭 ---
+            if shouldBlock(host: targetHost) {
+                // 消费缓冲，避免遗留
+                recvBuffer.removeAll(keepingCapacity: false)
+                log("HTTP \(method) \(targetHost):\(targetPort) blocked by blacklist")
+                blockHTTPForbiddenAndClose("HTTP \(method) \(targetHost)")
+                return true
+            }
 
             // 重写第一行：METHOD SP originPath SP HTTP/version
             let newFirstLine = "\(method) \(originPath) HTTP/\(version)"
@@ -483,6 +754,15 @@ public final class ServerConnection {
             let port = (Int(portBytes[0]) << 8) | Int(portBytes[1])
             
             recvBuffer.removeFirst(1 + n + 2)
+            
+            // --- 黑名单：SOCKS5 直接按规则禁止 ---
+            if shouldBlock(host: host) {
+                log("SOCKS5 CONNECT \(host):\(port) blocked by blacklist")
+                blockSocksAndClose("SOCKS5 \(host)")
+                return true
+            }
+            
+            
             return didGetTarget(host: host, port: port)
 
         case 0x04: // IPv6: 16 + 2
