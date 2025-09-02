@@ -184,34 +184,34 @@ private struct AdBlacklist {
         "zendesk.com"
     ]
     
-static let regexps: [NSRegularExpression] = {
-    let raw = [
-    ".*\\.(doubleclick|googleadservices|googlesyndication|google-analytics|adsrvr|adnxs|pubmatic|criteo|casalemedia|openx|rubiconproject|taboola|outbrain|scorecardresearch|quantserve|demdex|krxd)\\..*",
-    "^ad[sxvmn]?\\d*[.-].*",
-    "^.*[.-]ad[sxvmn]?\\d*[.-].*",
-    "^banner[sz]?[.-].*",
-    "^.*[.-]banner[sz]?[.-].*",
-	"^track(er|ing)?[.-].*",
-	"^.*[.-]track(er|ing)?[.-].*",
-	"^stat[sz]?[.-].*",
-	"^.*[.-]stat[sz]?[.-].*",
-	"^analytics?[.-].*",
-	"^.*[.-]analytics?[.-].*",
-	"^metric[sz]?[.-].*",
-	"^.*[.-]metric[sz]?[.-].*",
-	"^telemetry[.-].*",
-	"^.*[.-]telemetry[.-].*",
-	"^pixel[.-].*",
-	"^.*[.-]pixel[.-].*",
-	"^click[.-].*",
-	"^.*[.-]click[.-].*",
-	"^counter[.-].*",
-	"^.*[.-]counter[.-].*",
-	"^beacon[.-].*",
-	"^.*[.-]beacon[.-].*"
-	]
-	return raw.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
-}()
+    static let regexps: [NSRegularExpression] = {
+        let raw = [
+        ".*\\.(doubleclick|googleadservices|googlesyndication|google-analytics|adsrvr|adnxs|pubmatic|criteo|casalemedia|openx|rubiconproject|taboola|outbrain|scorecardresearch|quantserve|demdex|krxd)\\..*",
+        "^ad[sxvmn]?\\d*[.-].*",
+        "^.*[.-]ad[sxvmn]?\\d*[.-].*",
+        "^banner[sz]?[.-].*",
+        "^.*[.-]banner[sz]?[.-].*",
+        "^track(er|ing)?[.-].*",
+        "^.*[.-]track(er|ing)?[.-].*",
+        "^stat[sz]?[.-].*",
+        "^.*[.-]stat[sz]?[.-].*",
+        "^analytics?[.-].*",
+        "^.*[.-]analytics?[.-].*",
+        "^metric[sz]?[.-].*",
+        "^.*[.-]metric[sz]?[.-].*",
+        "^telemetry[.-].*",
+        "^.*[.-]telemetry[.-].*",
+        "^pixel[.-].*",
+        "^.*[.-]pixel[.-].*",
+        "^click[.-].*",
+        "^.*[.-]click[.-].*",
+        "^counter[.-].*",
+        "^.*[.-]counter[.-].*",
+        "^beacon[.-].*",
+        "^.*[.-]beacon[.-].*"
+        ]
+        return raw.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+    }()
 
     @inline(__always)
     static func matches(_ host: String) -> Bool {
@@ -236,6 +236,119 @@ static let regexps: [NSRegularExpression] = {
     }
 }
 
+// --- 白名单（命中则本地直连，不走 LayerMinus 打包） ---
+private struct Allowlist {
+    // 可按需扩充；示例以常见业务域/必要依赖为主，避免误伤
+    static let patterns: [String] = [
+       "conet.network",
+        "silentpass.io",
+        "openpgp.online",
+        "comm100vue.com",
+        "comm100.io",
+        // Apple Push 相关
+        "conet.network",
+        "apple.com",
+        "push.apple.com",
+        "icloud.com",
+        "push-apple.com.akadns.net",
+        "silentpass.io",
+        "courier.push.apple.com",
+        "gateway.push.apple.com",
+        "gateway.sandbox.push.apple.com",
+        "gateway.icloud.com",
+        "bag.itunes.apple.com",
+        "init.itunes.apple.com",
+        "xp.apple.com",
+        "gsa.apple.com",
+        "gsp-ssl.ls.apple.com",
+        "gsp-ssl.ls-apple.com.akadns.net",
+        "mesu.apple.com",
+        "gdmf.apple.com",
+        "deviceenrollment.apple.com",
+        "mdmenrollment.apple.com",
+        "iprofiles.apple.com",
+        "ppq.apple.com",
+
+        // 🔥 微信（WeChat）相关域名
+        "wechat.com",
+        "weixin.qq.com",
+        "weixin110.qq.com",
+        "tenpay.com",
+        "mm.taobao.com",
+        "wx.qq.com",
+        "web.wechat.com",
+        "webpush.weixin.qq.com",
+        "qpic.cn",
+        "qlogo.cn",
+        "wx.gtimg.com",
+        "minorshort.weixin.qq.com",
+        "log.weixin.qq.com",
+        "szshort.weixin.qq.com",
+        "szminorshort.weixin.qq.com",
+        "szextshort.weixin.qq.com",
+        "hkshort.weixin.qq.com",
+        "hkminorshort.weixin.qq.com",
+        "hkextshort.weixin.qq.com",
+        "hklong.weixin.qq.com",
+        "sgshort.wechat.com",
+        "sgminorshort.wechat.com",
+        "sglong.wechat.com",
+        "usshort.wechat.com",
+        "usminorshort.wechat.com",
+        "uslong.wechat.com",
+
+        // 微信支付
+        "pay.weixin.qq.com",
+        "payapp.weixin.qq.com",
+
+        // 微信文件传输
+        "file.wx.qq.com",
+        "support.weixin.qq.com",
+
+        // 微信 CDN
+        "mmbiz.qpic.cn",
+        "mmbiz.qlogo.cn",
+        "mmsns.qpic.cn",
+
+        // 腾讯推送服务
+        "dns.weixin.qq.com",
+        "short.weixin.qq.com",
+        "long.weixin.qq.com",
+
+        "doubleclick.net",
+        "pubmatic.com",
+        "adnxs.com",
+        "rubiconproject.com",
+
+        "adsrvr.org",
+        "criteo.com",
+
+        "taboola.com",
+        "yahoo.com",
+        "publicsuffix.org"
+    ]
+    static let regexps: [NSRegularExpression] = [] // 如需正则白名单可补充
+    @inline(__always)
+    static func matches(_ host: String) -> Bool {
+        let h = host.lowercased()
+        for p in patterns {
+            let pat = p.lowercased()
+            if pat.hasPrefix("*.") {
+                let suf = String(pat.dropFirst(1))      // ".google.com"
+                let root = String(suf.dropFirst(1))     // "google.com"
+                if h == root || h.hasSuffix(suf) { return true }
+            } else if h == pat {
+                return true
+            }
+        }
+        for re in regexps {
+            let r = NSRange(location: 0, length: h.utf16.count)
+            if re.firstMatch(in: h, options: [], range: r) != nil { return true }
+        }
+        return false
+    }
+}
+
 
 public final class ServerConnection {
     
@@ -257,7 +370,13 @@ public final class ServerConnection {
             self?.close(reason: "blocked by blacklist (\(reason))")
         }))
     }
-    
+
+    // 命中白名单 → 直连（由 ServerConnection 决策，不走 LM 打包）
+    @inline(__always)
+    private func shouldDirect(host: String) -> Bool {
+        return Allowlist.matches(host)
+    }
+
     public let id: UInt64
     public let client: NWConnection
     private let onClosed: ((UInt64) -> Void)?
@@ -292,6 +411,9 @@ public final class ServerConnection {
     private var handedOff = false
     private var bridge: LayerMinusBridge?
     private var layerMinus: LayerMinus
+
+    // 路由决策：是否使用 LayerMinus 打包（默认 true）
+    private var useLayerMinus: Bool = true
 
     init(
         id: UInt64,
@@ -500,6 +622,14 @@ public final class ServerConnection {
             // 等待到首部结束后再消费（更稳妥）
             guard let headerEnd = recvBuffer.range(of: CRLFCRLF) else { return false }
 
+            // --- 白名单：直连，不走 LayerMinus ---
+            if shouldDirect(host: hp.host) {
+                useLayerMinus = false
+                log("HTTP CONNECT \(hp.host):\(hp.port) matched allowlist -> DIRECT")
+            } else {
+                useLayerMinus = true
+            }
+
             // --- 黑名单：直接 403 并关闭 ---
             if shouldBlock(host: hp.host) {
                 // 丢弃首部以免后续误处理
@@ -558,7 +688,15 @@ public final class ServerConnection {
                 rawPath: rawPath,
                 hostHeader: hostHeader
             )
-        
+
+            // --- 白名单：命中则本地直连，不走 LM ---
+            if shouldDirect(host: targetHost) {
+                useLayerMinus = false
+                log("HTTP \(method) \(targetHost):\(targetPort) matched allowlist -> DIRECT")
+            } else {
+                useLayerMinus = true
+            }
+
             // --- 黑名单：明文 HTTP 直接 403 并关闭 ---
             if shouldBlock(host: targetHost) {
                 // 消费缓冲，避免遗留
@@ -754,7 +892,16 @@ public final class ServerConnection {
             let port = (Int(portBytes[0]) << 8) | Int(portBytes[1])
             
             recvBuffer.removeFirst(1 + n + 2)
-            
+
+            // --- 白名单：命中则直连 ---
+
+            if shouldDirect(host: host) {
+                useLayerMinus = false
+                log("SOCKS5 CONNECT \(host):\(port) matched allowlist -> DIRECT")
+            } else {
+                useLayerMinus = true
+            }
+
             // --- 黑名单：SOCKS5 直接按规则禁止 ---
             if shouldBlock(host: host) {
                 log("SOCKS5 CONNECT \(host):\(port) blocked by blacklist")
@@ -861,12 +1008,12 @@ public final class ServerConnection {
         handedOff = true
         phase = .bridged
         
-        //log("Handing off to LayerMinusBridge, no longer receiving from client")
-        guard let egressNode = self.layerMinus.getRandomEgressNodes(),
+        
+        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
               let entryNode = self.layerMinus.getRandomEntryNodes(),
               !egressNode.isEmpty,
               !entryNode.isEmpty else {
-            let connectInfo = "origin=\(host):\(port) layerMinus node isEmpty, using DIRECT CONNECT"
+            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, using DIRECT CONNECT"
             // 创建并启动 LayerMinusBridge，保存引用
             let newBridge = LayerMinusBridge(
                 id: self.id,
@@ -897,11 +1044,14 @@ public final class ServerConnection {
         } else {
             self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
         }
-            
+
+
         
         let message = self.layerMinus.makeSocksRequest(host: host, port: port, body: b64, command: "CONNECT")
         let messageData = message.data(using: .utf8)!
         let account = self.layerMinus.keystoreManager.addresses![0]
+
+
         Task{
             let signMessage = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
             if let callFun2 = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message") {
