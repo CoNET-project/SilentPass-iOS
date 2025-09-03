@@ -356,8 +356,230 @@ private struct Allowlist {
     }
 }
 
+private final class NodeQoS {
+    static let shared = NodeQoS()
+    
+    private let alpha: Double = 0.30
+    private var map: [String: Stat] = [:]
+    private let q = DispatchQueue(label: "NodeQoS.lock", qos: .userInitiated)
+    
+    private struct Stat {
+        var ewmaMs: Double
+        var samples: Int
+        var bannedUntil: Date?
+        var cooldownUntil: Date?
+        var successCount: Int = 0  // 新增：成功连接计数
+        var failureCount: Int = 0  // 新增：失败连接计数
+        var lastUsed: Date?        // 新增：最后使用时间
+        var activeConnections: Int = 0  // 新增：当前活跃连接数
+    }
+    
+    // 冷却映射参数
+    private let cooldownMinTTFBms: Double = 300
+    private let cooldownMaxTTFBms: Double = 900
+    private let cooldownMinSec: Double = 30
+    private let cooldownMaxSec: Double = 60
+    
+    // 新增：负载均衡参数
+    private let maxActivePerNode: Int = 50  // 每个节点最大活跃连接数
+    private let loadBalanceWindow: TimeInterval = 60  // 负载均衡时间窗口（秒）
+    
+    private func cooldownSeconds(for ttfbMs: Double) -> TimeInterval {
+        if ttfbMs <= cooldownMinTTFBms { return 0 }
+        if ttfbMs >= cooldownMaxTTFBms { return cooldownMaxSec }
+        let r = (ttfbMs - cooldownMinTTFBms) / (cooldownMaxTTFBms - cooldownMinTTFBms)
+        return cooldownMinSec + r * (cooldownMaxSec - cooldownMinSec)
+    }
+    
+    // 记录成功响应
+    func recordSuccess(ip: String, ttfbMs: Double) {
+        q.sync {
+            var s = map[ip] ?? Stat(ewmaMs: ttfbMs, samples: 0, bannedUntil: nil, cooldownUntil: nil)
+            s.ewmaMs = (s.samples == 0) ? ttfbMs : (alpha * ttfbMs + (1 - alpha) * s.ewmaMs)
+            s.samples &+= 1
+            s.successCount &+= 1
+            s.bannedUntil = nil
+            s.lastUsed = Date()
+            
+            let cool = cooldownSeconds(for: ttfbMs)
+            s.cooldownUntil = cool > 0 ? Date().addingTimeInterval(cool) : nil
+            
+            map[ip] = s
+            NSLog("[NodeQoS] success ip=\(ip) ttfb=\(Int(ttfbMs))ms ewma=\(Int(s.ewmaMs))ms cooldown=\(Int(cool))s")
+        }
+    }
+    
+    // 记录失败
+    func recordNoResponse(ip: String) {
+        q.sync {
+            var s = map[ip] ?? Stat(ewmaMs: 5_000, samples: 0, bannedUntil: nil, cooldownUntil: nil)
+            s.failureCount &+= 1
+            s.bannedUntil = Date().addingTimeInterval(5 * 60)
+            s.lastUsed = Date()
+            map[ip] = s
+        }
+    }
+    
+    // 新增：记录连接开始
+    func recordConnectionStart(ip: String) {
+        q.sync {
+            var s = map[ip] ?? Stat(ewmaMs: 1000, samples: 0, bannedUntil: nil, cooldownUntil: nil)
+            s.activeConnections &+= 1
+            s.lastUsed = Date()
+            map[ip] = s
+        }
+    }
+    
+    // 新增：记录连接结束
+    func recordConnectionEnd(ip: String) {
+        q.sync {
+            if var s = map[ip] {
+                s.activeConnections = max(0, s.activeConnections - 1)
+                map[ip] = s
+            }
+        }
+    }
+    
+    // 新增：获取节点评分（用于选择最佳节点）
+    func getNodeScore(ip: String) -> Double? {
+        return q.sync {
+            let now = Date()
+            
+            // 检查是否被禁用
+            if let s = map[ip], let b = s.bannedUntil, b > now {
+                return nil
+            }
+            
+            // 检查是否在冷却期
+            if let s = map[ip], let c = s.cooldownUntil, c > now {
+                return nil
+            }
+            
+            // 检查活跃连接数是否超限
+            if let s = map[ip], s.activeConnections >= maxActivePerNode {
+                return nil
+            }
+            
+            // 计算节点评分
+            if let s = map[ip] {
+                let successRate = s.samples > 0 ?
+                    Double(s.successCount) / Double(s.successCount + s.failureCount) : 0.5
+                let latencyScore = 1000.0 / max(s.ewmaMs, 1.0)  // 延迟越低，分数越高
+                let loadScore = 1.0 - (Double(s.activeConnections) / Double(maxActivePerNode))
+                
+                // 最近使用奖励（避免节点长期闲置）
+                let recencyBonus: Double
+                if let lastUsed = s.lastUsed {
+                    let timeSinceUse = now.timeIntervalSince(lastUsed)
+                    recencyBonus = min(timeSinceUse / loadBalanceWindow, 1.0) * 0.1
+                } else {
+                    recencyBonus = 0.2  // 新节点奖励
+                }
+                
+                // 综合评分：成功率40% + 延迟30% + 负载20% + 近期使用10%
+                return successRate * 0.4 + latencyScore * 0.3 + loadScore * 0.2 + recencyBonus
+            }
+            
+            // 未知节点给予探索机会
+            return 0.5
+        }
+    }
+    
+    // 是否允许使用（保留兼容性）
+    func shouldAccept(ip: String) -> Bool {
+        return getNodeScore(ip: ip) != nil
+    }
+}
+
+// ==========================================
+
 
 public final class ServerConnection {
+    
+    // 增强的入口节点选择策略
+    private func selectBestEntryNode() -> Node? {
+        // 获取所有可用的入口节点
+        guard let allEntryNodes = self.layerMinus.getAllEntryNodes(),
+              !allEntryNodes.isEmpty else {
+            log("No entry nodes available")
+            return nil
+        }
+        
+        // 计算每个节点的评分
+        var nodeScores: [(node: Node, score: Double)] = []
+        
+        for node in allEntryNodes {
+            if let score = NodeQoS.shared.getNodeScore(ip: node.ip_addr) {
+                nodeScores.append((node, score))
+            }
+        }
+        
+        // 如果没有可用节点，尝试使用随机节点探索
+        if nodeScores.isEmpty {
+            log("All nodes filtered by QoS, attempting random exploration")
+            return allEntryNodes.randomElement()
+        }
+        
+        // 使用加权随机选择策略
+        return weightedRandomSelection(from: nodeScores)
+    }
+    
+    // 加权随机选择
+        private func weightedRandomSelection(from nodeScores: [(node: Node, score: Double)]) -> Node? {
+            guard !nodeScores.isEmpty else { return nil }
+            
+            // 如果只有一个节点，直接返回
+            if nodeScores.count == 1 {
+                return nodeScores[0].node
+            }
+            
+            // 计算总分
+            let totalScore = nodeScores.reduce(0.0) { $0 + $1.score }
+            guard totalScore > 0 else {
+                // 如果所有分数都是0，随机选择
+                return nodeScores.randomElement()?.node
+            }
+            
+            // 生成随机数进行加权选择
+            let random = Double.random(in: 0..<totalScore)
+            var cumulative = 0.0
+            
+            for (node, score) in nodeScores {
+                cumulative += score
+                if random < cumulative {
+                    return node
+                }
+            }
+            
+            // 兜底返回最后一个
+            return nodeScores.last?.node
+        }
+    
+    
+    
+    // 辅助方法：创建直连 Bridge
+    private func createDirectBridge(host: String, port: Int, firstBodyBase64: String) {
+        let connectInfo = "origin=\(host):\(port) DIRECT CONNECT"
+        let newBridge = LayerMinusBridge(
+            id: self.id,
+            client: self.client,
+            targetHost: host,
+            targetPort: port,
+            verbose: self.verbose,
+            connectInfo: connectInfo,
+            onClosed: { [weak self] bridgeId in
+                self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
+                self?.close(reason: "Bridge closed")
+            }
+        )
+        
+        self.bridge = newBridge
+        self.onRoutingDecided?(self)
+        
+        log("KPI handoff -> DIRECT CONNECT host=\(host):\(port)")
+        newBridge.markHandoffNow()
+        newBridge.start(withFirstBody: firstBodyBase64)
+    }
     
     // 命中黑名单 → 立即废止（HTTP 返回 403；SOCKS5 返回 0x02），统一在 ServerConnection 的 queue 上执行
     @inline(__always)
@@ -419,6 +641,10 @@ public final class ServerConnection {
     private var bridge: LayerMinusBridge?
     private var layerMinus: LayerMinus
 
+    private let cleanupTimer = NodeQoSCleanupTimer()
+    private var statsTimer: Timer?
+
+
     // 路由决策：是否使用 LayerMinus 打包（默认 true）
     private var useLayerMinus: Bool = true
 
@@ -443,7 +669,7 @@ public final class ServerConnection {
 
     @inline(__always)
     private func log(_ msg: String) {
-        //NSLog("[ServerConnection] #\(id) %@", msg)
+        NSLog("[ServerConnection] #\(id) %@", msg)
     }
 
     public func start() {
@@ -463,8 +689,21 @@ public final class ServerConnection {
                 break
             }
         }
+        // 启动清理定时器
+        cleanupTimer.start()
+        
+        // 启动统计定时器（每5分钟输出一次统计）
+        statsTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
+            self.logNodeStatistics()
+        }
+
         client.start(queue: queue)
         log("will start")
+    }
+    
+    private func logNodeStatistics() {
+        let stats = NodeQoS.shared.getDetailedStatistics()
+        NSLog("[Server] Node Statistics: \(stats)")
     }
 
     public func close(reason: String) {
@@ -1016,43 +1255,28 @@ public final class ServerConnection {
         phase = .bridged
         
         
-        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
-              let entryNode = self.layerMinus.getRandomEntryNodes(),
-              !egressNode.isEmpty,
-              !entryNode.isEmpty else {
-            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, using DIRECT CONNECT"
-            // 创建并启动 LayerMinusBridge，保存引用
-            let newBridge = LayerMinusBridge(
-                id: self.id,
-                client: self.client,
-                targetHost: host,
-                targetPort: port,
-                verbose: self.verbose,
-                connectInfo: connectInfo,
-                onClosed: { [weak self] bridgeId in
-                    // 当 bridge 关闭时，关闭 ServerConnection
-                    self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
-                    self?.close(reason: "Bridge closed")
-                }
-            )
-            
-            self.bridge = newBridge
-            self.onRoutingDecided?(self)
-            
-            // KPI：标记 handoff 时刻（与 Bridge.start 的 tStart 对齐，用于 handoff->start）
-            self.log("KPI handoff -> LM host=\(host):\(port) ")
-            newBridge.markHandoffNow()
-            // 传递 Base64 编码的首包给 bridge
-            newBridge.start(withFirstBody: b64)
+        // —— 选择 egress：保持随机；选择 entry：应用 QoS 过滤（排除慢的一半 & 禁用 5 分钟的节点）
+        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes() else {
+            createDirectBridge(host: host, port: port, firstBodyBase64: b64)
             return
         }
+
+        // 使用增强的入口节点选择策略
+        guard let entryNode = selectBestEntryNode() else {
+            log("No suitable entry node found, falling back to direct connection")
+            createDirectBridge(host: host, port: port, firstBodyBase64: b64)
+            return
+        }
+        
+       
+
         if self.httpConnect {
             self.log("Layer Minus start by HTTP/HTTPS PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
         } else {
             self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
         }
 
-
+        NodeQoS.shared.recordConnectionStart(ip: entryNode.ip_addr)
         
         let message = self.layerMinus.makeSocksRequest(host: host, port: port, body: b64, command: "CONNECT")
         let messageData = message.data(using: .utf8)!
@@ -1069,6 +1293,9 @@ public final class ServerConnection {
                     
                     self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryNode.ip_addr) egress=\(egressNode.ip_addr)")
                     let connectInfo = "origin=\(host):\(port) entry=\(entryNode.ip_addr) egress=\(egressNode.ip_addr)"
+                    
+                    let entryIP = entryNode.ip_addr  // 捕获 IP 用于闭包
+                    
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,
@@ -1077,9 +1304,11 @@ public final class ServerConnection {
                         verbose: self.verbose,
                         connectInfo: connectInfo,
                         onClosed: { [weak self] bridgeId in
+                            NodeQoS.shared.recordConnectionEnd(ip: entryIP)
                             // 当 bridge 关闭时，关闭 ServerConnection
                             self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
                             self?.close(reason: "Bridge closed")
+                            
                         }
                     )
                     self.isLayerMinusRouted = true
@@ -1087,14 +1316,27 @@ public final class ServerConnection {
                     self.onRoutingDecided?(self)
                     
                     // 传递 Base64 编码的首包给 bridge
+                    
+                    // QoS 回传：成功首字节 => 记录 TTFB；若始终无首字节 => 标记禁用 5 分钟
+                    newBridge.onFirstByteTTFBMs = { ms in
+                        NodeQoS.shared.recordSuccess(ip: entryIP, ttfbMs: ms)
+                    }
+                    
+                    newBridge.onNoResponse = {
+                        NodeQoS.shared.recordNoResponse(ip: entryIP)
+                    }
+                    
                     newBridge.start(withFirstBody: request.data(using: .utf8)!.base64EncodedString())
                 }
             }
         }
         
-        
-        
-        
+    }
+    
+    private func logNodeSelectionMetrics() {
+        // 定期输出节点选择的统计信息
+        let stats = NodeQoS.shared.getStatistics()  // 需要在 NodeQoS 中实现
+        log("Node Selection Stats: \(stats)")
     }
 
     // MARK: TLS/SSL 检测
@@ -1174,4 +1416,279 @@ public final class ServerConnection {
             }
         }))
     }
+}
+
+// LayerMinus 扩展：支持获取所有入口节点
+extension LayerMinus {
+    // 获取所有可用的入口节点
+    func getAllEntryNodes() -> [Node]? {
+        
+        return self.entryNodes  // 假设有一个 entryNodes 数组属性
+    }
+
+}
+
+extension NodeQoS {
+    
+    func exportNodeData() -> Data? {
+            return q.sync {
+                let exportData = map.map { (ip, stat) in
+                    return [
+                        "ip": ip,
+                        "ewmaMs": stat.ewmaMs,
+                        "samples": stat.samples,
+                        "successCount": stat.successCount,
+                        "failureCount": stat.failureCount,
+                        "activeConnections": stat.activeConnections,
+                        "lastUsed": stat.lastUsed?.timeIntervalSince1970 ?? 0
+                    ] as [String : Any]
+                }
+                
+                return try? JSONSerialization.data(withJSONObject: exportData, options: .prettyPrinted)
+            }
+        }
+        
+        // 重置特定节点的统计
+        func resetNodeStats(ip: String) {
+            q.async {
+                if var stat = self.map[ip] {
+                    stat.samples = 0
+                    stat.successCount = 0
+                    stat.failureCount = 0
+                    stat.ewmaMs = 1000
+                    stat.bannedUntil = nil
+                    stat.cooldownUntil = nil
+                    self.map[ip] = stat
+                    NSLog("[NodeQoS] Reset stats for node: \(ip)")
+                }
+            }
+        }
+        
+        // 手动设置节点状态
+        func setNodeStatus(ip: String, status: NodeStatus) {
+            q.async {
+                var stat = self.map[ip] ?? Stat(ewmaMs: 1000, samples: 0, bannedUntil: nil, cooldownUntil: nil)
+                
+                switch status {
+                case .available:
+                    stat.bannedUntil = nil
+                    stat.cooldownUntil = nil
+                case .banned(let until):
+                    stat.bannedUntil = until
+                case .cooldown(let until):
+                    stat.cooldownUntil = until
+                }
+                
+                self.map[ip] = stat
+                NSLog("[NodeQoS] Set node \(ip) status to: \(status)")
+            }
+        }
+    
+    func getStatistics() -> String {
+        return q.sync {
+            var totalActive = 0
+            var bannedCount = 0
+            var cooldownCount = 0
+            let now = Date()
+            
+            for (ip, stat) in map {
+                totalActive += stat.activeConnections
+                if let b = stat.bannedUntil, b > now {
+                    bannedCount += 1
+                }
+                if let c = stat.cooldownUntil, c > now {
+                    cooldownCount += 1
+                }
+            }
+            
+            return "Total nodes: \(map.count), Active connections: \(totalActive), Banned: \(bannedCount), Cooldown: \(cooldownCount)"
+        }
+    }
+    
+    // 清理过期的节点信息
+    func cleanup() {
+        q.async {
+            let now = Date()
+            let cutoff = now.addingTimeInterval(-24 * 60 * 60)  // 24小时前
+            
+            self.map = self.map.filter { (_, stat) in
+                // 保留活跃连接或最近使用的节点
+                if stat.activeConnections > 0 { return true }
+                if let lastUsed = stat.lastUsed, lastUsed > cutoff { return true }
+                return false
+            }
+        }
+    }
+    // 批量更新节点状态
+        func updateBulkNodeStatus(_ updates: [(ip: String, status: NodeStatus)]) {
+            q.async {
+                for update in updates {
+                    if var stat = self.map[update.ip] {
+                        switch update.status {
+                        case .available:
+                            stat.bannedUntil = nil
+                            stat.cooldownUntil = nil
+                        case .banned(let until):
+                            stat.bannedUntil = until
+                        case .cooldown(let until):
+                            stat.cooldownUntil = until
+                        }
+                        self.map[update.ip] = stat
+                    }
+                }
+            }
+        }
+        
+        // 获取详细统计信息
+        func getDetailedStatistics() -> NodeStatistics {
+            return q.sync {
+                var stats = NodeStatistics()
+                let now = Date()
+                
+                for (ip, stat) in map {
+                    stats.totalNodes += 1
+                    stats.activeConnections += stat.activeConnections
+                    
+                    if let b = stat.bannedUntil, b > now {
+                        stats.bannedNodes += 1
+                    } else if let c = stat.cooldownUntil, c > now {
+                        stats.cooldownNodes += 1
+                    } else if stat.activeConnections > 0 {
+                        stats.activeNodes += 1
+                    } else {
+                        stats.idleNodes += 1
+                    }
+                    
+                    // 计算平均延迟
+                    if stat.samples > 0 {
+                        stats.averageLatency += stat.ewmaMs
+                        stats.sampledNodes += 1
+                    }
+                    
+                    // 记录最佳和最差节点
+                    if stat.ewmaMs < stats.bestLatency {
+                        stats.bestLatency = stat.ewmaMs
+                        stats.bestNode = ip
+                    }
+                    if stat.ewmaMs > stats.worstLatency {
+                        stats.worstLatency = stat.ewmaMs
+                        stats.worstNode = ip
+                    }
+                }
+                
+                if stats.sampledNodes > 0 {
+                    stats.averageLatency /= Double(stats.sampledNodes)
+                }
+                
+                return stats
+            }
+        }
+        
+        // 节点健康检查
+        func performHealthCheck() -> [String: NodeHealth] {
+            return q.sync {
+                var healthReport: [String: NodeHealth] = [:]
+                let now = Date()
+                
+                for (ip, stat) in map {
+                    var health = NodeHealth(ip: ip)
+                    
+                    // 计算成功率
+                    let totalAttempts = stat.successCount + stat.failureCount
+                    health.successRate = totalAttempts > 0 ?
+                        Double(stat.successCount) / Double(totalAttempts) : 0
+                    
+                    // 延迟状态
+                    health.latency = stat.ewmaMs
+                    health.latencyStatus = stat.ewmaMs < 300 ? .good :
+                        (stat.ewmaMs < 900 ? .fair : .poor)
+                    
+                    // 负载状态
+                    health.activeConnections = stat.activeConnections
+                    health.loadStatus = stat.activeConnections < 10 ? .light :
+                        (stat.activeConnections < 30 ? .moderate : .heavy)
+                    
+                    // 可用性状态
+                    if let b = stat.bannedUntil, b > now {
+                        health.availability = .banned(until: b)
+                    } else if let c = stat.cooldownUntil, c > now {
+                        health.availability = .cooldown(until: c)
+                    } else {
+                        health.availability = .available
+                    }
+                    
+                    healthReport[ip] = health
+                }
+                
+                return healthReport
+            }
+        }
+}
+
+
+struct NodeStatistics {
+    var totalNodes: Int = 0
+    var activeNodes: Int = 0
+    var idleNodes: Int = 0
+    var bannedNodes: Int = 0
+    var cooldownNodes: Int = 0
+    var activeConnections: Int = 0
+    var averageLatency: Double = 0
+    var sampledNodes: Int = 0
+    var bestNode: String = ""
+    var bestLatency: Double = Double.infinity
+    var worstNode: String = ""
+    var worstLatency: Double = 0
+}
+
+struct NodeHealth {
+    let ip: String
+    var successRate: Double = 0
+    var latency: Double = 0
+    var latencyStatus: LatencyStatus = .unknown
+    var activeConnections: Int = 0
+    var loadStatus: LoadStatus = .light
+    var availability: AvailabilityStatus = .available
+    
+    enum LatencyStatus {
+        case good, fair, poor, unknown
+    }
+    
+    enum LoadStatus {
+        case light, moderate, heavy
+    }
+    
+    enum AvailabilityStatus {
+        case available
+        case cooldown(until: Date)
+        case banned(until: Date)
+    }
+}
+
+enum NodeStatus {
+    case available
+    case banned(until: Date)
+    case cooldown(until: Date)
+}
+
+class NodeQoSCleanupTimer {
+    private var cleanupTimer: Timer?
+    private var compactTimer: Timer?
+    
+    func start() {
+        // 每小时清理过期节点
+        cleanupTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in
+            NodeQoS.shared.cleanup()
+            NSLog("[NodeQoS] Cleanup performed")
+        }
+        
+    }
+    
+    func stop() {
+        cleanupTimer?.invalidate()
+        cleanupTimer = nil
+        compactTimer?.invalidate()
+        compactTimer = nil
+    }
+    
 }
