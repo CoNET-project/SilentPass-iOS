@@ -9,6 +9,9 @@ enum L {
 
 public final class LayerMinusBridge {
     
+    public var onFirstByteTTFBMs: ((Double) -> Void)?
+    public var onNoResponse: (() -> Void)?
+    
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0
@@ -35,8 +38,10 @@ public final class LayerMinusBridge {
     // --- 上行(c->u)微批：64KB 或 5ms 触发 ---
     private var cuBuffer = Data()
     private var cuFlushTimer: DispatchSourceTimer?
-    private let CU_FLUSH_BYTES = 64 * 1024
+    private let CU_FLUSH_BYTES = 32 * 1024
     private let CU_FLUSH_MS = 12
+    // 上限防护
+    private let CU_BUFFER_LIMIT = 256 * 1024
     // 当定时到点但缓冲小于该值时，允许再延一次以攒到更“胖”的报文
     private let CU_MIN_FLUSH_BYTES = 8 * 1024
     private let CU_EXTRA_MS = 10
@@ -115,7 +120,7 @@ public final class LayerMinusBridge {
     
     @inline(__always)
     private func log(_ msg: String) {
-        //NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
+        NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
     }
     
     // --- 追加KPI ---
@@ -307,11 +312,19 @@ public final class LayerMinusBridge {
         t.resume()
     }
 
-    private func flushCUBuffer() {
+    private func flushCUBuffer(force: Bool = false) {
         guard !cuBuffer.isEmpty, !closed else { return }
+        if !force, cuBuffer.count < CU_MIN_FLUSH_BYTES { return }
         let payload = cuBuffer
         cuBuffer.removeAll(keepingCapacity: true)
         self.sendToUpstream(payload, remark: "c->u")
+    }
+    
+    private func appendToCUBuffer(_ d: Data) {
+        cuBuffer.append(d)
+        if cuBuffer.count >= CU_BUFFER_LIMIT {
+            flushCUBuffer(force: true)
+        }
     }
     
     private func pumpClientToUpstream() {
@@ -360,10 +373,10 @@ public final class LayerMinusBridge {
                     else { self.scheduleCUFlush() }
                 }
 
-                // 仅当本次不是“测速小块直发”时，才参与微批触发判断
-                if !(self.isSpeedtestTarget && (30...100).contains(d.count)) {
-                    if self.cuBuffer.count >= self.CU_FLUSH_BYTES { self.flushCUBuffer() }
-                    else { self.scheduleCUFlush() }
+                if self.isSpeedtestTarget && (30...100).contains(d.count) {
+                    self.sendToUpstream(d, remark: "c->u")
+                } else {
+                    self.appendToCUBuffer(d)
                 }
             }
             
@@ -437,6 +450,9 @@ public final class LayerMinusBridge {
                     // KPI: 即时打印首字节到达延迟 (TTFB)
                     let ttfbMs = Double(self.tFirstByte!.uptimeNanoseconds &- self.tStart.uptimeNanoseconds) / 1e6
                     self.log(String(format: "KPI immediate TTFB_ms=%.1f", ttfbMs))
+                    
+                    self.onFirstByteTTFBMs?(ttfbMs)  // ← 通知 QoS
+                    
                     // KPI: 首包发送完成 -> 首字节回流（纯传输/排队段）
                     if let ts = self.tFirstSend {
                         let segMs = Double(self.tFirstByte!.uptimeNanoseconds &- ts.uptimeNanoseconds) / 1e6

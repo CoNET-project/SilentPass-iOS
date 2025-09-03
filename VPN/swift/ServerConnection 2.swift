@@ -3,361 +3,93 @@ import Network
 import os
 
 
-// --- 广告黑名单（支持精确与前缀 *. 通配后缀匹配） ---
-private struct AdBlacklist {
-    // 可继续扩充；保持短小，命中即废止代理
-    static let patterns: [String] = [
-        "doubleclick.net",
-        "googleadservices.com",
-        "googlesyndication.com",
-        "googletagmanager.com",
-        "googletagservices.com",
-        "google-analytics.com",
-        "googleanalytics.com",
-        "adsystem.com",
-        "adsrvr.org",
-        "onetrust.com",
-        "liadm.com",
-
-        // Facebook/Meta
-        "facebook-analytics.com",
-        "fbcdn.net",
-
-        // Amazon
-        "amazon-adsystem.com",
-        "amazontrust.com",
-
-        // Microsoft
-        "adsrvr.org",
-        "bing.com",
-        "msftconnecttest.com",
-
-        // 通用广告网络
-        "adsrvr.org",
-        "adnxs.com",
-        "adzerk.net",
-        "pubmatic.com",
-        "criteo.com",
-        "criteo.net",
-        "casalemedia.com",
-        "openx.net",
-        "rubiconproject.com",
-        "serving-sys.com",
-        "taboola.com",
-        "outbrain.com",
-        "media.net",
-        "yieldmo.com",
-        "3lift.com",
-        "indexexchange.com",
-        "sovrn.com",
-        "sharethrough.com",
-        "spotx.tv",
-        "springserve.com",
-        "tremor.io",
-        "tribalfusion.com",
-        "undertone.com",
-        "yieldlab.net",
-        "yieldmanager.com",
-        "zedo.com",
-        "zemanta.com",
-
-        // 分析和跟踪
-        "scorecardresearch.com",
-        "quantserve.com",
-        "imrworldwide.com",
-        "nielsen.com",
-        "alexa.com",
-        "hotjar.com",
-        "mouseflow.com",
-        "luckyorange.com",
-        "clicktale.com",
-        "demdex.net",
-        "krxd.net",
-        "bluekai.com",
-        "exelator.com",
-        "mathtag.com",
-        "turn.com",
-        "acuityplatform.com",
-        "adform.net",
-        "bidswitch.net",
-        "contextweb.com",
-        "districtm.io",
-        "emxdgt.com",
-        "gumgum.com",
-        "improve-digital.com",
-        "inmobi.com",
-        "loopme.com",
-        "mobfox.com",
-        "nexage.com",
-        "rhythmone.com",
-        "smaato.com",
-        "smartadserver.com",
-        "stroeer.io",
-        "teads.tv",
-        "triplelift.com",
-        "verizonmedia.com",
-        "vertamedia.com",
-        "video.io",
-        "viralize.com",
-        "weborama.com",
-        "widespace.com",
-
-        // 中国广告网络
-        "baidu.com",
-        "tanx.com",
-        "mediav.com",
-        "admaster.com.cn",
-        "dsp.com",
-        "vamaker.com",
-        "allyes.com",
-        "ipinyou.com",
-        "irs01.com",
-        "istreamsche.com",
-        "jusha.com",
-        "knet.cn",
-        "madserving.com",
-        "miaozhen.com",
-        "mmstat.com",
-        "moad.cn",
-        "mobaders.com",
-        "mydas.mobi",
-        "n.shifen.com",
-        "netease.gg",
-        "newrelic.com",
-        "nexac.com",
-        "ntalker.com",
-        "nylalobghyhirgh.com",
-        "o2omobi.com",
-        "oimagea2.ydstatic.com",
-        "optaim.com",
-        "optimix.asia",
-        "optimizely.com",
-        "overture.com",
-        "p0y.cn",
-        "pagead.l.google.com",
-        "pageadimg.l.google.com",
-        "pbcdn.com",
-        "pingdom.net",
-        "pixanalytics.com",
-        "ppjia55.com",
-        "punchbox.org",
-        "qchannel01.cn",
-        "qiyou.com",
-        "qtmojo.com",
-        "quantcount.com",
-
-        // 恶意软件和垃圾邮件
-        "2o7.net",
-        "omtrdc.net",
-        "everesttech.net",
-        "everest-tech.net",
-        "rubiconproject.com",
-        "adsafeprotected.com",
-        "adsymptotic.com",
-        "adtechjp.com",
-        "advertising.com",
-        "evidon.com",
-        "voicefive.com",
-        "buysellads.com",
-        "carbonads.com",
-        "cdn.ampproject.org",
-
-        // 更多跟踪器
-        "mixpanel.com",
-        "kissmetrics.com",
-        "segment.com",
-        "segment.io",
-        "keen.io",
-        "amplitude.com",
-        "appsflyer.com",
-        "branch.io",
-        "adjust.com",
-        "kochava.com",
-        "tenjin.io",
-        "singular.net",
-        "apptentive.com",
-        "appboy.com",
-        "braze.com",
-        "customer.io",
-        "intercom.io",
-        "drift.com",
-        "zendesk.com"
-    ]
+public final class ServerConnection {
     
-    static let regexps: [NSRegularExpression] = {
-        let raw = [
-        ".*\\.(doubleclick|googleadservices|googlesyndication|google-analytics|adsrvr|adnxs|pubmatic|criteo|casalemedia|openx|rubiconproject|taboola|outbrain|scorecardresearch|quantserve|demdex|krxd)\\..*",
-        "^ad[sxvmn]?\\d*[.-].*",
-        "^.*[.-]ad[sxvmn]?\\d*[.-].*",
-        "^banner[sz]?[.-].*",
-        "^.*[.-]banner[sz]?[.-].*",
-        "^track(er|ing)?[.-].*",
-        "^.*[.-]track(er|ing)?[.-].*",
-        "^stat[sz]?[.-].*",
-        "^.*[.-]stat[sz]?[.-].*",
-        "^analytics?[.-].*",
-        "^.*[.-]analytics?[.-].*",
-        "^metric[sz]?[.-].*",
-        "^.*[.-]metric[sz]?[.-].*",
-        "^telemetry[.-].*",
-        "^.*[.-]telemetry[.-].*",
-        "^pixel[.-].*",
-        "^.*[.-]pixel[.-].*",
-        "^click[.-].*",
-        "^.*[.-]click[.-].*",
-        "^counter[.-].*",
-        "^.*[.-]counter[.-].*",
-        "^beacon[.-].*",
-        "^.*[.-]beacon[.-].*"
-        ]
-        return raw.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
-    }()
-
-    @inline(__always)
-    static func matches(_ host: String) -> Bool {
-        let h = host.lowercased()
-        for p in patterns {
-            let pat = p.lowercased()
-            if pat.hasPrefix("*.") {
-                let suf = String(pat.dropFirst(1)) // ".example.com"
-                if h.hasSuffix(suf) { return true }
-            } else if h == pat {
-                return true
-            }
-        }
-		// 额外正则匹配
-		for re in regexps {
-			let range = NSRange(location: 0, length: h.utf16.count)
-			if re.firstMatch(in: h, options: [], range: range) != nil {
-				return true
-			}
-		}
-		return false
-    }
-}
-
-// --- 白名单（命中则本地直连，不走 LayerMinus 打包） ---
-private struct Allowlist {
-    // 可按需扩充；示例以常见业务域/必要依赖为主，避免误伤
-    static let patterns: [String] = [
-        "conet.network",
-        "silentpass.io",
-        "openpgp.online",
-        "comm100vue.com",
-        "comm100.io",
-        // Apple Push 相关
-        "conet.network",
-        "apple.com",
-        "push.apple.com",
-        "icloud.com",
-        "push-apple.com.akadns.net",
-        "silentpass.io",
-        "courier.push.apple.com",
-        "gateway.push.apple.com",
-        "gateway.sandbox.push.apple.com",
-        "gateway.icloud.com",
-        "bag.itunes.apple.com",
-        "init.itunes.apple.com",
-        "xp.apple.com",
-        "gsa.apple.com",
-        "gsp-ssl.ls.apple.com",
-        "gsp-ssl.ls-apple.com.akadns.net",
-        "mesu.apple.com",
-        "gdmf.apple.com",
-        "deviceenrollment.apple.com",
-        "mdmenrollment.apple.com",
-        "iprofiles.apple.com",
-        "ppq.apple.com",
-
-        // 🔥 微信（WeChat）相关域名
-        "wechat.com",
-        "weixin.qq.com",
-        "weixin110.qq.com",
-        "tenpay.com",
-        "mm.taobao.com",
-        "wx.qq.com",
-        "web.wechat.com",
-        "webpush.weixin.qq.com",
-        "qpic.cn",
-        "qlogo.cn",
-        "wx.gtimg.com",
-        "minorshort.weixin.qq.com",
-        "log.weixin.qq.com",
-        "szshort.weixin.qq.com",
-        "szminorshort.weixin.qq.com",
-        "szextshort.weixin.qq.com",
-        "hkshort.weixin.qq.com",
-        "hkminorshort.weixin.qq.com",
-        "hkextshort.weixin.qq.com",
-        "hklong.weixin.qq.com",
-        "sgshort.wechat.com",
-        "sgminorshort.wechat.com",
-        "sglong.wechat.com",
-        "usshort.wechat.com",
-        "usminorshort.wechat.com",
-        "uslong.wechat.com",
-
-        // 微信支付
-        "pay.weixin.qq.com",
-        "payapp.weixin.qq.com",
-
-        // 微信文件传输
-        "file.wx.qq.com",
-        "support.weixin.qq.com",
-
-        // 微信 CDN
-        "mmbiz.qpic.cn",
-        "mmbiz.qlogo.cn",
-        "mmsns.qpic.cn",
-
-        // 腾讯推送服务
-        "dns.weixin.qq.com",
-        "short.weixin.qq.com",
-        "long.weixin.qq.com",
-
-        "doubleclick.net",
-        "pubmatic.com",
-        "adnxs.com",
-        "rubiconproject.com",
-
-        "adsrvr.org",
-        "criteo.com",
-
-        "taboola.com",
-        "yahoo.com",
-        "publicsuffix.org"
-    ]
-    static let regexps: [NSRegularExpression] = [] // 如需正则白名单可补充
-    @inline(__always)
-    static func matches(_ host: String) -> Bool {
-        // 统一用“标签后缀匹配”：root 或者以 ".root" 结尾都算命中
-        @inline(__always)
-        func labelSuffixMatch(_ h: String, _ root: String) -> Bool {
-            if h == root { return true }
-            return h.hasSuffix("." + root)
-        }
-
-        let h = host.lowercased()
-        for p in patterns {
-            var root = p.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-            if root.hasPrefix("*.") {
-                root.removeFirst(2)        // "*.example.com" -> "example.com"
-            }
-            guard !root.isEmpty else { continue }
-            if labelSuffixMatch(h, root) { return true }
-
+    // 增强的入口节点选择策略
+    private func selectBestEntryNode() -> Node? {
+        // 获取所有可用的入口节点
+        guard let allEntryNodes = self.layerMinus.getAllEntryNodes(),
+              !allEntryNodes.isEmpty else {
+            log("No entry nodes available")
+            return nil
         }
         
-        for re in regexps {
-            let r = NSRange(location: 0, length: h.utf16.count)
-            if re.firstMatch(in: h, options: [], range: r) != nil { return true }
+        // 计算每个节点的评分
+        var nodeScores: [(node: Node, score: Double)] = []
+        
+        for node in allEntryNodes {
+            if let score = NodeQoS.shared.getNodeScore(ip: node.ip_addr) {
+                nodeScores.append((node, score))
+            }
         }
-        return false
+        
+        // 如果没有可用节点，尝试使用随机节点探索
+        if nodeScores.isEmpty {
+            log("All nodes filtered by QoS, attempting random exploration")
+            return allEntryNodes.randomElement()
+        }
+        
+        // 使用加权随机选择策略
+        return weightedRandomSelection(from: nodeScores)
     }
-}
-
-
-public final class ServerConnection {
+    
+    private let cleanupTimer = NodeQoSCleanupTimer()
+    private var statsTimer: Timer?
+    
+    // 加权随机选择
+    private func weightedRandomSelection(from nodeScores: [(node: Node, score: Double)]) -> Node? {
+        guard !nodeScores.isEmpty else { return nil }
+        
+        // 如果只有一个节点，直接返回
+        if nodeScores.count == 1 {
+            return nodeScores[0].node
+        }
+        
+        // 计算总分
+        let totalScore = nodeScores.reduce(0.0) { $0 + $1.score }
+        guard totalScore > 0 else {
+            // 如果所有分数都是0，随机选择
+            return nodeScores.randomElement()?.node
+        }
+        
+        // 生成随机数进行加权选择
+        let random = Double.random(in: 0..<totalScore)
+        var cumulative = 0.0
+        
+        for (node, score) in nodeScores {
+            cumulative += score
+            if random < cumulative {
+                return node
+            }
+        }
+        
+        // 兜底返回最后一个
+        return nodeScores.last?.node
+    }
+    
+    // 辅助方法：创建直连 Bridge
+     private func createDirectBridge(host: String, port: Int, firstBodyBase64: String) {
+         let connectInfo = "origin=\(host):\(port) DIRECT CONNECT"
+         let newBridge = LayerMinusBridge(
+             id: self.id,
+             client: self.client,
+             targetHost: host,
+             targetPort: port,
+             verbose: self.verbose,
+             connectInfo: connectInfo,
+             onClosed: { [weak self] bridgeId in
+                 self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
+                 self?.close(reason: "Bridge closed")
+             }
+         )
+         
+         self.bridge = newBridge
+         self.onRoutingDecided?(self)
+         
+         log("KPI handoff -> DIRECT CONNECT host=\(host):\(port)")
+         newBridge.markHandoffNow()
+         newBridge.start(withFirstBody: firstBodyBase64)
+     }
     
     // 命中黑名单 → 立即废止（HTTP 返回 403；SOCKS5 返回 0x02），统一在 ServerConnection 的 queue 上执行
     @inline(__always)
@@ -463,8 +195,21 @@ public final class ServerConnection {
                 break
             }
         }
+        // 启动清理定时器
+         cleanupTimer.start()
+         
+         // 启动统计定时器（每5分钟输出一次统计）
+         statsTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
+             self.logNodeStatistics()
+         }
+        
         client.start(queue: queue)
         log("will start")
+    }
+    
+    private func logNodeStatistics() {
+        let stats = NodeQoS.shared.getDetailedStatistics()
+        NSLog("[Server] Node Statistics: \(stats)")
     }
 
     public func close(reason: String) {
@@ -602,6 +347,14 @@ public final class ServerConnection {
     
     // MARK: HTTP/HTTPS Proxy 解析与改写（绝对URI → origin-form）
     private func tryParseHTTPProxyRequest() -> Bool {
+        
+        
+        // 首先检查是否为PAC请求
+        if isPACRequest(recvBuffer) {
+            handlePACRequest()
+            return true
+        }
+        
         // 我们至少需要一行（\r\n）来判断方法，且处理非 CONNECT 时需要首部结束（\r\n\r\n）
         let CRLF = Data([0x0d, 0x0a])
         let CRLFCRLF = Data([0x0d, 0x0a, 0x0d, 0x0a])
@@ -1015,37 +768,20 @@ public final class ServerConnection {
         handedOff = true
         phase = .bridged
         
-        
-        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
-              let entryNode = self.layerMinus.getRandomEntryNodes(),
-              !egressNode.isEmpty,
-              !entryNode.isEmpty else {
-            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, using DIRECT CONNECT"
-            // 创建并启动 LayerMinusBridge，保存引用
-            let newBridge = LayerMinusBridge(
-                id: self.id,
-                client: self.client,
-                targetHost: host,
-                targetPort: port,
-                verbose: self.verbose,
-                connectInfo: connectInfo,
-                onClosed: { [weak self] bridgeId in
-                    // 当 bridge 关闭时，关闭 ServerConnection
-                    self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
-                    self?.close(reason: "Bridge closed")
-                }
-            )
-            
-            self.bridge = newBridge
-            self.onRoutingDecided?(self)
-            
-            // KPI：标记 handoff 时刻（与 Bridge.start 的 tStart 对齐，用于 handoff->start）
-            self.log("KPI handoff -> LM host=\(host):\(port) ")
-            newBridge.markHandoffNow()
-            // 传递 Base64 编码的首包给 bridge
-            newBridge.start(withFirstBody: b64)
+        // —— 选择 egress：保持随机；选择 entry：应用 QoS 过滤（排除慢的一半 & 禁用 5 分钟的节点）
+        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes() else {
+            createDirectBridge(host: host, port: port, firstBodyBase64: b64)
             return
         }
+        
+        // 使用增强的入口节点选择策略
+        guard let entryNode = selectBestEntryNode() else {
+            log("No suitable entry node found, falling back to direct connection")
+            createDirectBridge(host: host, port: port, firstBodyBase64: b64)
+            return
+        }
+        
+        
         if self.httpConnect {
             self.log("Layer Minus start by HTTP/HTTPS PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
         } else {
@@ -1174,4 +910,146 @@ public final class ServerConnection {
             }
         }))
     }
+}
+
+extension ServerConnection {
+    
+    // 1. 添加PAC请求检测方法
+    private func isPACRequest(_ data: Data) -> Bool {
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+        return text.hasPrefix("GET /pac HTTP/") || text.hasPrefix("GET /proxy.pac HTTP/")
+    }
+    
+    // 2. 添加PAC脚本生成方法
+    private func generatePACScript() -> String {
+        // 将白名单和黑名单转换为JavaScript数组
+        let whitelistPatterns = Allowlist.patterns.map { "\"\($0)\"" }.joined(separator: ",\n        ")
+        let blacklistPatterns = AdBlacklist.patterns.map { "\"\($0)\"" }.joined(separator: ",\n        ")
+        
+        let pacScript = """
+        function FindProxyForURL(url, host) {
+            // 规范化主机名
+            host = host.toLowerCase();
+            
+            // 黑名单域名 - 返回PROXY但会被服务器拦截
+            var blacklist = [
+                \(blacklistPatterns)
+            ];
+            
+            // 白名单域名 - 直接连接
+            var whitelist = [
+                \(whitelistPatterns)
+            ];
+            
+            // 检查黑名单
+            for (var i = 0; i < blacklist.length; i++) {
+                var pattern = blacklist[i].toLowerCase();
+                if (pattern.indexOf("*.") === 0) {
+                    var suffix = pattern.substring(1);
+                    if (host.endsWith(suffix)) {
+                        return "PROXY 127.0.0.1:8888";  // 强制走代理以便拦截
+                    }
+                } else if (host === pattern || host.endsWith("." + pattern)) {
+                    return "PROXY 127.0.0.1:8888";  // 强制走代理以便拦截
+                }
+            }
+            
+            // 检查白名单
+            for (var i = 0; i < whitelist.length; i++) {
+                var pattern = whitelist[i].toLowerCase();
+                if (pattern.indexOf("*.") === 0) {
+                    var suffix = pattern.substring(1);
+                    if (host.endsWith(suffix)) {
+                        return "DIRECT";  // 直接连接
+                    }
+                } else if (host === pattern || host.endsWith("." + pattern)) {
+                    return "DIRECT";  // 直接连接
+                }
+            }
+            
+            // 本地地址直接连接
+            if (isPlainHostName(host) ||
+                shExpMatch(host, "*.local") ||
+                host === "localhost" ||
+                host === "127.0.0.1" ||
+                host === "::1") {
+                return "DIRECT";
+            }
+            
+            // 内网IP检测
+            if (host.match(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/)) {
+                if (isInNet(host, "10.0.0.0", "255.0.0.0") ||
+                    isInNet(host, "172.16.0.0", "255.240.0.0") ||
+                    isInNet(host, "192.168.0.0", "255.255.0.0") ||
+                    isInNet(host, "127.0.0.0", "255.0.0.0")) {
+                    return "DIRECT";
+                }
+            }
+            
+            // 默认使用代理
+            return "PROXY 127.0.0.1:8888; SOCKS5 127.0.0.1:8888";
+        }
+        """
+        
+        return pacScript
+    }
+    
+    // 3. 添加PAC响应处理方法
+    private func handlePACRequest() {
+        log("Handling PAC request")
+        
+        let pacContent = generatePACScript()
+        let contentData = pacContent.data(using: .utf8) ?? Data()
+        
+        // 构建HTTP响应
+        let httpResponse = """
+        HTTP/1.1 200 OK\r
+        Content-Type: application/x-ns-proxy-autoconfig\r
+        Content-Length: \(contentData.count)\r
+        Cache-Control: no-cache, no-store, must-revalidate\r
+        Pragma: no-cache\r
+        Expires: 0\r
+        Connection: close\r
+        Access-Control-Allow-Origin: *\r
+        Access-Control-Allow-Methods: GET, OPTIONS\r
+        Access-Control-Allow-Headers: *\r
+        \r
+        \(pacContent)
+        """
+        
+        // 发送响应并关闭连接
+        client.send(content: httpResponse.data(using: .utf8), completion: .contentProcessed { [weak self] err in
+            guard let self = self else { return }
+            if let err = err {
+                self.log("Failed to send PAC response: \(err)")
+            } else {
+                self.log("PAC script sent successfully")
+            }
+            self.close(reason: "PAC request completed")
+        })
+        
+        // 标记为已处理
+        recvBuffer.removeAll(keepingCapacity: false)
+        handedOff = true
+    }
+    
+    /*
+    4. 修改tryParseHTTPProxyRequest方法（最小修改）
+    在tryParseHTTPProxyRequest方法的开始处添加以下代码：
+    
+    private func tryParseHTTPProxyRequest() -> Bool {
+        // === 添加这部分代码 ===
+        // 首先检查是否为PAC请求
+        if isPACRequest(recvBuffer) {
+            handlePACRequest()
+            return true
+        }
+        // === 添加结束 ===
+        
+        // 以下是原有代码...
+        let CRLF = Data([0x0d, 0x0a])
+        let CRLFCRLF = Data([0x0d, 0x0a, 0x0d, 0x0a])
+        ...
+    }
+    */
 }

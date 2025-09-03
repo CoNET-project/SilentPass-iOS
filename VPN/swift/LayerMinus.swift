@@ -292,6 +292,11 @@ class LayerMinus {
 //        self.miningProcess.start()
     }
     
+    func getAllEntryNodes() -> [Node]? {
+            
+        return self.entryNodes  
+    }
+    
     func allnodeupdate () {
 
         let st = String(format:"%03X", LayerMinus.currentScanNode)
