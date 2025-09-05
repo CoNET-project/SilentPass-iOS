@@ -114,8 +114,8 @@ public final class LayerMinusBridge {
     // —— Speedtest 上传微合并缓冲：4KB 或 4ms 触发，仅测速生效
     private var stBuffer = Data()
     private var stTimer: DispatchSourceTimer?
-    private let ST_FLUSH_BYTES = 4 * 1024
-    private let ST_FLUSH_MS = 4
+    private let ST_FLUSH_BYTES = 32 * 1024
+    private let ST_FLUSH_MS = 1
     
     @inline(__always)
     private func scheduleSTFlush() {
@@ -317,7 +317,7 @@ public final class LayerMinusBridge {
         // // 配置 TCP 参数（更稳妥的默认：443/80 保持 noDelay；keepalive 稍放宽）
         if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
             // 非测速保持原来的偏好；测速目标关闭 noDelay，降低发送队列压力
-            let preferNoDelay = self.isSpeedtestTarget ? false : (targetPort == 443 || targetPort == 80 || targetPort == 8080)
+            let preferNoDelay = true  // 测速与非测速都开；若只想对测速开：self.isSpeedtestTarget ? true : (targetPort == 443 || targetPort == 80 || targetPort == 8080)
             tcp.noDelay = preferNoDelay
             tcp.enableKeepalive = true
             tcp.keepaliveIdle = 30
@@ -381,8 +381,8 @@ public final class LayerMinusBridge {
     private func maybeResumeAfterInflightDrained() {
         let (B, C) = self.inflightBudget()
         if self.pausedC2U &&
-           self.inflightBytes <= B / 2 &&
-           self.inflight.count <= C / 2 {
+           self.inflightBytes <= (B * 90) / 100 &&      // 原来 75%
+           self.inflight.count <= (C * 90) / 100 {
             self.pausedC2U = false
             self.vlog("resume c->u after inflight drained: bytes=\(self.inflightBytes) count=\(self.inflight.count)")
             self.pumpClientToUpstream()
@@ -423,7 +423,7 @@ public final class LayerMinusBridge {
     
     @inline(__always)
     private func inflightBudget() -> (bytes: Int, count: Int) {
-        return isSpeedtestTarget ? (128 * 1024, 64) : (512 * 1024, 256)
+        return isSpeedtestTarget ? (2 * 1024 * 1024, 1024) : (512 * 1024, 256)
     }
 
     private func flushCUBuffer() {
@@ -445,7 +445,7 @@ public final class LayerMinusBridge {
     private func pumpClientToUpstream() {
         if closed { return }
         
-        client.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
+        client.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [weak self] (data, _, isComplete, err) in
             
             
             guard let self = self else { return }
