@@ -51,6 +51,9 @@ public final class ServerConnection {
         case closed
     }
     
+    private let RECV_BUFFER_SOFT_LIMIT = 512 * 1024  // 512KB
+    
+    
     /// 该连接是否已切到 LayerMinus 通道（由业务分支显式标记）
     public private(set) var isLayerMinusRouted: Bool = false
 
@@ -91,7 +94,7 @@ public final class ServerConnection {
 
     @inline(__always)
     private func log(_ msg: String) {
-        //NSLog("[ServerConnection] #\(id) %@", msg)
+        NSLog("[ServerConnection] #\(id) %@", msg)
     }
 
     public func start() {
@@ -160,6 +163,15 @@ public final class ServerConnection {
             if let chunk = data, !chunk.isEmpty {
                 //self.log("recv \(chunk.count)B, buffer before: \(self.recvBuffer.count)B, phase: \(self.phase)")
                 self.recvBuffer.append(chunk)
+                
+                if self.recvBuffer.count > RECV_BUFFER_SOFT_LIMIT {
+                    // 选择：要么丢弃老数据、要么直接 413 关闭，这里先保守地直接收尾，避免 OOM
+                    self.log("recvBuffer exceeded soft limit (\(self.recvBuffer.count)B) -> close to protect memory")
+                    self.close(reason: "recvBuffer overflow")
+                    return
+                }
+                
+                
                 //self.log("buffer after append: \(self.recvBuffer.count)B")
                 
                 // 打印接收到的数据的前几个字节（用于调试）

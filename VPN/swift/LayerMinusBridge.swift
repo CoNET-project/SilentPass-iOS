@@ -40,9 +40,23 @@ public final class LayerMinusBridge {
     // 当定时到点但缓冲小于该值时，允许再延一次以攒到更“胖”的报文
     private let CU_MIN_FLUSH_BYTES = 8 * 1024
     private let CU_EXTRA_MS = 10
-    private let CU_BUFFER_LIMIT = 256 * 1024
     
+    // —— 全局预算：限制所有桥接实例合计的缓冲上限（比如 8MB）
+    private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
+    private static var globalBufferedBytes: Int = 0
+    private static let globalLock = NSLock()
+
+    // —— 回压开关：当本连接的缓冲过大时，暂停 c->u 的继续接收
+    private var pausedC2U = false
     
+    @inline(__always)
+    private func addGlobalBytes(_ n: Int) {
+        Self.globalLock.lock(); Self.globalBufferedBytes &+= n; Self.globalLock.unlock()
+    }
+    @inline(__always)
+    private func subGlobalBytes(_ n: Int) {
+        Self.globalLock.lock(); Self.globalBufferedBytes &-= n; if Self.globalBufferedBytes < 0 { Self.globalBufferedBytes = 0 }; Self.globalLock.unlock()
+    }
     
     
     private let connectInfo: String?
@@ -66,6 +80,18 @@ public final class LayerMinusBridge {
     // 记录哪一侧先 EOF，用于判断是否处于 half-close
     private var eofUpstream = false
     private var eofClient = false
+    
+    private let CU_BUFFER_LIMIT = 256 * 1024
+    
+    @inline(__always)
+    private func appendToCUBuffer(_ d: Data) {
+        cuBuffer.append(d)
+        // 超过上限立即冲刷，避免缓冲堆积
+        if cuBuffer.count >= CU_BUFFER_LIMIT {
+            flushCUBuffer()
+        }
+    }
+    
     
     
     private let onClosed: ((UInt64) -> Void)?
@@ -193,6 +219,9 @@ public final class LayerMinusBridge {
         cuFlushTimer?.cancel(); cuFlushTimer = nil
         
         
+        let leftover = cuBuffer.count
+        if leftover > 0 { subGlobalBytes(leftover) }
+        
         
         cuBuffer.removeAll(keepingCapacity: false)
         
@@ -310,20 +339,23 @@ public final class LayerMinusBridge {
         cuFlushTimer = t
         t.resume()
     }
-    
-    private func appendToCUBuffer(_ d: Data) {
-        cuBuffer.append(d)
-        if cuBuffer.count >= CU_BUFFER_LIMIT {
-            flushCUBuffer(force: true)
-        }
-    }
 
-    private func flushCUBuffer(force: Bool = false) {
+    private func flushCUBuffer() {
         guard !cuBuffer.isEmpty, !closed else { return }
-        if !force, cuBuffer.count < CU_MIN_FLUSH_BYTES { return }
         let payload = cuBuffer
         cuBuffer.removeAll(keepingCapacity: true)
+
+        // —— 扣减全局水位
+        subGlobalBytes(payload.count)
+
         self.sendToUpstream(payload, remark: "c->u")
+
+        // —— 如果是回压态，且缓冲已清空，则恢复继续读客户端
+        if pausedC2U && cuBuffer.isEmpty {
+            pausedC2U = false
+            // 仅在未主动 schedule receive 的情况下补一次
+            pumpClientToUpstream()
+        }
     }
     
     private func pumpClientToUpstream() {
@@ -353,6 +385,7 @@ public final class LayerMinusBridge {
 
                 // —— 仅对测速流的 30–100B 小块“直发”，其余仍按微批策略处理
                 if self.isSpeedtestTarget && (30...100).contains(d.count) {
+                    self.smallC2UEvents &+= 1
                     self.sendToUpstream(d, remark: "c->u")
                 } else {
                     // 其它：累积到缓冲，达到阈值立即冲刷，否则启动短定时器
@@ -366,10 +399,10 @@ public final class LayerMinusBridge {
                 }
 
 
-                if !self.isSpeedtestTarget {
-                    if self.cuBuffer.count >= self.CU_FLUSH_BYTES { self.flushCUBuffer() }
-                    else { self.scheduleCUFlush() }
-                }
+//                if !self.isSpeedtestTarget {
+//                    if self.cuBuffer.count >= self.CU_FLUSH_BYTES { self.flushCUBuffer() }
+//                    else { self.scheduleCUFlush() }
+//                }
 
                 // 仅当本次不是“测速小块直发”时，才参与微批触发判断
                 if !(self.isSpeedtestTarget && (30...100).contains(d.count)) {
@@ -402,7 +435,11 @@ public final class LayerMinusBridge {
             }
             
             // 继续接收
-            self.pumpClientToUpstream()
+            if !self.pausedC2U {
+                self.pumpClientToUpstream()
+            } else {
+                self.vlog("pause c->u receive due to backpressure")
+            }
         }
     }
     
@@ -562,7 +599,9 @@ public final class LayerMinusBridge {
                     self.targetHost.hasSuffix("speedtest.net") ||
                     self.targetHost.contains("measurementlab")
                 let disableWatchdog = (self.targetPort == 8080) && isSpeedtestHost
-                let watchdogDelay: TimeInterval = disableWatchdog ? 15.0 : 2.5
+                let isHTTPS = (self.targetPort == 443)
+                let watchdogDelay: TimeInterval =
+                    disableWatchdog ? 15.0 : (isHTTPS ? 10.0 : 5.0)
                 
                 let wd = DispatchSource.makeTimerSource(queue: self.queue)
                 wd.schedule(deadline: .now() + watchdogDelay)
