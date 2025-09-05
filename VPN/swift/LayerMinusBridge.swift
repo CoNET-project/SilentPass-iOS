@@ -86,8 +86,10 @@ public final class LayerMinusBridge {
     @inline(__always)
     private func appendToCUBuffer(_ d: Data) {
         cuBuffer.append(d)
-        // 超过上限立即冲刷，避免缓冲堆积
+        addGlobalBytes(d.count)          // ← 补这行：把新进缓冲计入全局预算
+
         if cuBuffer.count >= CU_BUFFER_LIMIT {
+            pausedC2U = true             // ← 建议同时记一次“回压”状态
             flushCUBuffer()
         }
     }
