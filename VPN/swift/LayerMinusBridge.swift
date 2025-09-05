@@ -28,6 +28,12 @@ public final class LayerMinusBridge {
                  || h.contains("measurementlab")
                  || h.contains("mlab"))
     }
+    
+    // —— 发送在途(in-flight)预算，用于约束“直发小包”绕过 cuBuffer 的场景
+    private var inflightBytes: Int = 0
+    private var inflightSizes = [UInt64: Int]()   // seq -> bytes
+    private let INFLIGHT_BYTES_BUDGET = 512 * 1024   // 512KB（可按需调大到 768KB/1MB）
+    private let INFLIGHT_COUNT_BUDGET = 256          // 在途包数上限，双保险
 
     private var sendSeq: UInt64 = 0
     private var inflight = Set<UInt64>()
@@ -86,12 +92,53 @@ public final class LayerMinusBridge {
     @inline(__always)
     private func appendToCUBuffer(_ d: Data) {
         cuBuffer.append(d)
-        addGlobalBytes(d.count)          // ← 补这行：把新进缓冲计入全局预算
+        addGlobalBytes(d.count)
 
         if cuBuffer.count >= CU_BUFFER_LIMIT {
-            pausedC2U = true             // ← 建议同时记一次“回压”状态
+            pausedC2U = true
             flushCUBuffer()
+            return
         }
+
+        // ★ 全局预算触发：超出就立即flush并暂停读
+        Self.globalLock.lock()
+        let overBudget = Self.globalBufferedBytes > Self.GLOBAL_BUFFER_BUDGET
+        Self.globalLock.unlock()
+        if overBudget {
+            pausedC2U = true
+            flushCUBuffer()
+            return
+        }
+    }
+    
+    // —— Speedtest 上传微合并缓冲：4KB 或 4ms 触发，仅测速生效
+    private var stBuffer = Data()
+    private var stTimer: DispatchSourceTimer?
+    private let ST_FLUSH_BYTES = 4 * 1024
+    private let ST_FLUSH_MS = 4
+    
+    @inline(__always)
+    private func scheduleSTFlush() {
+        
+        stTimer?.setEventHandler {}
+        stTimer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + .milliseconds(ST_FLUSH_MS))
+        t.setEventHandler { [weak self] in
+            self?.flushSTBuffer()
+        }
+        stTimer = t
+        t.resume()
+    }
+
+    @inline(__always)
+    private func flushSTBuffer() {
+        guard !stBuffer.isEmpty, !closed else { return }
+        let payload = stBuffer
+        stBuffer.removeAll(keepingCapacity: true)
+        // 计入/扣回全局预算（stBuffer 同样参与全局水位）
+        subGlobalBytes(payload.count)
+        sendToUpstream(payload, remark: "c->u(st)")
     }
     
     
@@ -232,6 +279,15 @@ public final class LayerMinusBridge {
         if leftover > 0 { subGlobalBytes(leftover) }
         
         
+        stTimer?.setEventHandler {}
+        stTimer?.cancel(); stTimer = nil
+        let stLeft = stBuffer.count
+        if stLeft > 0 { subGlobalBytes(stLeft) }
+        
+        inflightSizes.removeAll(keepingCapacity: false)
+        inflight.removeAll(keepingCapacity: false)
+        inflightBytes = 0
+        
         cuBuffer.removeAll(keepingCapacity: false)
         
         kpiLog(reason: reason)
@@ -260,11 +316,13 @@ public final class LayerMinusBridge {
         
         // // 配置 TCP 参数（更稳妥的默认：443/80 保持 noDelay；keepalive 稍放宽）
         if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
-            let preferNoDelay = (targetPort == 443 || targetPort == 80 || targetPort == 8080)
+            // 非测速保持原来的偏好；测速目标关闭 noDelay，降低发送队列压力
+            let preferNoDelay = self.isSpeedtestTarget ? false : (targetPort == 443 || targetPort == 80 || targetPort == 8080)
             tcp.noDelay = preferNoDelay
             tcp.enableKeepalive = true
             tcp.keepaliveIdle = 30
         }
+        
         
         log("Connecting to upstream \(targetHost):\(targetPort)")
         
@@ -319,8 +377,22 @@ public final class LayerMinusBridge {
 		}
 	}
     
+    @inline(__always)
+    private func maybeResumeAfterInflightDrained() {
+        let (B, C) = self.inflightBudget()
+        if self.pausedC2U &&
+           self.inflightBytes <= B / 2 &&
+           self.inflight.count <= C / 2 {
+            self.pausedC2U = false
+            self.vlog("resume c->u after inflight drained: bytes=\(self.inflightBytes) count=\(self.inflight.count)")
+            self.pumpClientToUpstream()
+        }
+    }
+    
     private func scheduleCUFlush(allowExtend: Bool = true) {
+        cuFlushTimer?.setEventHandler {}   // 新增：先清 handler
         cuFlushTimer?.cancel()
+        
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + .milliseconds(CU_FLUSH_MS))
         
@@ -348,6 +420,11 @@ public final class LayerMinusBridge {
         cuFlushTimer = t
         t.resume()
     }
+    
+    @inline(__always)
+    private func inflightBudget() -> (bytes: Int, count: Int) {
+        return isSpeedtestTarget ? (128 * 1024, 64) : (512 * 1024, 256)
+    }
 
     private func flushCUBuffer() {
         guard !cuBuffer.isEmpty, !closed else { return }
@@ -361,9 +438,7 @@ public final class LayerMinusBridge {
 
         // —— 如果是回压态，且缓冲已清空，则恢复继续读客户端
         if pausedC2U && cuBuffer.isEmpty {
-            pausedC2U = false
-            // 仅在未主动 schedule receive 的情况下补一次
-            pumpClientToUpstream()
+            self.maybeResumeAfterInflightDrained()
         }
     }
     
@@ -395,7 +470,28 @@ public final class LayerMinusBridge {
                 // —— 仅对测速流的 30–100B 小块“直发”，其余仍按微批策略处理
                 if self.isSpeedtestTarget && (30...100).contains(d.count) {
                     self.smallC2UEvents &+= 1
-                    self.sendToUpstream(d, remark: "c->u")
+
+                    // 🔸 改为：测速上传微合并（首包已发出后才启动，避免影响握手）
+                    if self.tFirstSend != nil {
+                        self.stBuffer.append(d)
+                        self.addGlobalBytes(d.count)
+
+                        // 全局预算触发（与 cuBuffer 一致的防线）：立即 flush 并暂停读
+                        Self.globalLock.lock()
+                        let overBudget = Self.globalBufferedBytes > Self.GLOBAL_BUFFER_BUDGET
+                        Self.globalLock.unlock()
+                        if overBudget || self.stBuffer.count >= self.CU_BUFFER_LIMIT / 2 {
+                            self.pausedC2U = true
+                            self.flushSTBuffer()
+                        } else if self.stBuffer.count >= self.ST_FLUSH_BYTES {
+                            self.flushSTBuffer()
+                        } else {
+                            self.scheduleSTFlush()
+                        }
+                    } else {
+                        // 首包未完成前仍保留原直发（避免影响握手）
+                        self.sendToUpstream(d, remark: "c->u")
+                    }
                 } else {
                     // 其它：累积到缓冲，达到阈值立即冲刷，否则启动短定时器
                     self.appendToCUBuffer(d)
@@ -428,7 +524,8 @@ public final class LayerMinusBridge {
 
                 // 先把缓冲冲刷出去，再进入排水期/或酌情 half-close
                 self.flushCUBuffer()
-
+                
+                self.flushSTBuffer()   // 把测速合包缓冲也冲掉，释放全局预算
 
                 // ★ 若已观测到上游发过 100-Continue，但客户端尚未发送任何实体，
                 //   暂不 half-close 上游（避免把请求体“宣告写完”）；仅进入空闲计时，等待自然收尾
@@ -454,11 +551,10 @@ public final class LayerMinusBridge {
     
     private func scheduleDrainCancel(hint: String) {
         // half-close 空闲计时器：每次调用都会重置，确保有活动就不收尾
+        drainTimer?.setEventHandler {}   // 新增
         drainTimer?.cancel()
         
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        
-        
         timer.schedule(deadline: .now() + drainGrace)
         timer.setEventHandler { [weak self] in
             guard let s = self, s.alive() else { return }
@@ -489,8 +585,11 @@ public final class LayerMinusBridge {
                 if self.tFirstByte == nil {
                     self.tFirstByte = .now()
                     
+                    self.firstByteWatchdog?.setEventHandler {}
+                    self.firstByteWatchdog?.cancel()
+                    self.firstByteWatchdog = nil
                     
-                    self.firstByteWatchdog?.cancel(); self.firstByteWatchdog = nil
+                
                     // KPI: 即时打印首字节到达延迟 (TTFB)
                     let ttfbMs = Double(self.tFirstByte!.uptimeNanoseconds &- self.tStart.uptimeNanoseconds) / 1e6
                     self.log(String(format: "KPI immediate TTFB_ms=%.1f", ttfbMs))
@@ -546,20 +645,48 @@ public final class LayerMinusBridge {
         }
         
         let seq = { sendSeq &+= 1; return sendSeq }()
-        
         inflight.insert(seq)
         
+        let (B, C) = self.inflightBudget()
+
+        // —— 入账在途体积，并在超预算时暂停 c->u 读取
+        let sz = data.count
+        inflightSizes[seq] = sz
+        inflightBytes &+= sz
+        
+        if inflightBytes >= B || inflight.count >= C {
+            if !pausedC2U {
+                pausedC2U = true
+                vlog("pause c->u due to inflight budget: bytes=\(inflightBytes) count=\(inflight.count)")
+            }
+        }
+        
+
         vlog("send \(remark) \(data.count)B -> upstream #\(seq)")
+        
+        
         
         up.send(content: data, completion: .contentProcessed({ [weak self] err in
             
             guard let self = self, self.alive() else { return }
             
             // 去重：只处理一次完成回调
+            
             guard self.inflight.remove(seq) != nil else {
+                
+                // —— 出账在途体积
+                if let n = self.inflightSizes.removeValue(forKey: seq) {
+                    self.inflightBytes &-= n
+                    if self.inflightBytes < 0 { self.inflightBytes = 0 }
+                }
+
+                self.maybeResumeAfterInflightDrained()
+
                 self.log("WARN dup completion for #\(seq), ignore")
                 return
             }
+            
+            
             if let err = err {
                 self.log("upstream send err: \(err)")
                 self.queue.async { self.cancel(reason: "upstream send err") }
@@ -599,18 +726,16 @@ public final class LayerMinusBridge {
                 self.vlog("sent \(remark) successfully")
             }
 
+            self.maybeResumeAfterInflightDrained()
 
             self.bytesUp &+= data.count
             // 仅在首包时设置 TTFB 看门狗
             if remark == "firstBody" {
-                let isSpeedtestHost =
-                    self.targetHost.hasSuffix("ooklaserver.net") ||
-                    self.targetHost.hasSuffix("speedtest.net") ||
-                    self.targetHost.contains("measurementlab")
-                let disableWatchdog = (self.targetPort == 8080) && isSpeedtestHost
+                
+                // 仅对测速(8080)禁用/放宽；复用 isSpeedtestTarget，且限定端口
+                let disableWatchdog = (self.targetPort == 8080) && self.isSpeedtestTarget
                 let isHTTPS = (self.targetPort == 443)
-                let watchdogDelay: TimeInterval =
-                    disableWatchdog ? 15.0 : (isHTTPS ? 10.0 : 5.0)
+                let watchdogDelay: TimeInterval = disableWatchdog ? 15.0 : (isHTTPS ? 10.0 : 5.0)
                 
                 let wd = DispatchSource.makeTimerSource(queue: self.queue)
                 wd.schedule(deadline: .now() + watchdogDelay)

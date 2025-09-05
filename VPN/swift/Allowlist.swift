@@ -284,6 +284,7 @@ struct Allowlist {
         "iprofiles.apple.com",
         "ppq.apple.com",
         "baidu.com",
+        "bdstatic.com",
 
         // 🔥 微信（WeChat）相关域名
         "wechat.com",

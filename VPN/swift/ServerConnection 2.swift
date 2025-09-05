@@ -18,6 +18,7 @@ public final class ServerConnection {
             self?.close(reason: "blocked by blacklist (\(reason))")
         }))
     }
+    
     private func blockSocksAndClose(_ reason: String) {
         // 0x02: connection not allowed by ruleset
         let reply = Data([0x05, 0x02, 0x00, 0x01, 0,0,0,0, 0,0])
