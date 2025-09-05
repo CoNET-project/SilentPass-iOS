@@ -35,11 +35,15 @@ public final class LayerMinusBridge {
     // --- 上行(c->u)微批：64KB 或 5ms 触发 ---
     private var cuBuffer = Data()
     private var cuFlushTimer: DispatchSourceTimer?
-    private let CU_FLUSH_BYTES = 64 * 1024
-    private let CU_FLUSH_MS = 12
+    private let CU_FLUSH_BYTES = 48 * 1024
+    private let CU_FLUSH_MS = 10
     // 当定时到点但缓冲小于该值时，允许再延一次以攒到更“胖”的报文
     private let CU_MIN_FLUSH_BYTES = 8 * 1024
     private let CU_EXTRA_MS = 10
+    private let CU_BUFFER_LIMIT = 256 * 1024
+    
+    
+    
     
     private let connectInfo: String?
     // 路由元信息（用于统计/打点）
@@ -306,9 +310,17 @@ public final class LayerMinusBridge {
         cuFlushTimer = t
         t.resume()
     }
+    
+    private func appendToCUBuffer(_ d: Data) {
+        cuBuffer.append(d)
+        if cuBuffer.count >= CU_BUFFER_LIMIT {
+            flushCUBuffer(force: true)
+        }
+    }
 
-    private func flushCUBuffer() {
+    private func flushCUBuffer(force: Bool = false) {
         guard !cuBuffer.isEmpty, !closed else { return }
+        if !force, cuBuffer.count < CU_MIN_FLUSH_BYTES { return }
         let payload = cuBuffer
         cuBuffer.removeAll(keepingCapacity: true)
         self.sendToUpstream(payload, remark: "c->u")
@@ -341,11 +353,10 @@ public final class LayerMinusBridge {
 
                 // —— 仅对测速流的 30–100B 小块“直发”，其余仍按微批策略处理
                 if self.isSpeedtestTarget && (30...100).contains(d.count) {
-                    self.smallC2UEvents &+= 1
                     self.sendToUpstream(d, remark: "c->u")
                 } else {
                     // 其它：累积到缓冲，达到阈值立即冲刷，否则启动短定时器
-                    self.cuBuffer.append(d)
+                    self.appendToCUBuffer(d)
                 }
 
 

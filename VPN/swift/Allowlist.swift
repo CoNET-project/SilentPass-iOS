@@ -166,6 +166,9 @@ struct AdBlacklist {
         "buysellads.com",
         "carbonads.com",
         "cdn.ampproject.org",
+        "zdbb.net",
+        "trackcmp.net",
+        
 
         // 更多跟踪器
         "mixpanel.com",
@@ -254,9 +257,12 @@ struct Allowlist {
         "conet.network",
         "apple.com",
         "push.apple.com",
+        "cdn-apple.com",
+        "cdnst.net",
         "icloud.com",
         "push-apple.com.akadns.net",
         "silentpass.io",
+        "ziffstatic.com",
         "courier.push.apple.com",
         "gateway.push.apple.com",
         "gateway.sandbox.push.apple.com",
@@ -314,6 +320,7 @@ struct Allowlist {
         "mmbiz.qpic.cn",
         "mmbiz.qlogo.cn",
         "mmsns.qpic.cn",
+        "sync.com",
 
         // 腾讯推送服务
         "dns.weixin.qq.com",
