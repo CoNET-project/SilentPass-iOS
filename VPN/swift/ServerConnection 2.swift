@@ -573,6 +573,16 @@ public final class ServerConnection {
             let host = "\(bytes[0]).\(bytes[1]).\(bytes[2]).\(bytes[3])"
             let port = (Int(bytes[4]) << 8) | Int(bytes[5])
             recvBuffer.removeFirst(6)
+            
+            // --- 白名单：命中则直连（不走 LayerMinus） ---
+            if shouldDirect(host: host) {
+                useLayerMinus = false
+                log("SOCKS5 CONNECT \(host):\(port) matched allowlist -> DIRECT")
+            } else {
+                useLayerMinus = true
+            }
+            
+            
             return didGetTarget(host: host, port: port)
 
         case 0x03: // DOMAIN: 1(len) + len + 2
