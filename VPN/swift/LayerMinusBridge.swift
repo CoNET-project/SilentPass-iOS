@@ -145,10 +145,17 @@ public final class LayerMinusBridge {
         }
     }
     
-    @inline(__always)
-    private func log(_ msg: String) {
-        NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
-    }
+    #if DEBUG
+        @inline(__always)
+        private func log(_ msg: String) {
+            NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
+        }
+    #else
+        @inline(__always)
+        private func log(_ msg: @autoclosure () -> String) { }
+    #endif
+    
+    
     
     // --- 追加KPI ---
     private var tHandoff: DispatchTime?

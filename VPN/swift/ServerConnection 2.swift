@@ -29,7 +29,8 @@ public final class ServerConnection {
     // 命中白名单 → 直连（由 ServerConnection 决策，不走 LM 打包）
     @inline(__always)
     private func shouldDirect(host: String) -> Bool {
-        return Allowlist.matches(host)
+        // 与 PAC 语义对齐：Allowlist 或（PAC 的）AdBlacklist 命中都视为直连/不打包
+    	return Allowlist.matches(host) || AdBlacklist.matches(host)
     }
 
     public let id: UInt64
@@ -92,10 +93,15 @@ public final class ServerConnection {
         log("🟢 CREATED ServerConnection #\(id)")
     }
 
+    #if DEBUG
     @inline(__always)
-    private func log(_ msg: String) {
-        NSLog("[ServerConnection] #\(id) %@", msg)
-    }
+        private func log(_ msg: @autoclosure () -> String) {
+            NSLog("[ServerConnection] #\(id) %@", msg())
+        }
+    #else
+        @inline(__always)
+        private func log(_ msg: @autoclosure () -> String) { }
+    #endif
 
     public func start() {
         client.stateUpdateHandler = { [weak self] state in

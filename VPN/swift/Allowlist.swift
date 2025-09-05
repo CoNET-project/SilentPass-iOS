@@ -29,7 +29,6 @@ struct AdBlacklist {
         "fbcdn.net",
 
         // Amazon
-        "amazon-adsystem.com",
         "amazontrust.com",
 
         // Microsoft
@@ -229,8 +228,11 @@ struct AdBlacklist {
             if pat.hasPrefix("*.") {
                 let suf = String(pat.dropFirst(1)) // ".example.com"
                 if h.hasSuffix(suf) { return true }
-            } else if h == pat {
-                return true
+            } else {
+                // Match exact domain OR any subdomain
+                if h == pat || h.hasSuffix("." + pat) {
+                    return true
+                }
             }
         }
         // 额外正则匹配
@@ -261,8 +263,10 @@ struct Allowlist {
         "cdnst.net",
         "icloud.com",
         "push-apple.com.akadns.net",
+        "amazon-adsystem.com",
         "silentpass.io",
         "ziffstatic.com",
+        "cdn.ziffstatic.com",
         "courier.push.apple.com",
         "gateway.push.apple.com",
         "gateway.sandbox.push.apple.com",
@@ -342,7 +346,6 @@ struct Allowlist {
     static let regexps: [NSRegularExpression] = [] // 如需正则白名单可补充
     @inline(__always)
     static func matches(_ host: String) -> Bool {
-        // 统一用“标签后缀匹配”：root 或者以 ".root" 结尾都算命中
         @inline(__always)
         func labelSuffixMatch(_ h: String, _ root: String) -> Bool {
             if h == root { return true }
@@ -353,11 +356,10 @@ struct Allowlist {
         for p in patterns {
             var root = p.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             if root.hasPrefix("*.") {
-                root.removeFirst(2)        // "*.example.com" -> "example.com"
+                root.removeFirst(2)
             }
             guard !root.isEmpty else { continue }
             if labelSuffixMatch(h, root) { return true }
-
         }
         
         for re in regexps {
