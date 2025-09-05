@@ -62,6 +62,8 @@
 		D0850B2E2E52CC4C00BC1BF4 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0850B2D2E52CC4C00BC1BF4 /* vpn2socks */; };
 		D0850B302E52CCC900BC1BF4 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0850B2F2E52CCC900BC1BF4 /* vpn2socks */; };
 		D0C2F7152E614F5D0084804F /* build3.zip in Resources */ = {isa = PBXBuildFile; fileRef = D0C2F7142E614F5D0084804F /* build3.zip */; };
+		D0D00E5E2E6AED7000E76945 /* Allowlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D00E5D2E6AED6E00E76945 /* Allowlist.swift */; };
+		D0D00E602E6AEF8800E76945 /* PACBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D00E5F2E6AEF8700E76945 /* PACBuilder.swift */; };
 		D0D33D5F2E298A9000E849BC /* LocalServerFirstSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */; };
 		D0D33D632E298BCE00E849BC /* CodableCachedData.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D622E298BCD00E849BC /* CodableCachedData.swift */; };
 		D0E605702E56DA2300167745 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0E6056F2E56DA2300167745 /* vpn2socks */; };
@@ -168,6 +170,8 @@
 		D06663FA2E284BC0007D010D /* Updater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Updater.swift; sourceTree = "<group>"; };
 		D0850B272E52C06600BC1BF4 /* vpn2socks */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = vpn2socks; sourceTree = "<group>"; };
 		D0C2F7142E614F5D0084804F /* build3.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = build3.zip; sourceTree = "<group>"; };
+		D0D00E5D2E6AED6E00E76945 /* Allowlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Allowlist.swift; sourceTree = "<group>"; };
+		D0D00E5F2E6AEF8700E76945 /* PACBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PACBuilder.swift; sourceTree = "<group>"; };
 		D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServerFirstSchemeHandler.swift; sourceTree = "<group>"; };
 		D0D33D622E298BCD00E849BC /* CodableCachedData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableCachedData.swift; sourceTree = "<group>"; };
 		E04572E9846C75F10876B175 /* Pods-CoNETVPN1.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1.debug.xcconfig"; sourceTree = "<group>"; };
@@ -250,8 +254,10 @@
 			children = (
 				7606D7042D2EC5A000224EC8 /* CONET_Guardian_NodeInfo_ABI.text */,
 				7606D70A2D2EC5A000224EC8 /* Server 2.swift */,
+				D0D00E5F2E6AEF8700E76945 /* PACBuilder.swift */,
 				7606D70C2D2EC5A000224EC8 /* ServerConnection 2.swift */,
 				D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */,
+				D0D00E5D2E6AED6E00E76945 /* Allowlist.swift */,
 				D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */,
 				D0064CEE2E5B8D74003FBD9D /* CountryManager.swift */,
 				D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */,
@@ -685,7 +691,9 @@
 				7606D71B2D2EC5A000224EC8 /* ServerConnection 2.swift in Sources */,
 				D04D4E1B2E59908B0083DD23 /* LayerMinus.swift in Sources */,
 				D0064CEF2E5B8D74003FBD9D /* CountryManager.swift in Sources */,
+				D0D00E5E2E6AED7000E76945 /* Allowlist.swift in Sources */,
 				D04D4E1D2E5990FF0083DD23 /* NodeManager.swift in Sources */,
+				D0D00E602E6AEF8800E76945 /* PACBuilder.swift in Sources */,
 				7606D71C2D2EC5A000224EC8 /* Server 2.swift in Sources */,
 				7660ED4A2D13A861008B6D28 /* PacketTunnelProvider.swift in Sources */,
 			);

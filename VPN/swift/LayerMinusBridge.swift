@@ -109,13 +109,13 @@ public final class LayerMinusBridge {
     deinit {
         log("🔴 DESTROYED LayerMinusBridge #\(id)")
         if !closed {
-            print("⚠️ WARNING: LayerMinusBridge #\(id) destroyed without proper closing!")
+            log("⚠️ WARNING: LayerMinusBridge #\(id) destroyed without proper closing!")
         }
     }
     
     @inline(__always)
     private func log(_ msg: String) {
-        //NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
+        NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
     }
     
     // --- 追加KPI ---

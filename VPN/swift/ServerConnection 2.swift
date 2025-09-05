@@ -3,358 +3,6 @@ import Network
 import os
 
 
-// --- 广告黑名单（支持精确与前缀 *. 通配后缀匹配） ---
-private struct AdBlacklist {
-    // 可继续扩充；保持短小，命中即废止代理
-    static let patterns: [String] = [
-        "doubleclick.net",
-        "googleadservices.com",
-        "googlesyndication.com",
-        "googletagmanager.com",
-        "googletagservices.com",
-        "google-analytics.com",
-        "googleanalytics.com",
-        "adsystem.com",
-        "adsrvr.org",
-        "onetrust.com",
-        "liadm.com",
-
-        // Facebook/Meta
-        "facebook-analytics.com",
-        "fbcdn.net",
-
-        // Amazon
-        "amazon-adsystem.com",
-        "amazontrust.com",
-
-        // Microsoft
-        "adsrvr.org",
-        "bing.com",
-        "msftconnecttest.com",
-
-        // 通用广告网络
-        "adsrvr.org",
-        "adnxs.com",
-        "adzerk.net",
-        "pubmatic.com",
-        "criteo.com",
-        "criteo.net",
-        "casalemedia.com",
-        "openx.net",
-        "rubiconproject.com",
-        "serving-sys.com",
-        "taboola.com",
-        "outbrain.com",
-        "media.net",
-        "yieldmo.com",
-        "3lift.com",
-        "indexexchange.com",
-        "sovrn.com",
-        "sharethrough.com",
-        "spotx.tv",
-        "springserve.com",
-        "tremor.io",
-        "tribalfusion.com",
-        "undertone.com",
-        "yieldlab.net",
-        "yieldmanager.com",
-        "zedo.com",
-        "zemanta.com",
-
-        // 分析和跟踪
-        "scorecardresearch.com",
-        "quantserve.com",
-        "imrworldwide.com",
-        "nielsen.com",
-        "alexa.com",
-        "hotjar.com",
-        "mouseflow.com",
-        "luckyorange.com",
-        "clicktale.com",
-        "demdex.net",
-        "krxd.net",
-        "bluekai.com",
-        "exelator.com",
-        "mathtag.com",
-        "turn.com",
-        "acuityplatform.com",
-        "adform.net",
-        "bidswitch.net",
-        "contextweb.com",
-        "districtm.io",
-        "emxdgt.com",
-        "gumgum.com",
-        "improve-digital.com",
-        "inmobi.com",
-        "loopme.com",
-        "mobfox.com",
-        "nexage.com",
-        "rhythmone.com",
-        "smaato.com",
-        "smartadserver.com",
-        "stroeer.io",
-        "teads.tv",
-        "triplelift.com",
-        "verizonmedia.com",
-        "vertamedia.com",
-        "video.io",
-        "viralize.com",
-        "weborama.com",
-        "widespace.com",
-
-        // 中国广告网络
-        "baidu.com",
-        "tanx.com",
-        "mediav.com",
-        "admaster.com.cn",
-        "dsp.com",
-        "vamaker.com",
-        "allyes.com",
-        "ipinyou.com",
-        "irs01.com",
-        "istreamsche.com",
-        "jusha.com",
-        "knet.cn",
-        "madserving.com",
-        "miaozhen.com",
-        "mmstat.com",
-        "moad.cn",
-        "mobaders.com",
-        "mydas.mobi",
-        "n.shifen.com",
-        "netease.gg",
-        "newrelic.com",
-        "nexac.com",
-        "ntalker.com",
-        "nylalobghyhirgh.com",
-        "o2omobi.com",
-        "oimagea2.ydstatic.com",
-        "optaim.com",
-        "optimix.asia",
-        "optimizely.com",
-        "overture.com",
-        "p0y.cn",
-        "pagead.l.google.com",
-        "pageadimg.l.google.com",
-        "pbcdn.com",
-        "pingdom.net",
-        "pixanalytics.com",
-        "ppjia55.com",
-        "punchbox.org",
-        "qchannel01.cn",
-        "qiyou.com",
-        "qtmojo.com",
-        "quantcount.com",
-
-        // 恶意软件和垃圾邮件
-        "2o7.net",
-        "omtrdc.net",
-        "everesttech.net",
-        "everest-tech.net",
-        "rubiconproject.com",
-        "adsafeprotected.com",
-        "adsymptotic.com",
-        "adtechjp.com",
-        "advertising.com",
-        "evidon.com",
-        "voicefive.com",
-        "buysellads.com",
-        "carbonads.com",
-        "cdn.ampproject.org",
-
-        // 更多跟踪器
-        "mixpanel.com",
-        "kissmetrics.com",
-        "segment.com",
-        "segment.io",
-        "keen.io",
-        "amplitude.com",
-        "appsflyer.com",
-        "branch.io",
-        "adjust.com",
-        "kochava.com",
-        "tenjin.io",
-        "singular.net",
-        "apptentive.com",
-        "appboy.com",
-        "braze.com",
-        "customer.io",
-        "intercom.io",
-        "drift.com",
-        "zendesk.com"
-    ]
-    
-    static let regexps: [NSRegularExpression] = {
-        let raw = [
-        ".*\\.(doubleclick|googleadservices|googlesyndication|google-analytics|adsrvr|adnxs|pubmatic|criteo|casalemedia|openx|rubiconproject|taboola|outbrain|scorecardresearch|quantserve|demdex|krxd)\\..*",
-        "^ad[sxvmn]?\\d*[.-].*",
-        "^.*[.-]ad[sxvmn]?\\d*[.-].*",
-        "^banner[sz]?[.-].*",
-        "^.*[.-]banner[sz]?[.-].*",
-        "^track(er|ing)?[.-].*",
-        "^.*[.-]track(er|ing)?[.-].*",
-        "^stat[sz]?[.-].*",
-        "^.*[.-]stat[sz]?[.-].*",
-        "^analytics?[.-].*",
-        "^.*[.-]analytics?[.-].*",
-        "^metric[sz]?[.-].*",
-        "^.*[.-]metric[sz]?[.-].*",
-        "^telemetry[.-].*",
-        "^.*[.-]telemetry[.-].*",
-        "^pixel[.-].*",
-        "^.*[.-]pixel[.-].*",
-        "^click[.-].*",
-        "^.*[.-]click[.-].*",
-        "^counter[.-].*",
-        "^.*[.-]counter[.-].*",
-        "^beacon[.-].*",
-        "^.*[.-]beacon[.-].*"
-        ]
-        return raw.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
-    }()
-
-    @inline(__always)
-    static func matches(_ host: String) -> Bool {
-        let h = host.lowercased()
-        for p in patterns {
-            let pat = p.lowercased()
-            if pat.hasPrefix("*.") {
-                let suf = String(pat.dropFirst(1)) // ".example.com"
-                if h.hasSuffix(suf) { return true }
-            } else if h == pat {
-                return true
-            }
-        }
-		// 额外正则匹配
-		for re in regexps {
-			let range = NSRange(location: 0, length: h.utf16.count)
-			if re.firstMatch(in: h, options: [], range: range) != nil {
-				return true
-			}
-		}
-		return false
-    }
-}
-
-// --- 白名单（命中则本地直连，不走 LayerMinus 打包） ---
-private struct Allowlist {
-    // 可按需扩充；示例以常见业务域/必要依赖为主，避免误伤
-    static let patterns: [String] = [
-        "conet.network",
-        "silentpass.io",
-        "openpgp.online",
-        "comm100vue.com",
-        "comm100.io",
-        // Apple Push 相关
-        "conet.network",
-        "apple.com",
-        "push.apple.com",
-        "icloud.com",
-        "push-apple.com.akadns.net",
-        "silentpass.io",
-        "courier.push.apple.com",
-        "gateway.push.apple.com",
-        "gateway.sandbox.push.apple.com",
-        "gateway.icloud.com",
-        "bag.itunes.apple.com",
-        "init.itunes.apple.com",
-        "xp.apple.com",
-        "gsa.apple.com",
-        "gsp-ssl.ls.apple.com",
-        "gsp-ssl.ls-apple.com.akadns.net",
-        "mesu.apple.com",
-        "gdmf.apple.com",
-        "deviceenrollment.apple.com",
-        "mdmenrollment.apple.com",
-        "iprofiles.apple.com",
-        "ppq.apple.com",
-
-        // 🔥 微信（WeChat）相关域名
-        "wechat.com",
-        "weixin.qq.com",
-        "weixin110.qq.com",
-        "tenpay.com",
-        "mm.taobao.com",
-        "wx.qq.com",
-        "web.wechat.com",
-        "webpush.weixin.qq.com",
-        "qpic.cn",
-        "qlogo.cn",
-        "wx.gtimg.com",
-        "minorshort.weixin.qq.com",
-        "log.weixin.qq.com",
-        "szshort.weixin.qq.com",
-        "szminorshort.weixin.qq.com",
-        "szextshort.weixin.qq.com",
-        "hkshort.weixin.qq.com",
-        "hkminorshort.weixin.qq.com",
-        "hkextshort.weixin.qq.com",
-        "hklong.weixin.qq.com",
-        "sgshort.wechat.com",
-        "sgminorshort.wechat.com",
-        "sglong.wechat.com",
-        "usshort.wechat.com",
-        "usminorshort.wechat.com",
-        "uslong.wechat.com",
-
-        // 微信支付
-        "pay.weixin.qq.com",
-        "payapp.weixin.qq.com",
-
-        // 微信文件传输
-        "file.wx.qq.com",
-        "support.weixin.qq.com",
-
-        // 微信 CDN
-        "mmbiz.qpic.cn",
-        "mmbiz.qlogo.cn",
-        "mmsns.qpic.cn",
-
-        // 腾讯推送服务
-        "dns.weixin.qq.com",
-        "short.weixin.qq.com",
-        "long.weixin.qq.com",
-
-        "doubleclick.net",
-        "pubmatic.com",
-        "adnxs.com",
-        "rubiconproject.com",
-
-        "adsrvr.org",
-        "criteo.com",
-
-        "taboola.com",
-        "yahoo.com",
-        "publicsuffix.org"
-    ]
-    static let regexps: [NSRegularExpression] = [] // 如需正则白名单可补充
-    @inline(__always)
-    static func matches(_ host: String) -> Bool {
-        // 统一用“标签后缀匹配”：root 或者以 ".root" 结尾都算命中
-        @inline(__always)
-        func labelSuffixMatch(_ h: String, _ root: String) -> Bool {
-            if h == root { return true }
-            return h.hasSuffix("." + root)
-        }
-
-        let h = host.lowercased()
-        for p in patterns {
-            var root = p.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-            if root.hasPrefix("*.") {
-                root.removeFirst(2)        // "*.example.com" -> "example.com"
-            }
-            guard !root.isEmpty else { continue }
-            if labelSuffixMatch(h, root) { return true }
-
-        }
-        
-        for re in regexps {
-            let r = NSRange(location: 0, length: h.utf16.count)
-            if re.firstMatch(in: h, options: [], range: r) != nil { return true }
-        }
-        return false
-    }
-}
 
 
 public final class ServerConnection {
@@ -661,134 +309,159 @@ public final class ServerConnection {
             
             // 进入 connected，等待 TLS 首包进入再统一走 processFirstBody → LayerMinusBridge
             self.phase = .connected(host: hp.host, port: hp.port)
-                return true
-            }
-
-        
-            // 其它明文 HTTP：需至少拿到完整首部（避免误改正文）
-            guard let headerEnd = recvBuffer.range(of: CRLFCRLF) else { return false }
-
-        
-            // 解析第一行：METHOD SP PATH SP HTTP/x.y
-            let lineParts = firstLine.split(separator: " ", maxSplits: 2)
-            guard lineParts.count == 3 else { return false }
-            let method = String(lineParts[0])
-            let rawPath = String(lineParts[1]) // 可能是绝对URI
-            var version = String(lineParts[2]) // HTTP/1.1
-            if version.hasPrefix("HTTP/") { version.removeFirst(5) }
-    
-            // 解析 Host 首部（用于 origin-form 与默认端口判断）
-            let headerData = recvBuffer.subdata(in: firstLineEnd.upperBound..<headerEnd.lowerBound)
-            guard let headerText = String(data: headerData, encoding: .utf8) else { return false }
-            var hostHeader = ""
-            for line in headerText.split(separator: "\r\n") {
-                let t = line.trimmingCharacters(in: .whitespaces)
-                if t.lowercased().hasPrefix("host:") {
-                    hostHeader = t.dropFirst("host:".count).trimmingCharacters(in: .whitespaces)
-                    break
-                }
-            }
-
-        
-            // 目标主机/端口与改写后的 PATH
-            let (targetHost, targetPort, originPath) = normalizeAbsoluteOrOriginPath(
-                rawPath: rawPath,
-                hostHeader: hostHeader
-            )
-
-            // --- 白名单：命中则本地直连，不走 LM ---
-            if shouldDirect(host: targetHost) {
-                useLayerMinus = false
-                log("HTTP \(method) \(targetHost):\(targetPort) matched allowlist -> DIRECT")
-            } else {
-                useLayerMinus = true
-            }
-
-            // --- 黑名单：明文 HTTP 直接 403 并关闭 ---
-            if shouldBlock(host: targetHost) {
-                // 消费缓冲，避免遗留
-                recvBuffer.removeAll(keepingCapacity: false)
-                log("HTTP \(method) \(targetHost):\(targetPort) blocked by blacklist")
-                blockHTTPForbiddenAndClose("HTTP \(method) \(targetHost)")
-                return true
-            }
-
-            // 重写第一行：METHOD SP originPath SP HTTP/version
-            let newFirstLine = "\(method) \(originPath) HTTP/\(version)"
-            guard let newFirstLineData = (newFirstLine + "\r\n").data(using: .utf8) else { return false }
-    
-            // 将首行替换为改写后的内容，其余首部与（可能存在的）正文原样透传
-            // 原数据 = [firstLine + CRLF] + [headers.. + CRLFCRLF] + [body...]
-            let restData = recvBuffer.subdata(in: firstLineEnd.upperBound..<recvBuffer.endIndex)
-            var rewritten = Data()
-            rewritten.append(newFirstLineData)
-            rewritten.append(restData)
-    
-            // 消费缓冲并移交给 LayerMinusBridge
-            recvBuffer.removeAll(keepingCapacity: false)
-        
-        
-            
-            handoffToBridge(host: targetHost, port: targetPort, firstBody: rewritten)
             return true
+
         }
 
-        private func splitHostPort(_ hostPort: String, defaultPort: Int) -> (host: String, port: Int) {
-            if let idx = hostPort.lastIndex(of: ":"), idx < hostPort.endIndex {
-                let h = String(hostPort[..<idx])
-                let pStr = String(hostPort[hostPort.index(after: idx)...])
-                if let p = Int(pStr), p > 0 && p < 65536 { return (h, p) }
-            }
-            return (hostPort, defaultPort)
-        }
-    
-        /// 将绝对URI（http://h[:p]/x）改写为 origin-form（/x），并返回目标 host/port
-        private func normalizeAbsoluteOrOriginPath(rawPath: String, hostHeader: String) -> (String, Int, String) {
-            var host = hostHeader
-            var port = 80
-            var path = rawPath
+	
+		// 其它明文 HTTP：需至少拿到完整首部（避免误改正文）
+		guard let headerEnd = recvBuffer.range(of: CRLFCRLF) else { return false }
 
-            
-            if rawPath.hasPrefix("http://") || rawPath.hasPrefix("https://") {
-                // 绝对URI：解析 scheme://host[:port]/path?query
-                let isHTTPS = rawPath.hasPrefix("https://")
-                port = isHTTPS ? 443 : 80
-                let schemeEnd = rawPath.index(rawPath.startIndex, offsetBy: isHTTPS ? 8 : 7)
-                let afterScheme = rawPath[schemeEnd...]            // host[:port]/path...
-                if let slash = afterScheme.firstIndex(of: "/") {
-                    let hp = String(afterScheme[..<slash])
-                    let tail = String(afterScheme[slash...])      // /path?query
-                    let sp = splitHostPort(hp, defaultPort: port)
-                    host = sp.host
-                    port = sp.port
-                    path = tail.isEmpty ? "/" : tail
-                } else {
-                    // 没有路径，按根路径处理
-                    let hp = String(afterScheme)
-                    let sp = splitHostPort(hp, defaultPort: port)
-                    host = sp.host
-                    port = sp.port
-                    path = "/"
-                }
-            } else {
-                // origin-form：需要从 Host 首部补全目标
-                let sp = splitHostPort(hostHeader, defaultPort: 80)
-                host = sp.host
-                port = sp.port
-            }
-            if path.isEmpty { path = "/" }
-            return (host, port, path)
-        }
-    
-        private func handoffToBridge(host: String, port: Int, firstBody: Data) {
-            if self.httpConnect {
-                log("🟢 HTTP/HTTPS proxy #\(id) \(host):\(port) ")
-            } else {
-                log("🟢 SOCKS v5 proxy #\(id) \(host):\(port) ")
-            }
-            
-            processFirstBody(host: host, port: port, firstBody: firstBody)
-        }
+	
+		// 解析第一行：METHOD SP PATH SP HTTP/x.y
+		let lineParts = firstLine.split(separator: " ", maxSplits: 2)
+		guard lineParts.count == 3 else { return false }
+		let method = String(lineParts[0])
+		let rawPath = String(lineParts[1]) // 可能是绝对URI
+		var version = String(lineParts[2]) // HTTP/1.1
+		if version.hasPrefix("HTTP/") { version.removeFirst(5) }
+
+		// 解析 Host 首部（用于 origin-form 与默认端口判断）
+		let headerData = recvBuffer.subdata(in: firstLineEnd.upperBound..<headerEnd.lowerBound)
+		guard let headerText = String(data: headerData, encoding: .utf8) else { return false }
+		var hostHeader = ""
+		for line in headerText.split(separator: "\r\n") {
+			let t = line.trimmingCharacters(in: .whitespaces)
+			if t.lowercased().hasPrefix("host:") {
+				hostHeader = t.dropFirst("host:".count).trimmingCharacters(in: .whitespaces)
+				break
+			}
+		}
+
+	
+		// 目标主机/端口与改写后的 PATH
+		let (targetHost, targetPort, originPath) = normalizeAbsoluteOrOriginPath(
+			rawPath: rawPath,
+			hostHeader: hostHeader
+		)
+
+		if method.uppercased() == "GET",
+			(targetHost == "127.0.0.1" || targetHost == "localhost"),
+			(targetPort == 8888),
+			(originPath == "/pac" || originPath == "/pac.js") {
+
+			// 回送 PAC
+			let body = PACBuilder.buildPAC()
+			var headers = "HTTP/1.1 200 OK\r\n"
+			headers += "Content-Type: application/x-ns-proxy-autoconfig; charset=utf-8\r\n"
+			headers += "Cache-Control: no-store, max-age=0\r\n"
+			headers += "Content-Length: \(body.count)\r\n"
+			headers += "Connection: close\r\n\r\n"
+
+			var resp = Data(headers.utf8)
+			resp.append(body)
+
+			// 清空缓冲，直接回发并关连接
+			recvBuffer.removeAll(keepingCapacity: false)
+			client.send(content: resp, completion: .contentProcessed({ [weak self] _ in
+				self?.close(reason: "served PAC")
+			}))
+			return true
+		}
+
+		// --- 白名单：命中则本地直连，不走 LM ---
+		if shouldDirect(host: targetHost) {
+			useLayerMinus = false
+			log("HTTP \(method) \(targetHost):\(targetPort) matched allowlist -> DIRECT")
+		} else {
+			useLayerMinus = true
+		}
+
+		// --- 黑名单：明文 HTTP 直接 403 并关闭 ---
+		if shouldBlock(host: targetHost) {
+			// 消费缓冲，避免遗留
+			recvBuffer.removeAll(keepingCapacity: false)
+			log("HTTP \(method) \(targetHost):\(targetPort) blocked by blacklist")
+			blockHTTPForbiddenAndClose("HTTP \(method) \(targetHost)")
+			return true
+		}
+
+		// 重写第一行：METHOD SP originPath SP HTTP/version
+		let newFirstLine = "\(method) \(originPath) HTTP/\(version)"
+		guard let newFirstLineData = (newFirstLine + "\r\n").data(using: .utf8) else { return false }
+
+		// 将首行替换为改写后的内容，其余首部与（可能存在的）正文原样透传
+		// 原数据 = [firstLine + CRLF] + [headers.. + CRLFCRLF] + [body...]
+		let restData = recvBuffer.subdata(in: firstLineEnd.upperBound..<recvBuffer.endIndex)
+		var rewritten = Data()
+		rewritten.append(newFirstLineData)
+		rewritten.append(restData)
+
+		// 消费缓冲并移交给 LayerMinusBridge
+		recvBuffer.removeAll(keepingCapacity: false)
+	
+	
+		
+		handoffToBridge(host: targetHost, port: targetPort, firstBody: rewritten)
+		return true
+	}
+
+	private func splitHostPort(_ hostPort: String, defaultPort: Int) -> (host: String, port: Int) {
+		if let idx = hostPort.lastIndex(of: ":"), idx < hostPort.endIndex {
+			let h = String(hostPort[..<idx])
+			let pStr = String(hostPort[hostPort.index(after: idx)...])
+			if let p = Int(pStr), p > 0 && p < 65536 { return (h, p) }
+		}
+		return (hostPort, defaultPort)
+	}
+
+	/// 将绝对URI（http://h[:p]/x）改写为 origin-form（/x），并返回目标 host/port
+	private func normalizeAbsoluteOrOriginPath(rawPath: String, hostHeader: String) -> (String, Int, String) {
+		var host = hostHeader
+		var port = 80
+		var path = rawPath
+
+		
+		if rawPath.hasPrefix("http://") || rawPath.hasPrefix("https://") {
+			// 绝对URI：解析 scheme://host[:port]/path?query
+			let isHTTPS = rawPath.hasPrefix("https://")
+			port = isHTTPS ? 443 : 80
+			let schemeEnd = rawPath.index(rawPath.startIndex, offsetBy: isHTTPS ? 8 : 7)
+			let afterScheme = rawPath[schemeEnd...]            // host[:port]/path...
+			if let slash = afterScheme.firstIndex(of: "/") {
+				let hp = String(afterScheme[..<slash])
+				let tail = String(afterScheme[slash...])      // /path?query
+				let sp = splitHostPort(hp, defaultPort: port)
+				host = sp.host
+				port = sp.port
+				path = tail.isEmpty ? "/" : tail
+			} else {
+				// 没有路径，按根路径处理
+				let hp = String(afterScheme)
+				let sp = splitHostPort(hp, defaultPort: port)
+				host = sp.host
+				port = sp.port
+				path = "/"
+			}
+		} else {
+			// origin-form：需要从 Host 首部补全目标
+			let sp = splitHostPort(hostHeader, defaultPort: 80)
+			host = sp.host
+			port = sp.port
+		}
+		if path.isEmpty { path = "/" }
+		return (host, port, path)
+	}
+
+	private func handoffToBridge(host: String, port: Int, firstBody: Data) {
+		if self.httpConnect {
+			log("🟢 HTTP/HTTPS proxy #\(id) \(host):\(port) ")
+		} else {
+			log("🟢 SOCKS v5 proxy #\(id) \(host):\(port) ")
+		}
+		
+		processFirstBody(host: host, port: port, firstBody: firstBody)
+	}
     
     
 
