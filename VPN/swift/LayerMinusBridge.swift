@@ -114,7 +114,7 @@ public final class LayerMinusBridge {
     // —— Speedtest 上传微合并缓冲：4KB 或 4ms 触发，仅测速生效
     private var stBuffer = Data()
     private var stTimer: DispatchSourceTimer?
-    private let ST_FLUSH_BYTES = 32 * 1024
+    private let ST_FLUSH_BYTES = 64 * 1024
     private let ST_FLUSH_MS = 1
     
     @inline(__always)
@@ -136,9 +136,32 @@ public final class LayerMinusBridge {
         guard !stBuffer.isEmpty, !closed else { return }
         let payload = stBuffer
         stBuffer.removeAll(keepingCapacity: true)
-        // 计入/扣回全局预算（stBuffer 同样参与全局水位）
         subGlobalBytes(payload.count)
-        sendToUpstream(payload, remark: "c->u(st)")
+
+        let (B, _) = self.inflightBudget()
+        if self.inflightBytes >= (B * 90) / 100 {
+            // 1) 关闭旧定时器
+            stTimer?.setEventHandler {}
+            stTimer?.cancel()
+
+            // 2) 1ms 后再试一次：优先继续“再合包”一轮（flushSTBuffer），
+            //    若 stBuffer 尚未积累，则直接发送 payload
+            let t = DispatchSource.makeTimerSource(queue: queue)
+            t.schedule(deadline: .now() + .milliseconds(1))
+            t.setEventHandler { [weak self] in
+                guard let s = self, s.alive() else { return }
+                if !s.stBuffer.isEmpty {
+                    s.flushSTBuffer()
+                } else {
+                    s.sendToUpstream(payload, remark: "c->u(st)")
+                }
+            }
+            stTimer = t       // 关键：持有引用，避免定时器被释放
+            t.resume()
+        } else {
+            sendToUpstream(payload, remark: "c->u(st)")
+        }
+        
     }
     
     
@@ -423,7 +446,7 @@ public final class LayerMinusBridge {
     
     @inline(__always)
     private func inflightBudget() -> (bytes: Int, count: Int) {
-        return isSpeedtestTarget ? (2 * 1024 * 1024, 1024) : (512 * 1024, 256)
+        return isSpeedtestTarget ? (3_000_000, 1200) : (512 * 1024, 256)
     }
 
     private func flushCUBuffer() {
@@ -445,7 +468,7 @@ public final class LayerMinusBridge {
     private func pumpClientToUpstream() {
         if closed { return }
         
-        client.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [weak self] (data, _, isComplete, err) in
+        client.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] (data, _, isComplete, err) in
             
             
             guard let self = self else { return }
@@ -468,7 +491,7 @@ public final class LayerMinusBridge {
                 self.vlog("recv from client: \(d.count)B")
 
                 // —— 仅对测速流的 30–100B 小块“直发”，其余仍按微批策略处理
-                if self.isSpeedtestTarget && (30...100).contains(d.count) {
+                if self.isSpeedtestTarget && (1...300).contains(d.count) {
                     self.smallC2UEvents &+= 1
 
                     // 🔸 改为：测速上传微合并（首包已发出后才启动，避免影响握手）
@@ -510,7 +533,7 @@ public final class LayerMinusBridge {
 //                }
 
                 // 仅当本次不是“测速小块直发”时，才参与微批触发判断
-                if !(self.isSpeedtestTarget && (30...100).contains(d.count)) {
+                if !(self.isSpeedtestTarget && (1...300).contains(d.count)) {
                     if self.cuBuffer.count >= self.CU_FLUSH_BYTES { self.flushCUBuffer() }
                     else { self.scheduleCUFlush() }
                 }
@@ -548,6 +571,8 @@ public final class LayerMinusBridge {
             }
         }
     }
+    
+    
     
     private func scheduleDrainCancel(hint: String) {
         // half-close 空闲计时器：每次调用都会重置，确保有活动就不收尾
