@@ -107,7 +107,7 @@ struct AdBlacklist {
         "widespace.com",
 
         // 中国广告网络
-        "baidu.com",
+        
         "tanx.com",
         "mediav.com",
         "admaster.com.cn",
@@ -283,6 +283,7 @@ struct Allowlist {
         "mdmenrollment.apple.com",
         "iprofiles.apple.com",
         "ppq.apple.com",
+        "baidu.com",
 
         // 🔥 微信（WeChat）相关域名
         "wechat.com",
