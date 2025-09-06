@@ -39,8 +39,11 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     }
 
     override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        var opts = options ?? [:]
+        // 这就是 Allowlist.ipv4CIDRsRaw
+        opts["LM.extraExcludedCIDRs"] = (Allowlist.ipv4CIDRsRaw as NSArray)
         
-        super.startTunnel(options: options) { error in
+        super.startTunnel(options: opts) { error in
             // 5. 在核心逻辑完成后，你可以执行后续的自定义操作
             if let error = error {
                 NSLog("PacketTunnelProvider Target: Core logic failed. Cleaning up.")
@@ -57,6 +60,9 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let privateKey = options["privateKey"] as? String ?? ""
                 let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
                 let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
+                
+               
+                
                 do {
 //                    try self.socksServer?.start(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
                     try self.socksServer?.start()
