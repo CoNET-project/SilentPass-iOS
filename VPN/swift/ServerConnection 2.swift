@@ -1,7 +1,7 @@
 import Foundation
 import Network
 import os
-
+import Darwin
 
 
 
@@ -27,11 +27,38 @@ public final class ServerConnection {
         }))
     }
 
+	@inline(__always)
+	private func resolveFirstIPv4(_ host: String) -> String? {
+		// 仅解析 IPv4，避免 IPv6 干扰 CIDR
+		var hints = addrinfo(
+			ai_flags: AI_ADDRCONFIG, ai_family: AF_INET,
+			ai_socktype: SOCK_STREAM, ai_protocol: IPPROTO_TCP,
+			ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil
+		)
+		var res: UnsafeMutablePointer<addrinfo>?
+		let rc = getaddrinfo(host, nil, &hints, &res)
+		guard rc == 0, let first = res else { return nil }
+		defer { freeaddrinfo(res) }
+
+		var addr = first.pointee.ai_addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+		var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+		inet_ntop(AF_INET, &addr.sin_addr, &buf, socklen_t(INET_ADDRSTRLEN))
+		return String(cString: buf)
+	}
+
     // 命中白名单 → 直连（由 ServerConnection 决策，不走 LM 打包）
     @inline(__always)
     private func shouldDirect(host: String) -> Bool {
-        // 与 PAC 语义对齐：Allowlist 或（PAC 的）AdBlacklist 命中都视为直连/不打包
-    	return Allowlist.matches(host) || AdBlacklist.matches(host)
+        // 1) 先按域名规则（保持现有语义）
+		if Allowlist.matches(host) { return true }
+		// 若你之前把 AdBlacklist 也当成直连，这里保留：
+		// if AdBlacklist.matches(host) { return true }
+
+		// 2) 未命中时，解析一次 IPv4 再跑 CIDR
+		if let ip = resolveFirstIPv4(host), Allowlist.matches(ip) {
+			return true
+		}
+		return false
     }
 
     public let id: UInt64

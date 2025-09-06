@@ -136,6 +136,7 @@ struct Allowlist {
         "improve-digital.com",
         "inmobi.com",
         "loopme.com",
+        
         "mobfox.com",
         "nexage.com",
         "rhythmone.com",
@@ -235,6 +236,7 @@ struct Allowlist {
         "drift.com",
         "zendesk.com",
         // Apple Push 相关
+        "me.com",
         "conet.network",
         "apple.com",
         "push.apple.com",
@@ -370,6 +372,7 @@ struct Allowlist {
         "183.192.0.0/10",
         "203.205.128.0/17",
         "211.95.0.0/16",
+        "54.71.177.0/24",
         "220.196.0.0/14",
         "101.33.10.0/24",
           "101.33.11.0/24",
@@ -955,6 +958,7 @@ struct Allowlist {
           "98.98.62.0/24",
             "49.51.190.0/24",
             "49.51.67.0/24",
+        "104.21.53.0/24",
         
         
         
