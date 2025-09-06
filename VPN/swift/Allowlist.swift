@@ -269,6 +269,7 @@ struct Allowlist {
 
         // 🔥 微信（WeChat）相关域名
         "wechat.com",
+        "qq.com",
         "weixin.qq.com",
         "weixin110.qq.com",
         "tenpay.com",
