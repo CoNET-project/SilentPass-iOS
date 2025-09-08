@@ -8,7 +8,7 @@ enum L {
 }
 
 public final class LayerMinusBridge {
-    private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 9 * 1024 * 1024
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0
@@ -21,12 +21,13 @@ public final class LayerMinusBridge {
     @inline(__always)
     private var isSpeedtestTarget: Bool {
         // 仅对 8080/443 且域名命中测速特征的连接生效
-        let h = targetHost.lowercased()
-        return (targetPort == 8080 || targetPort == 443) &&
-               (h.hasSuffix("ooklaserver.net")
-                 || h.hasSuffix("speedtest.net")
-                 || h.contains("measurementlab")
-                 || h.contains("mlab"))
+//        let h = targetHost.lowercased()
+//        return (targetPort == 8080 || targetPort == 443) &&
+//               (h.hasSuffix("ooklaserver.net")
+//                 || h.hasSuffix("speedtest.net")
+//                 || h.contains("measurementlab")
+//                 || h.contains("mlab"))
+        return true
     }
 
 	private var currentBufferLimit: Int = 4 * 1024 // 初始大小 4KB
@@ -129,8 +130,13 @@ public final class LayerMinusBridge {
     
     public let id: UInt64
     private let client: NWConnection
-    private let targetHost: String
-    private let targetPort: Int
+    
+    private let reqHost: String
+    private let reqPort: Int
+    
+    private let resHost: String
+    private let resPort: Int
+    
     private let verbose: Bool
     
     // --- KPI & 半关闭守护 ---
@@ -245,6 +251,7 @@ public final class LayerMinusBridge {
     
     private let queue: DispatchQueue
     private var upstream: NWConnection?
+    private var downstream: NWConnection?
     private var closed = false
     
     // —— 生存门闸：所有回调入口先判存活，避免已取消后仍访问资源
@@ -265,22 +272,29 @@ public final class LayerMinusBridge {
     init(
         id: UInt64,
         client: NWConnection,
-        targetHost: String,
-        targetPort: Int,
+        reqHost: String,
+        reqPort: Int,
+        resHost: String,
+        resPort: Int,
         verbose: Bool = false,
         connectInfo: String? = nil,
         onClosed: ((UInt64) -> Void)? = nil
     ) {
         self.id = id
         self.client = client
-        self.targetHost = targetHost
-        self.targetPort = targetPort
+        
+        self.reqHost = reqHost
+        self.reqPort = reqPort
+        
+        self.resHost = resHost
+        self.resPort = resPort
+        
         self.verbose = verbose
         self.onClosed = onClosed
         self.connectInfo = connectInfo
         self.queue = DispatchQueue(label: "LayerMinusBridge.\(id)", qos: .userInitiated)
         // 简单的生命周期日志
-        NSLog("🟢 CREATED LayerMinusBridge #\(id) for \(targetHost):\(targetPort)\(infoTag())")
+        NSLog("🟢 CREATED LayerMinusBridge #\(id) for reqHost \(reqHost):\(reqPort) resHost \(resHost):\(resPort) \(infoTag())")
     }
     
     deinit {
@@ -319,7 +333,7 @@ public final class LayerMinusBridge {
             
             // KPI: 记录会话起点，用于计算 hsRTT / TTFB / 总时长
             self.tStart = .now()
-            self.log("start -> \(self.targetHost):\(self.targetPort), firstBody(Base64) len=\(firstBodyBase64.count)")
+            self.log("start -> \(self.reqHost):\(self.reqPort) <-- \(self.resHost):\(self.resPort), firstBody(Base64) len=\(firstBodyBase64.count)")
             
             
             
@@ -345,7 +359,7 @@ public final class LayerMinusBridge {
             }
             
             // 开始连接上游并转发数据
-            self.connectUpstreamAndRun(firstBody: firstBody)
+            self.connectUpstreamAndRun(reqFirstBody: firstBody,resFirstBody: Data.fromHex(""))
             
         }
     }
@@ -404,9 +418,13 @@ public final class LayerMinusBridge {
         kpiLog(reason: reason)
         log("cancel: \(reason)")
         
-        // 关闭上游连接
+        // 关闭上行连接
         upstream?.cancel()
         upstream = nil
+        
+        // 关闭下行连接
+        downstream?.cancel()
+        downstream = nil
         
         // 关闭客户端连接
         client.cancel()
@@ -415,70 +433,121 @@ public final class LayerMinusBridge {
         onClosed?(id)
     }
     
-    private func connectUpstreamAndRun(firstBody: Data) {
-        guard let port = NWEndpoint.Port(rawValue: UInt16(targetPort)) else {
-            log("invalid port \(targetPort)")
-            cancel(reason: "invalid port")
-            return
+    public func start(
+        reqFirstBodyBase64: String,
+        resFirstBodyBase64: String
+    ) {
+        queue.async { [weak self] in
+            guard let self = self, self.alive() else { return }
+
+            self.tStart = .now()
+            self.log("start (dual-first-body) -> req=\(self.reqHost):\(self.reqPort)  res=\(self.resHost):\(self.resPort)  reqLen=\(reqFirstBodyBase64.count)  resLen=\(resFirstBodyBase64.count)")
+
+            if let th = self.tHandoff {
+                let ms = Double(self.tStart.uptimeNanoseconds &- th.uptimeNanoseconds) / 1e6
+                self.log(String(format: "KPI handoff_to_start_ms=%.1f", ms))
+            }
+
+            guard let reqFirst = Data(base64Encoded: reqFirstBodyBase64), let resFirst = Data(base64Encoded: resFirstBodyBase64) else {
+                self.log("reqFirstBody base64 decode failed")
+                self.queue.async { self.cancel(reason: "Invalid Base64 (req)") }
+                return
+            }
+
+            self.connectUpstreamAndRun(reqFirstBody: reqFirst, resFirstBody: resFirst)
         }
-        
-        let host = NWEndpoint.Host(targetHost)
+    }
+    
+    private func connectUpstreamAndRun(reqFirstBody: Data, resFirstBody: Data?) {
+        // 端口合法性
+        guard let reqNWPort = NWEndpoint.Port(rawValue: UInt16(self.reqPort)) else {
+            log("invalid reqPort \(self.reqPort)"); cancel(reason: "invalid reqPort"); return
+        }
+        guard let resNWPort = NWEndpoint.Port(rawValue: UInt16(self.resPort)) else {
+            log("invalid resPort \(self.resPort)"); cancel(reason: "invalid resPort"); return
+        }
+
+        // TCP 参数
         let params = NWParameters.tcp
-        
-        // // 配置 TCP 参数（更稳妥的默认：443/80 保持 noDelay；keepalive 稍放宽）
         if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
-            // 非测速保持原来的偏好；测速目标关闭 noDelay，降低发送队列压力
-            let preferNoDelay = true  // 测速与非测速都开；若只想对测速开：self.isSpeedtestTarget ? true : (targetPort == 443 || targetPort == 80 || targetPort == 8080)
-            tcp.noDelay = preferNoDelay
+            tcp.noDelay = true
             tcp.enableKeepalive = true
             tcp.keepaliveIdle = 30
         }
-        
-        
-        log("Connecting to upstream \(targetHost):\(targetPort)")
-        
-        let up = NWConnection(host: host, port: port, using: params)
-        upstream = up
-        
-        up.stateUpdateHandler = { [weak self] st in
-            guard let self = self else { return }
-            
-            guard self.alive() else { return }
-            
-            
-            switch st {
-            case .ready:
-                self.log("upstream ready to \(self.targetHost):\(self.targetPort)")
-                // KPI: 记录上游就绪时刻（握手完成）
-                self.tReady = .now()
-                // 发送首包到上游
-                if !firstBody.isEmpty {
-                    
-                    // 记录首包发送完成时刻（用于 firstSend -> firstRecv）
-                    self.sendToUpstream(firstBody, remark: "firstBody")
+
+        // 两条连接并发启动
+        let up = NWConnection(host: NWEndpoint.Host(self.reqHost), port: reqNWPort, using: params)
+        let down = NWConnection(host: NWEndpoint.Host(self.resHost), port: resNWPort, using: params)
+        self.upstream = up
+        self.downstream = down
+
+        var upReady = false
+        var downReady = false
+        var reqFirstSent = false
+        var resFirstSent = false
+
+        func maybeKickPumps() {
+            guard alive() else { return }
+            // 两端一旦 ready，就分别发各自首包（各发一次）
+            if upReady, !reqFirstSent {
+                reqFirstSent = true
+                if !reqFirstBody.isEmpty {
+                    self.sendToUpstream(reqFirstBody, remark: "firstBody(req)")
                 }
-                
-                // 启动双向数据泵
+            }
+            if downReady, !resFirstSent, let rb = resFirstBody, !rb.isEmpty {
+                // 下行有“首包”（例如预先的响应前缀/H2 preface），则注入给客户端
+                self.bytesDown &+= rb.count
+                self.sendToClient(rb, remark: "firstBody(res->client)")
+                resFirstSent = true
+            }
+            // 当两端都 ready 后，正式启动双泵
+            if upReady && downReady {
                 self.pumpClientToUpstream()
-                self.pumpUpstreamToClient()
-                
-            case .waiting(let error):
-                self.log("upstream waiting: \(error)")
-                
-            case .failed(let error):
-                self.log("upstream failed: \(error)")
-                self.queue.async { self.cancel(reason: "upstream failed") }
-                
-            case .cancelled:
-                self.log("upstream cancelled")
-                self.queue.async { self.cancel(reason: "upstream cancelled") }
-                
-            default:
-                self.log("upstream state: \(st)")
+                self.pumpDownstreamToClient()
             }
         }
-        
+
+        up.stateUpdateHandler = { [weak self] st in
+            guard let s = self, s.alive() else { return }
+            switch st {
+            case .ready:
+                s.log("UP ready \(s.reqHost):\(s.reqPort)")
+                s.tReady = .now()
+                upReady = true
+                maybeKickPumps()
+            case .waiting(let e):
+                s.log("UP waiting: \(e)")
+            case .failed(let e):
+                s.log("UP failed: \(e)"); s.queue.async { s.cancel(reason: "upstream failed") }
+            case .cancelled:
+                s.log("UP cancelled"); s.queue.async { s.cancel(reason: "upstream cancelled") }
+            default:
+                s.log("UP state: \(st)")
+            }
+        }
+
+        down.stateUpdateHandler = { [weak self] st in
+            guard let s = self, s.alive() else { return }
+            switch st {
+            case .ready:
+                s.log("DOWN ready \(s.resHost):\(s.resPort)")
+                downReady = true
+                maybeKickPumps()
+            case .waiting(let e):
+                s.log("DOWN waiting: \(e)")
+            case .failed(let e):
+                s.log("DOWN failed: \(e)"); s.queue.async { s.cancel(reason: "downstream failed") }
+            case .cancelled:
+                s.log("DOWN cancelled"); s.queue.async { s.cancel(reason: "downstream cancelled") }
+            default:
+                s.log("DOWN state: \(st)")
+            }
+        }
+
+        log("Connecting: UP \(reqHost):\(reqPort)  |  DOWN \(resHost):\(resPort)")
         up.start(queue: queue)
+        down.start(queue: queue)
     }
 
 	// 来自 ServerConnection 的 handoff 瞬间标记
@@ -690,73 +759,60 @@ public final class LayerMinusBridge {
         timer.resume()
     }
     
-    private func pumpUpstreamToClient() {
+    private func pumpDownstreamToClient() {
         if closed { return }
-        
-        upstream?.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
-            
-            guard let self = self else { return }
-            if !self.alive() { return }
-            
-            if self.closed { return }
-            
+        downstream?.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
+            guard let self = self, self.alive() else { return }
+
             if let err = err {
-                self.log("upstream recv err: \(err)")
-                self.queue.async { self.cancel(reason: "upstream recv err") }
+                self.log("downstream recv err: \(err)")
+                self.queue.async { self.cancel(reason: "downstream recv err") }
                 return
             }
-            
+
             if let d = data, !d.isEmpty {
-                self.vlog("recv from upstream: \(d.count)B")
+                self.vlog("recv from downstream: \(d.count)B")
+
                 if self.tFirstByte == nil {
                     self.tFirstByte = .now()
-                    
                     self.firstByteWatchdog?.setEventHandler {}
                     self.firstByteWatchdog?.cancel()
                     self.firstByteWatchdog = nil
-                    
-                
-                    // KPI: 即时打印首字节到达延迟 (TTFB)
+
                     let ttfbMs = Double(self.tFirstByte!.uptimeNanoseconds &- self.tStart.uptimeNanoseconds) / 1e6
                     self.log(String(format: "KPI immediate TTFB_ms=%.1f", ttfbMs))
-                    // KPI: 首包发送完成 -> 首字节回流（纯传输/排队段）
                     if let ts = self.tFirstSend {
                         let segMs = Double(self.tFirstByte!.uptimeNanoseconds &- ts.uptimeNanoseconds) / 1e6
                         self.log(String(format: "KPI firstSend_to_firstRecv_ms=%.1f", segMs))
                     }
                 }
-                
-                // ★ 轻量识别 100-Continue（只看明文前缀；TLS 情况下这里拿到的是解密后的应用数据）
+
+                // 100-Continue 识别必须放在“下行”链路
                 if !self.saw100Continue {
                     if let s = String(data: d.prefix(16), encoding: .ascii),
                        s.hasPrefix("HTTP/1.1 100") || s.hasPrefix("HTTP/1.0 100") {
                         self.saw100Continue = true
-                        self.log("observed upstream HTTP 100-Continue")
+                        self.log("observed downstream HTTP 100-Continue")
                     }
                 }
-                
 
                 self.bytesDown &+= d.count
-                self.sendToClient(d, remark: "u->c")
-                
-                // 若客户端已 EOF（half-close），但上游仍在下发数据，则刷新空闲计时器，避免早收尾
+                self.sendToClient(d, remark: "down->client")
+
                 if self.eofClient {
-                    self.scheduleDrainCancel(hint: "client EOF (upstream->client activity)")
+                    self.scheduleDrainCancel(hint: "client EOF (downstream->client activity)")
                 }
-                
             }
-            
+
             if isComplete {
-                self.log("upstream EOF")
-                self.eofUpstream = true
-                // 半关闭客户端写入，进入排水期
+                self.log("downstream EOF")
+                self.eofUpstream = true     // 下行方向等价于“上游写完”
                 self.client.send(content: nil, completion: .contentProcessed({ _ in }))
-                self.scheduleDrainCancel(hint: "upstream EOF")
+                self.scheduleDrainCancel(hint: "downstream EOF")
                 return
             }
-            
-            // 继续接收
-            self.pumpUpstreamToClient()
+
+            self.pumpDownstreamToClient()
         }
     }
     
@@ -841,7 +897,7 @@ public final class LayerMinusBridge {
                         let upDelta = max(0, s.bytesUp - s.bytesUpAtFirstSend)
                         if upDelta < 32 * 1024 && s.smallC2UEvents >= 10 && !s.uploadStuck {
                             s.uploadStuck = true
-                            s.log("UPLOAD_STUCK origin=\(s.targetHost):\(s.targetPort) up=\(upDelta)B down=\(s.bytesDown)B small_events=\(s.smallC2UEvents)")
+                            s.log("UPLOAD_STUCK req=\(s.reqHost):\(s.reqPort) res=\(s.resHost):\(s.resPort) up=\(upDelta)B down=\(s.bytesDown)B small_events=\(s.smallC2UEvents)")
                             // 仅延后收尾由 drain idle 控制（不主动 half-close）
                             s.scheduleDrainCancel(hint: "UPLOAD_STUCK")
                         }
@@ -864,7 +920,7 @@ public final class LayerMinusBridge {
                 
 				// 测速流（无论 443 或 8080）禁用/放宽 watchdog，HTTPS 再放宽一些
 				let disableWatchdog = self.isSpeedtestTarget
-				let isHTTPS = (self.targetPort == 443)
+				let isHTTPS = (self.reqPort == 443)
 				let watchdogDelay: TimeInterval = disableWatchdog ? 20.0 : (isHTTPS ? 15.0 : 8.0)
 
 				let wd = DispatchSource.makeTimerSource(queue: self.queue)
@@ -884,11 +940,14 @@ public final class LayerMinusBridge {
     
     private func kpiLog(reason: String) {
         let now = DispatchTime.now()
-        let durMs = Double(now.uptimeNanoseconds &- tStart.uptimeNanoseconds) / 1e6
-        let hsMs: Double? = tReady.map { diffMs(start: tStart, end: $0) }
-        let fbMs: Double? = tFirstByte.map { diffMs(start: tStart, end: $0) }
-        func f(_ x: Double?) -> String { x.map { String(format: "%.1f", $0) } ?? "-" }
-        log("KPI host=\(targetHost):\(targetPort) reason=\(reason) hsRTT_ms=\(f(hsMs)) ttfb_ms=\(f(fbMs)) up_bytes=\(bytesUp) down_bytes=\(bytesDown) dur_ms=\(String(format: "%.1f", durMs))")
+            let durMs = Double(now.uptimeNanoseconds &- tStart.uptimeNanoseconds) / 1e6
+            let hsMs: Double? = tReady.map { diffMs(start: tStart, end: $0) }
+            let fbMs: Double? = tFirstByte.map { diffMs(start: tStart, end: $0) }
+
+            func f(_ x: Double?) -> String { x.map { String(format: "%.1f", $0) } ?? "-" }
+            let durStr = String(format: "%.1f", durMs)
+
+            log("KPI req=\(reqHost):\(reqPort) res=\(resHost):\(resPort) reason=\(reason) hsRTT_ms=\(f(hsMs)) ttfb_ms=\(f(fbMs)) up_bytes=\(bytesUp) down_bytes=\(bytesDown) dur_ms=\(durStr)")
     }
     
 

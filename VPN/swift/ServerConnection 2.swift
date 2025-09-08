@@ -1,8 +1,99 @@
 import Foundation
 import Network
 import os
-import Darwin
+import Web3Core
+import web3swift
 
+// 定义请求数据结构
+struct SocksRequestData: Codable {
+    let host: String
+    let cmd: String
+    let port: Int
+    let order: Int
+    let buffer: String
+}
+
+// 定义完整的 Socks 请求结构
+struct SocksRequest: Codable {
+    let command: String
+    let algorithm: String
+    let Securitykey: String
+    let requestData: [SocksRequestData]
+    let walletAddress: String
+}
+
+func makeSocksRequest(host: String,
+                      port: Int,
+                      buffer: String,
+                      walletAddress: String,
+                      Securitykey: String,
+                      order: Int = 0,
+                      cmd: String) -> String? {
+    
+    // 创建请求数据对象
+    let requestData = SocksRequestData(
+        host: host,
+        cmd: cmd,
+        port: port,
+        order: order,
+        buffer: buffer
+    )
+    
+    // 创建完整的请求对象
+    let socksRequest = SocksRequest(
+        command: "SaaS_Sock5",
+        algorithm: "aes-256-cbc",
+        Securitykey: Securitykey,
+        requestData: [requestData],
+        walletAddress: walletAddress
+    )
+    
+    // 将对象转换为 JSON 字符串
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys // 可选：保持键的顺序
+    
+    do {
+        let jsonData = try encoder.encode(socksRequest)
+        if let jsonString = String(data: jsonData, encoding: .utf8) {
+            return jsonString
+        }
+    } catch {
+        print("JSON 编码错误: \(error)")
+    }
+    
+    return nil
+}
+
+
+// 定义签名消息结构
+struct SignMessage: Codable {
+    let message: String
+    let signMessage: String
+}
+
+// json_sign_message 函数实现（结构化版本）
+func jsonSignMessage(message: String, signMessage: String) -> String? {
+    // 创建签名消息对象
+    let signMessageObj = SignMessage(
+        message: message,
+        signMessage: signMessage
+    )
+    
+    // 将对象转换为 JSON 字符串
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys // 可选：保持键的顺序
+    
+    do {
+        let jsonData = try encoder.encode(signMessageObj)
+        if let jsonString = String(data: jsonData, encoding: .utf8) {
+            return jsonString
+        }
+    } catch {
+        print("JSON 编码错误: \(error)")
+    }
+    
+    return nil
+}
 
 
 public final class ServerConnection {
@@ -101,7 +192,7 @@ public final class ServerConnection {
 
     // 路由决策：是否使用 LayerMinus 打包（默认 true）
     private var useLayerMinus: Bool = true
-
+    private var account: EthereumAddress!
     init(
         id: UInt64,
         connection: NWConnection,
@@ -119,6 +210,7 @@ public final class ServerConnection {
         self.layerMinus = layerMinus
         // 简单的生命周期日志
         log("🟢 CREATED ServerConnection #\(id)")
+        self.account = layerMinus.keystoreManager.addresses![0]
     }
 
     #if DEBUG
@@ -752,86 +844,131 @@ public final class ServerConnection {
         phase = .bridged
         
         
-        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
-              !egressNode.isEmpty else {
+        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(), let reqEntryInfo = self.layerMinus.getRandomEntryNodes(), let resEntryInfo = self.layerMinus.getRandomEntryNodes(),
+              !egressNode.isEmpty, !reqEntryInfo.isEmpty, !resEntryInfo.isEmpty  else {
             let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
             // 创建并启动 LayerMinusBridge，保存引用
-            let newBridge = LayerMinusBridge(
-                id: self.id,
-                client: self.client,
-                targetHost: host,
-                targetPort: port,
-                verbose: self.verbose,
-                connectInfo: connectInfo,
-                onClosed: { [weak self] bridgeId in
-                    // 当 bridge 关闭时，关闭 ServerConnection
-                    self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
-                    self?.close(reason: "Bridge closed")
-                }
-            )
-            
-            self.bridge = newBridge
-            self.onRoutingDecided?(self)
-            
-            // KPI：标记 handoff 时刻（与 Bridge.start 的 tStart 对齐，用于 handoff->start）
-            self.log("KPI handoff -> LM host=\(host):\(port) ")
-            newBridge.markHandoffNow()
-            // 传递 Base64 编码的首包给 bridge
-            newBridge.start(withFirstBody: b64)
+                  
+                  let newBridge = LayerMinusBridge(
+                      id: self.id,
+                      client: self.client,
+                      reqHost: host, reqPort: port,   // 上行直连目标
+                      resHost: host, resPort: port,   // 下行直连目标
+                      verbose: self.verbose,
+                      connectInfo: connectInfo,
+                      onClosed: { [weak self] bid in
+                          self?.log("Bridge #\(bid) closed, closing ServerConnection")
+                          self?.close(reason: "Bridge closed")
+                      }
+                  )
+                  self.bridge = newBridge
+                  self.onRoutingDecided?(self)
+                  self.log("KPI handoff -> DIRECT \(host):\(port)")
+                  newBridge.markHandoffNow()
+                  newBridge.start(withFirstBody: firstBody.base64EncodedString())
             return
         }
         
-        let entryInfo = self.layerMinus.getRandomEntryNodes()?.ip_addr ?? "NONE"
         
         
         if self.httpConnect {
-            self.log("Layer Minus start by HTTP/HTTPS PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryInfo), egress \(egressNode.ip_addr)")
+            self.log("Layer Minus start by HTTP/HTTPS PROXY 🟢 \(self.id) \(host):\(port) with reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr), egress \(egressNode.ip_addr)")
         } else {
-            self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryInfo), egress \(egressNode.ip_addr)")
+            self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr), egress \(egressNode.ip_addr)")
         }
-
-
+        let securityKey = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         
-        let message = self.layerMinus.makeSocksRequest(host: host, port: port, body: b64, command: "CONNECT")
-        let messageData = message.data(using: .utf8)!
-        let account = self.layerMinus.keystoreManager.addresses![0]
+        
+        
 
+        if let jsonRequestReq = makeSocksRequest(
+            host: host,
+            port: port,
+            buffer: b64,
+            walletAddress: self.layerMinus.walletAddress,
+            Securitykey: securityKey,
+            order: 0,
+            cmd: "CONNECT"
+        ), let jsonRequestRes = makeSocksRequest(
+            host: host,
+            port: port,
+            buffer: "",
+            walletAddress: self.layerMinus.walletAddress,
+            Securitykey: securityKey,
+            order: 1,
+            cmd: "CONNECT"
+        ) {
+            
+            let reqData = jsonRequestReq.data(using: .utf8)!
+            let resData = jsonRequestRes.data(using: .utf8)!
+            Task {
+                do {
+                    // 1) 原始 JSON -> Data
+                    guard
+                        let reqData = jsonRequestReq.data(using: .utf8),
+                        let resData = jsonRequestRes.data(using: .utf8)
+                    else {
+                        self.log("makeSocksRequest UTF8 encode failed")
+                        return
+                    }
 
-        Task{
-            let signMessage = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
-            if let callFun2 = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message") {
-                if let ret2 = callFun2.call(withArguments: [message, "0x\(signMessage.toHexString())"]) {
-                    let cmd = ret2.toString()!
-                    let pre_request = self.layerMinus.createValidatorData(node: egressNode, responseData: cmd)
-                    let request = self.layerMinus.makeRequest(host: entryInfo == "NONE" ? egressNode.ip_addr: entryInfo, data: pre_request)
-                    
-                    self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)")
-                    let connectInfo = "origin=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)"
+                    // 2) 分别签名
+                    let signReqMessage = try await self.layerMinus.web3.personal.signPersonalMessage(
+                        message: reqData, from: account, password: ""
+                    )
+                    let signResMessage = try await self.layerMinus.web3.personal.signPersonalMessage(
+                        message: resData, from: account, password: ""
+                    )
+
+                    // 3) 生成带签名的 JSON 字符串
+                    guard
+                        let reqSignJson = jsonSignMessage(message: jsonRequestReq,
+                                                          signMessage: "0x\(signReqMessage.toHexString())"),
+                        let resSignJson = jsonSignMessage(message: jsonRequestRes,
+                                                          signMessage: "0x\(signResMessage.toHexString())")
+                    else {
+                        self.log("jsonSignMessage failed")
+                        return
+                    }
+
+                    // 4) JSON 字符串 -> Data? -> Base64（注意这里要用 ?. 而不是直接 .）
+                    guard
+                        let reqB64 = reqSignJson.data(using: .utf8)?.base64EncodedString(),
+                        let resB64 = resSignJson.data(using: .utf8)?.base64EncodedString()
+                    else {
+                        self.log("UTF8 encode (signed JSON) failed")
+                        return
+                    }
+
+                    self.log("KPI handoff -> LM host=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr):80 resEntry \(resEntryInfo.ip_addr):80 egress=\(egressNode.ip_addr)")
+                    let connectInfo = "origin=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr) egress=\(egressNode.ip_addr)"
+
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,
-                        targetHost: entryInfo == "NONE" ? egressNode.ip_addr: entryInfo,
-                        targetPort: 80,
+                        reqHost: reqEntryInfo.ip_addr, reqPort: 80,
+                        resHost: resEntryInfo.ip_addr, resPort: 80,
                         verbose: self.verbose,
                         connectInfo: connectInfo,
                         onClosed: { [weak self] bridgeId in
-                            // 当 bridge 关闭时，关闭 ServerConnection
                             self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
                             self?.close(reason: "Bridge closed")
                         }
                     )
+
                     self.isLayerMinusRouted = true
                     self.bridge = newBridge
                     self.onRoutingDecided?(self)
-                    
-                    // 传递 Base64 编码的首包给 bridge
-                    newBridge.start(withFirstBody: request.data(using: .utf8)!.base64EncodedString())
+
+                    // 5) 传入双首包（Base64 已经安全生成）
+                    newBridge.start(reqFirstBodyBase64: reqB64, resFirstBodyBase64: resB64)
+
+                } catch {
+                    self.log("LM sign error: \(error)")
+                    // （可选）这里可 fallbackDirect(...)，避免因签名异常导致隧道断
                 }
             }
         }
-        
-        
-        
         
     }
 

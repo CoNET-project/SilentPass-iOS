@@ -102,7 +102,88 @@ class LayerMinus {
                 print("JS Exception:", exc.toString() as Any)
             }
         }
-        let jsSourceContents = "let _makeRequest=(header,body) => {var headers = header.split('\\r\\n')[0]; var commandLine = headers.split(' '); var hostUrl = commandLine[1]; var host = /http/.test(hostUrl)?hostUrl.split('http://')[1].split('/')[0]:hostUrl.split(':')[0]; var port = parseInt(hostUrl.split(':')[1])||80; return { host, buffer: body||header, cmd: body.length ? 'CONNECT' : 'GET', port, order: 0 };};\nvar json_string=(data)=>JSON.stringify({data});var json_command=(data)=>JSON.stringify({command: 'mining', algorithm: 'aes-256-cbc', Securitykey: '', walletAddress: data});var json_sign_message=(message,signMessage)=>JSON.stringify({message,signMessage});var json_mining_response=(eposh,walletAddress,nodeWallet,hash,nodeDomain,minerResponseHash )=>JSON.stringify({Securitykey:'',walletAddress,algorithm:'aes-256-cbc',command:'mining_validator',requestData:{epoch:parseInt(eposh),nodeWallet,hash,nodeDomain,minerResponseHash,isUser:true}});var makeRequest=(header,body,walletAddress)=>JSON.stringify({command:'SaaS_Sock5',algorithm:'aes-256-cbc',Securitykey:'',requestData:[_makeRequest(header,body)],walletAddress});var getResult=(res)=> JSON.parse(res)[1].result;var makeSocksRequest = (host, port, buffer, walletAddress, cmd) =>JSON.stringify({command:'SaaS_Sock5',algorithm:'aes-256-cbc',Securitykey:'',requestData:[{host, cmd, port, order: 0, buffer}],walletAddress});"
+        let jsSourceContents = """
+            // 解析请求头并创建请求对象
+            let _makeRequest = (header, body) => {
+                var headers = header.split('\r\n')[0];
+                var commandLine = headers.split(' ');
+                var hostUrl = commandLine[1];
+                
+                var host = /http/.test(hostUrl) 
+                    ? hostUrl.split('http://')[1].split('/')[0] 
+                    : hostUrl.split(':')[0];
+                
+                var port = parseInt(hostUrl.split(':')[1]) || 80;
+                
+                return {
+                    host,
+                    buffer: body || header,
+                    cmd: body.length ? 'CONNECT' : 'GET',
+                    port,
+                    order: 0
+                };
+            };
+
+            // 将数据转换为 JSON 字符串
+            var jsonString = (data) => JSON.stringify({ data });
+
+            // 创建挖矿命令的 JSON
+            var json_command = (data) => JSON.stringify({
+                command: 'mining',
+                algorithm: 'aes-256-cbc',
+                Securitykey: '',
+                walletAddress: data
+            });
+
+            // 创建签名消息的 JSON
+            var json_sign_message = (message, signMessage) => JSON.stringify({
+                message,
+                signMessage
+            });
+
+            // 创建挖矿响应的 JSON
+            var json_mining_response = (eposh, walletAddress, nodeWallet, hash, nodeDomain, minerResponseHash) => JSON.stringify({
+                Securitykey: '',
+                walletAddress,
+                algorithm: 'aes-256-cbc',
+                command: 'mining_validator',
+                requestData: {
+                    epoch: parseInt(eposh),
+                    nodeWallet,
+                    hash,
+                    nodeDomain,
+                    minerResponseHash,
+                    isUser: true
+                }
+            });
+
+            // 创建 SaaS Sock5 请求
+            var makeRequest = (header, body, walletAddress) => JSON.stringify({
+                command: 'SaaS_Sock5',
+                algorithm: 'aes-256-cbc',
+                Securitykey: '',
+                requestData: [_makeRequest(header, body)],
+                walletAddress
+            });
+
+            // 从响应中获取结果
+            var getResult = (res) => JSON.parse(res)[1].result;
+
+            // 创建 Socks 请求
+            var makeSocksRequest = (host, port, buffer, walletAddress, cmd) => JSON.stringify({
+                command: 'SaaS_Sock5',
+                algorithm: 'aes-256-cbc',
+                Securitykey: '',
+                requestData: [{
+                    host,
+                    cmd,
+                    port,
+                    order: 0,
+                    buffer
+                }],
+                walletAddress
+            });
+            """
         self.javascriptContext.evaluateScript(jsSourceContents)
     }
     
