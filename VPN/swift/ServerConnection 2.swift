@@ -80,7 +80,7 @@ public final class ServerConnection {
         case closed
     }
     
-    private let RECV_BUFFER_SOFT_LIMIT = 512 * 1024  // 512KB
+    private let RECV_BUFFER_SOFT_LIMIT = 2 * 1024 * 1024  // 2MB：降低首部稍大的场景的误伤
     
     
     /// 该连接是否已切到 LayerMinus 通道（由业务分支显式标记）
@@ -201,8 +201,15 @@ public final class ServerConnection {
                 if self.recvBuffer.count > RECV_BUFFER_SOFT_LIMIT {
                     // 选择：要么丢弃老数据、要么直接 413 关闭，这里先保守地直接收尾，避免 OOM
                     self.log("recvBuffer exceeded soft limit (\(self.recvBuffer.count)B) -> close to protect memory")
-                    self.close(reason: "recvBuffer overflow")
-                    return
+
+                    // 仅保留最新 1MB，避免 OOM 同时不中断连接
+                    let KEEP = 1 * 1024 * 1024
+                    if self.recvBuffer.count > KEEP {
+                        self.recvBuffer = self.recvBuffer.suffix(KEEP)
+                    }
+
+                    // self.close(reason: "recvBuffer overflow")
+                    // return
                 }
                 
                 
