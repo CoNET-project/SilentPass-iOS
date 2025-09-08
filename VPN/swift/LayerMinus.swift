@@ -212,17 +212,21 @@ class LayerMinus {
     func createValidatorData (node: Node, responseData: String) -> String {
         let nodePGP = node.armoredPublicKey
         let cmdData = responseData.data(using: .utf8)!.base64EncodedString().data(using: .utf8)!
+        
+        log ("LayerMinus createValidatorData nodePGP \(nodePGP), cmdData count = \(cmdData.count)")
         do {
             let keys = try ObjectivePGP.readKeys(from: nodePGP.data(using: .utf8)!)
-            let encrypted = try ObjectivePGP.encrypt(cmdData, addSignature: false, using: keys)
-            let armoredRet = Armor.armored(encrypted, as: .message)
-            if let functionFullname = self.javascriptContext.objectForKeyedSubscript("json_string") {
-                if let fullname = functionFullname.call(withArguments: [armoredRet]) {
-                    return fullname.toString()
-                }
-            }
-        } catch {
             
+            let encrypted = try ObjectivePGP.encrypt(cmdData, addSignature: false, using: keys)
+            
+            let armoredRet = Armor.armored(encrypted, as: .message)
+            
+            
+            
+            return armoredRet
+                
+        } catch {
+            log ("LayerMinus createValidatorData Error getting private \(nodePGP)")
         }
         return ""
         

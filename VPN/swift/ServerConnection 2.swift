@@ -41,7 +41,7 @@ func makeSocksRequest(host: String,
     
     // 创建完整的请求对象
     let socksRequest = SocksRequest(
-        command: "SaaS_Sock5",
+        command: "SaaS_Sock5_v2",
         algorithm: "aes-256-cbc",
         Securitykey: Securitykey,
         requestData: [requestData],
@@ -81,7 +81,7 @@ func jsonSignMessage(message: String, signMessage: String) -> String? {
     
     // 将对象转换为 JSON 字符串
     let encoder = JSONEncoder()
-    encoder.outputFormatting = .sortedKeys // 可选：保持键的顺序
+    //encoder.outputFormatting = .sortedKeys // 可选：保持键的顺序
     
     do {
         let jsonData = try encoder.encode(signMessageObj)
@@ -93,6 +93,18 @@ func jsonSignMessage(message: String, signMessage: String) -> String? {
     }
     
     return nil
+}
+
+
+func makeJSONData(_ inStr: String) -> String? {
+    let obj: [String: Any] = ["data": inStr]
+    guard
+        let data = try? JSONSerialization.data(withJSONObject: obj, options: []),
+        let json = String(data: data, encoding: .utf8)
+    else {
+        return nil
+    }
+    return json
 }
 
 
@@ -876,6 +888,8 @@ public final class ServerConnection {
         } else {
             self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr), egress \(egressNode.ip_addr)")
         }
+        
+        
         let securityKey = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         
         
@@ -899,8 +913,6 @@ public final class ServerConnection {
             cmd: "CONNECT"
         ) {
             
-            let reqData = jsonRequestReq.data(using: .utf8)!
-            let resData = jsonRequestRes.data(using: .utf8)!
             Task {
                 do {
                     // 1) 原始 JSON -> Data
@@ -930,11 +942,28 @@ public final class ServerConnection {
                         self.log("jsonSignMessage failed")
                         return
                     }
+                    
+                    
+                    guard
+                    
+                        let reqPre = makeJSONData(self.layerMinus.createValidatorData(node: egressNode, responseData: reqSignJson)),
+                        let resPre = makeJSONData(self.layerMinus.createValidatorData(node: egressNode, responseData: resSignJson))
+                    else {
+                        self.log("makeJSONData failed")
+                        return
+                    }
+                    
+                    
+                    
+                    let _reqData = self.layerMinus.makeRequest(host: egressNode.ip_addr, data: reqPre)
+                    let _resData = self.layerMinus.makeRequest(host: egressNode.ip_addr, data: resPre )
+                    
+                    
 
                     // 4) JSON 字符串 -> Data? -> Base64（注意这里要用 ?. 而不是直接 .）
                     guard
-                        let reqB64 = reqSignJson.data(using: .utf8)?.base64EncodedString(),
-                        let resB64 = resSignJson.data(using: .utf8)?.base64EncodedString()
+                        let reqB64 = _reqData.data(using: .utf8)?.base64EncodedString(),
+                        let resB64 = _resData.data(using: .utf8)?.base64EncodedString()
                     else {
                         self.log("UTF8 encode (signed JSON) failed")
                         return
@@ -946,8 +975,8 @@ public final class ServerConnection {
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,
-                        reqHost: reqEntryInfo.ip_addr, reqPort: 80,
-                        resHost: resEntryInfo.ip_addr, resPort: 80,
+                        reqHost: egressNode.ip_addr, reqPort: 80,
+                        resHost: egressNode.ip_addr, resPort: 80,
                         verbose: self.verbose,
                         connectInfo: connectInfo,
                         onClosed: { [weak self] bridgeId in
@@ -959,8 +988,7 @@ public final class ServerConnection {
                     self.isLayerMinusRouted = true
                     self.bridge = newBridge
                     self.onRoutingDecided?(self)
-
-                    // 5) 传入双首包（Base64 已经安全生成）
+                    
                     newBridge.start(reqFirstBodyBase64: reqB64, resFirstBodyBase64: resB64)
 
                 } catch {
@@ -971,6 +999,8 @@ public final class ServerConnection {
         }
         
     }
+    
+    
 
     // MARK: TLS/SSL 检测
     private func isTLSClientHello(_ data: Data) -> Bool {
