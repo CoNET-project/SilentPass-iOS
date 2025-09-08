@@ -8,7 +8,7 @@ enum L {
 }
 
 public final class LayerMinusBridge {
-    private static let GLOBAL_BUFFER_BUDGET = 12 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0

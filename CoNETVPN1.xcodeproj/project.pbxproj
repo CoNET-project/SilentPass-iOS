@@ -61,7 +61,7 @@
 		D0850B2A2E52C1D700BC1BF4 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0850B292E52C1D700BC1BF4 /* vpn2socks */; };
 		D0850B2E2E52CC4C00BC1BF4 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0850B2D2E52CC4C00BC1BF4 /* vpn2socks */; };
 		D0850B302E52CCC900BC1BF4 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0850B2F2E52CCC900BC1BF4 /* vpn2socks */; };
-		D0C2F7152E614F5D0084804F /* build3.zip in Resources */ = {isa = PBXBuildFile; fileRef = D0C2F7142E614F5D0084804F /* build3.zip */; };
+		D09F2B892E6EAD870002504F /* build3.zip in Resources */ = {isa = PBXBuildFile; fileRef = D09F2B882E6EAD870002504F /* build3.zip */; };
 		D0D00E5E2E6AED7000E76945 /* Allowlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D00E5D2E6AED6E00E76945 /* Allowlist.swift */; };
 		D0D00E602E6AEF8800E76945 /* PACBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D00E5F2E6AEF8700E76945 /* PACBuilder.swift */; };
 		D0D33D5F2E298A9000E849BC /* LocalServerFirstSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */; };
@@ -169,7 +169,7 @@
 		D06663F52E28443F007D010D /* LocalWebServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWebServer.swift; sourceTree = "<group>"; };
 		D06663FA2E284BC0007D010D /* Updater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Updater.swift; sourceTree = "<group>"; };
 		D0850B272E52C06600BC1BF4 /* vpn2socks */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = vpn2socks; sourceTree = "<group>"; };
-		D0C2F7142E614F5D0084804F /* build3.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = build3.zip; sourceTree = "<group>"; };
+		D09F2B882E6EAD870002504F /* build3.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = build3.zip; sourceTree = "<group>"; };
 		D0D00E5D2E6AED6E00E76945 /* Allowlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Allowlist.swift; sourceTree = "<group>"; };
 		D0D00E5F2E6AEF8700E76945 /* PACBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PACBuilder.swift; sourceTree = "<group>"; };
 		D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServerFirstSchemeHandler.swift; sourceTree = "<group>"; };
@@ -292,9 +292,9 @@
 				765717FC2DCB112A00A40770 /* GoogleService-Info.plist */,
 				D06663F52E28443F007D010D /* LocalWebServer.swift */,
 				765B0EC42CE476E1007ACC57 /* SceneDelegate.swift */,
+				D09F2B882E6EAD870002504F /* build3.zip */,
 				D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */,
 				D0D33D622E298BCD00E849BC /* CodableCachedData.swift */,
-				D0C2F7142E614F5D0084804F /* build3.zip */,
 				765B0EC52CE476E1007ACC57 /* ViewController.swift */,
 				7678A40B2DADED4900A7C16C /* Constants.swift */,
 				7606D6F32D2EBC7700224EC8 /* swiftSever 2 */,
@@ -527,7 +527,7 @@
 				765717FD2DCB112A00A40770 /* GoogleService-Info.plist in Resources */,
 				765B0ECC2CE476E1007ACC57 /* LaunchScreen.storyboard in Resources */,
 				765B0ECD2CE476E1007ACC57 /* Main.storyboard in Resources */,
-				D0C2F7152E614F5D0084804F /* build3.zip in Resources */,
+				D09F2B892E6EAD870002504F /* build3.zip in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

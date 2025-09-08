@@ -753,10 +753,8 @@ public final class ServerConnection {
         
         
         guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
-              let entryNode = self.layerMinus.getRandomEntryNodes(),
-              !egressNode.isEmpty,
-              !entryNode.isEmpty else {
-            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, using DIRECT CONNECT"
+              !egressNode.isEmpty else {
+            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
             // 创建并启动 LayerMinusBridge，保存引用
             let newBridge = LayerMinusBridge(
                 id: self.id,
@@ -782,10 +780,14 @@ public final class ServerConnection {
             newBridge.start(withFirstBody: b64)
             return
         }
+        
+        let entryInfo = self.layerMinus.getRandomEntryNodes()?.ip_addr ?? "NONE"
+        
+        
         if self.httpConnect {
-            self.log("Layer Minus start by HTTP/HTTPS PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
+            self.log("Layer Minus start by HTTP/HTTPS PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryInfo), egress \(egressNode.ip_addr)")
         } else {
-            self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryNode.ip_addr), egress \(egressNode.ip_addr)")
+            self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryInfo), egress \(egressNode.ip_addr)")
         }
 
 
@@ -801,14 +803,14 @@ public final class ServerConnection {
                 if let ret2 = callFun2.call(withArguments: [message, "0x\(signMessage.toHexString())"]) {
                     let cmd = ret2.toString()!
                     let pre_request = self.layerMinus.createValidatorData(node: egressNode, responseData: cmd)
-                    let request = self.layerMinus.makeRequest(host: entryNode.ip_addr, data: pre_request)
+                    let request = self.layerMinus.makeRequest(host: entryInfo == "NONE" ? egressNode.ip_addr: entryInfo, data: pre_request)
                     
-                    self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryNode.ip_addr) egress=\(egressNode.ip_addr)")
-                    let connectInfo = "origin=\(host):\(port) entry=\(entryNode.ip_addr) egress=\(egressNode.ip_addr)"
+                    self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)")
+                    let connectInfo = "origin=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)"
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,
-                        targetHost: entryNode.ip_addr,
+                        targetHost: entryInfo == "NONE" ? egressNode.ip_addr: entryInfo,
                         targetPort: 80,
                         verbose: self.verbose,
                         connectInfo: connectInfo,
