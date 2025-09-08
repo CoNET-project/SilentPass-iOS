@@ -8,7 +8,7 @@ enum L {
 }
 
 public final class LayerMinusBridge {
-    
+    private static let GLOBAL_BUFFER_BUDGET = 12 * 1024 * 1024
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0
@@ -28,6 +28,65 @@ public final class LayerMinusBridge {
                  || h.contains("measurementlab")
                  || h.contains("mlab"))
     }
+
+	private var currentBufferLimit: Int = 4 * 1024 // 初始大小 4KB
+	private let maxBufferLimit: Int = 1 * 1024 * 1024 // 最大大小 1MB
+	private var backpressureTimer: DispatchSourceTimer?
+
+	    // 新增：在背压状态下，每 50ms 动态调整一次缓冲区大小
+    private func scheduleBackpressureTimer() {
+        guard pausedC2U else { return }
+        
+        // 如果定时器已存在，先取消以避免重复
+        backpressureTimer?.cancel()
+
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(50))
+        t.setEventHandler { [weak self] in
+            guard let s = self, s.alive() else { return }
+            
+            // 如果背压状态已解除，取消定时器
+            if !s.pausedC2U {
+                s.backpressureTimer?.cancel()
+                s.backpressureTimer = nil
+                return
+            }
+            
+            s.adjustBufferLimit()
+            s.log("Backpressure timer triggered, new buffer limit: \(s.currentBufferLimit)B")
+        }
+        backpressureTimer = t
+        t.resume()
+    }
+
+
+	private func adjustBufferLimit() {
+        let oldLimit = currentBufferLimit
+    
+		// 获取当前全局缓冲区的安全拷贝
+		Self.globalLock.lock()
+		let currentGlobalBytes = Self.globalBufferedBytes
+		Self.globalLock.unlock()
+		
+		// 只有在全局预算未超支时才允许个人缓冲增长
+		let canGrow = currentGlobalBytes <= Self.GLOBAL_BUFFER_BUDGET
+		
+		if pausedC2U {
+			if canGrow {
+				// 在有背压且全局预算充足时，快速增长
+				currentBufferLimit = min(currentBufferLimit * 4, maxBufferLimit)
+			} else {
+				// 全局预算超支时，不再增长，保持当前大小
+				self.log("Global budget exceeded, not growing currentBufferLimit.")
+			}
+		} else {
+			// 背压消失时，快速减少
+			currentBufferLimit = max(currentBufferLimit / 4, 4 * 1024)
+		}
+		
+		self.log("Adjusting buffer limit: \(oldLimit) -> \(self.currentBufferLimit)")
+
+	}
     
     // —— 发送在途(in-flight)预算，用于约束“直发小包”绕过 cuBuffer 的场景
     private var inflightBytes: Int = 0
@@ -48,7 +107,7 @@ public final class LayerMinusBridge {
     private let CU_EXTRA_MS = 10
     
     // —— 全局预算：限制所有桥接实例合计的缓冲上限（比如 8MB）
-    private static let GLOBAL_BUFFER_BUDGET = 16 * 1024 * 1024
+    
     private static var globalBufferedBytes: Int = 0
     private static let globalLock = NSLock()
 
@@ -86,17 +145,18 @@ public final class LayerMinusBridge {
     // 记录哪一侧先 EOF，用于判断是否处于 half-close
     private var eofUpstream = false
     private var eofClient = false
-    
-    private let CU_BUFFER_LIMIT = 512 * 1024
+
     
     @inline(__always)
     private func appendToCUBuffer(_ d: Data) {
         cuBuffer.append(d)
         addGlobalBytes(d.count)
 
-        if cuBuffer.count >= CU_BUFFER_LIMIT {
+        if cuBuffer.count >= currentBufferLimit {
             pausedC2U = true
             flushCUBuffer()
+            // 新增：启动背压定时器
+            scheduleBackpressureTimer()
 			// 如果是因为本连接缓冲触顶导致暂停，flush 后排个微延时检查是否可恢复
 			scheduleMaybeResumeCheck()
             return
@@ -109,6 +169,8 @@ public final class LayerMinusBridge {
         if overBudget {
             pausedC2U = true
             flushCUBuffer()
+            // 新增：启动背压定时器
+            scheduleBackpressureTimer()
 			scheduleMaybeResumeCheck()
             return
         }
@@ -529,9 +591,22 @@ public final class LayerMinusBridge {
                         Self.globalLock.lock()
                         let overBudget = Self.globalBufferedBytes > Self.GLOBAL_BUFFER_BUDGET
                         Self.globalLock.unlock()
-                        if overBudget || self.stBuffer.count >= self.CU_BUFFER_LIMIT / 2 {
-                            self.pausedC2U = true
-                            self.flushSTBuffer()
+
+                        if self.pausedC2U && self.cuBuffer.count < Int(Double(self.currentBufferLimit) * 0.5) { // 设定一个阈值来解除背压
+							self.pausedC2U = false
+							self.adjustBufferLimit()
+							self.backpressureTimer?.cancel()
+							self.backpressureTimer = nil
+						}
+						
+                        if overBudget || self.stBuffer.count >= self.currentBufferLimit {
+
+							if self.pausedC2U == false {
+								self.pausedC2U = true
+								self.adjustBufferLimit() // 动态调整
+								scheduleBackpressureTimer()
+							}
+
                         } else if self.stBuffer.count >= self.ST_FLUSH_BYTES {
                             self.flushSTBuffer()
                         } else {
@@ -720,29 +795,33 @@ public final class LayerMinusBridge {
         up.send(content: data, completion: .contentProcessed({ [weak self] err in
             
             guard let self = self, self.alive() else { return }
+
+			// —— ★★ 无论如何，先做一次出账（只会在第一次回调时成功扣减）
+			let debited: Int = {
+				if let n = self.inflightSizes.removeValue(forKey: seq) {
+					self.inflightBytes &-= n
+					if self.inflightBytes < 0 { self.inflightBytes = 0 }
+					return n
+				}
+				return 0
+			}()
             
             // 去重：只处理一次完成回调
-            
-            guard self.inflight.remove(seq) != nil else {
-                
-                // —— 出账在途体积
-                if let n = self.inflightSizes.removeValue(forKey: seq) {
-                    self.inflightBytes &-= n
-                    if self.inflightBytes < 0 { self.inflightBytes = 0 }
-                }
 
-                self.maybeResumeAfterInflightDrained()
+			let firstCompletion = self.inflight.remove(seq) != nil
+			if !firstCompletion {
+				// 已经处理过：只补个日志并尝试恢复读
+				self.log("WARN dup completion for #\(seq), ignore (debited=\(debited))")
+				self.maybeResumeAfterInflightDrained()
+				return
+			}
 
-                self.log("WARN dup completion for #\(seq), ignore")
-                return
-            }
-            
-            
-            if let err = err {
-                self.log("upstream send err: \(err)")
-                self.queue.async { self.cancel(reason: "upstream send err") }
-                return
-            }
+			if let err = err {
+				self.log("upstream send err: \(err)")
+				self.queue.async { self.cancel(reason: "upstream send err") }
+				return
+			}
+			
 
 
             // 发送成功日志 + 计数
