@@ -720,6 +720,8 @@ public final class LayerMinusBridge {
                 log("KILL_CLASS=DRAIN_IDLE note=no opposite activity within \(Int(drainGrace))s")
             case let s where s.contains("recv err") || s.contains("failed"):
                 log("KILL_CLASS=NETWORK_ERR note=peer/network failure")
+            case let s where s.contains("downstream recv err") && Self.markAndBurstTunnelDown():
+                log("KILL_CLASS=TUNNEL_DOWN note=burst downstream errs in window")
             default:
                 log("KILL_CLASS=MISC note=\(reason)")
             }
@@ -748,6 +750,8 @@ safeStopTimer(&memSummaryTimer)
             safeStopTimer(&backpressureTimer)   // ← 新增：把背压定时器也停掉
 
 			safeStopTimer(&bbrTimer)
+
+			
 
             // —— 结清在途 & 缓冲、释放全局预算（保持你原有逻辑）
             if !cuBuffer.isEmpty { subGlobalBytes(cuBuffer.count) }
@@ -1235,6 +1239,23 @@ self.startMemSummary()
         timer.resume()
     }
     
+
+    private static var tunnelErrStamps = [DispatchTime]()
+    private static let tunnelErrLock = NSLock()
+    private static let tunnelBurstThreshold = 5         // 1.5s 內 >=5 條視為隧道級
+    private static let tunnelBurstWindowMs: Double = 1500
+
+    @inline(__always)
+    private static func markAndBurstTunnelDown() -> Bool {
+        let now = DispatchTime.now()
+        tunnelErrLock.lock()
+        defer { tunnelErrLock.unlock() }
+        tunnelErrStamps.append(now)
+        let cutoff = now.uptimeNanoseconds &- UInt64(tunnelBurstWindowMs * 1e6)
+        tunnelErrStamps = tunnelErrStamps.filter { $0.uptimeNanoseconds >= cutoff }
+        return tunnelErrStamps.count >= tunnelBurstThreshold
+    }
+    
     private func pumpDownstreamToClient() {
         if closed { return }
 
@@ -1250,8 +1271,20 @@ self.startMemSummary()
             guard let self = self, self.alive() else { return }
 
             if let err = err {
-                self.log("downstream recv err: \(err)")
-                self.queue.async { self.cancel(reason: "downstream recv err") }
+
+				var mapped = "downstream recv err"
+				// 嘗試抓 POSIX code（若非 NWError.posix，保持原樣）
+				if case let .posix(code) = (err as? NWError) {
+					let raw = code.rawValue        // 96: ENODATA(常見於隧道/STREAM中斷)、54: ECONNRESET
+					if [96, 54, 50, 102].contains(raw) { // 50=ENETDOWN, 102=ENETRESET（不同平台值可能不同）
+						if Self.markAndBurstTunnelDown() {
+							log("KILL_CLASS=TUNNEL_DOWN note=burst \(raw) on downstream")
+						} else {
+							log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(raw)")
+						}
+					}
+				}
+				self.queue.async { self.cancel(reason: mapped) }
                 return
             }
 
