@@ -86,7 +86,7 @@ public final class LayerMinusBridge {
     
     #if DEBUG
     @inline(__always)
-    private func processResidentSizeMB() -> Double? {
+    public func processResidentSizeMB() -> Double? {
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: info) / MemoryLayout<natural_t>.size)
         let kr: kern_return_t = withUnsafeMutablePointer(to: &info) {
@@ -334,8 +334,9 @@ public final class LayerMinusBridge {
 
     // —— 全局预算：限制所有桥接实例合计的缓冲上限（比如 8MB）
     
-    private static var globalBufferedBytes: Int = 0
-    private static let globalLock = NSLock()
+    fileprivate static var globalBufferedBytes: Int = 0
+    fileprivate static let globalLock = NSLock()
+
 
     // —— 回压开关：当本连接的缓冲过大时，暂停 c->u 的继续接收
     private var pausedC2U = false
@@ -497,14 +498,14 @@ public final class LayerMinusBridge {
     
     private let onClosed: ((UInt64) -> Void)?
     
-    private let queue: DispatchQueue
+    fileprivate let queue: DispatchQueue
     private var upstream: NWConnection?
     private var downstream: NWConnection?
     private var closed = false
     
     // —— 生存门闸：所有回调入口先判存活，避免已取消后仍访问资源
     private let stateLock = NSLock()
-    @inline(__always) private func alive() -> Bool {
+    @inline(__always) fileprivate func alive() -> Bool {
         stateLock.lock(); defer { stateLock.unlock() }
         return !closed
     }
@@ -580,7 +581,7 @@ public final class LayerMinusBridge {
     
     #if DEBUG
         @inline(__always)
-        private func log(_ msg: String) {
+        public func log(_ msg: String) {
             NSLog("[LayerMinusBridge \(id), \(infoTag())] %@", msg)
         }
     #else
@@ -1272,7 +1273,7 @@ public final class LayerMinusBridge {
 									if self.pausedC2U == false {
 										self.pausedC2U = true
 										self.adjustBufferLimit() // 动态调整
-										scheduleBackpressureTimer()
+                                        self.scheduleBackpressureTimer()
 									}
 
 								} else if self.stBuffer.count >= self.ST_FLUSH_BYTES {
@@ -1433,9 +1434,9 @@ public final class LayerMinusBridge {
 						let raw = code.rawValue        // 96: ENODATA(常見於隧道/STREAM中斷)、54: ECONNRESET
 						if [96, 54, 50, 102].contains(raw) { // 50=ENETDOWN, 102=ENETRESET（不同平台值可能不同）
 							if Self.markAndBurstTunnelDown() {
-								log("KILL_CLASS=TUNNEL_DOWN note=burst \(raw) on downstream")
+                                self.log("KILL_CLASS=TUNNEL_DOWN note=burst \(raw) on downstream")
 							} else {
-								log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(raw)")
+                                self.log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(raw)")
 							}
 						}
 					}
@@ -1543,6 +1544,32 @@ public final class LayerMinusBridge {
 			}
 		}
 	}
+    
+    // ==== BBR periodic sampler (called by onTick200) ====
+    @inline(__always)
+    private func bbrOnTick() {
+        let now = DispatchTime.now()
+        // 采样窗口：>=50ms 避免抖动
+        let dtNs = now.uptimeNanoseconds &- bbrSampleTs.uptimeNanoseconds
+        if dtNs >= 50_000_000 {
+            let delta = max(0, bytesUp - bbrPrevBytesUp)
+            let bps = Double(delta) * 8.0 / (Double(dtNs) / 1e9)   // bits/s
+            bbrBwUp_bps = bps
+            // 简单衰减的 max filter
+            bbrBwMax_bps = max(bbrBwMax_bps * 0.90, bps)
+            bbrPrevBytesUp = bytesUp
+            bbrSampleTs = now
+        }
+        // 启动后 3s 进入 probeBW
+        if bbrState == .startup {
+            let ageMs = diffMs(start: tStart, end: now)
+            if ageMs >= 3000 {
+                bbrState = .probeBW
+                bbrPacingGain = 1.0
+                bbrCwndGain  = 2.0
+            }
+        }
+    }
 
     
     // 首包回包看门狗（避免黑洞 60–100s 挂死；测速上传场景按策略放宽/禁用）
@@ -1752,19 +1779,7 @@ public final class LayerMinusBridge {
     }
 
 	#if DEBUG
-	private var memSummaryTimer: DispatchSourceTimer?
 
-	@inline(__always)
-	private func processResidentSizeMB() -> Double? {
-		var info = mach_task_basic_info()
-		var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: info) / MemoryLayout<natural_t>.size)
-		let kr: kern_return_t = withUnsafeMutablePointer(to: &info) {
-			$0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-				task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
-			}
-		}
-		return (kr == KERN_SUCCESS) ? Double(info.resident_size) / (1024.0 * 1024.0) : nil
-	}
 	/// 每 5s 打一次“水位/内存”摘要（仅 DEBUG）
 	private func startMemSummary() {
 		memSummaryTimer?.setEventHandler {}
