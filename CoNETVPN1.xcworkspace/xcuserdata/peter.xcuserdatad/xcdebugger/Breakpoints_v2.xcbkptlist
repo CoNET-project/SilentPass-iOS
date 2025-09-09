@@ -276,20 +276,6 @@
             landmarkType = "7">
             <Locations>
                <Location
-                  uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - c54f72c9c41b6e8f"
-                  shouldBeEnabled = "Yes"
-                  ignoreCount = "0"
-                  continueAfterRunningActions = "No"
-                  symbolName = "vpn2socks.TCPConnection.__deallocating_deinit"
-                  moduleName = "CoNETVPN1.debug.dylib"
-                  usesParentBreakpointCondition = "Yes"
-                  urlString = "file:///Users/peter/Downloads/SilentPass-iOS/vpn2socks/Sources/vpn2socks/TCPConnection.swift"
-                  startingColumnNumber = "9223372036854775807"
-                  endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "0"
-                  endingLineNumber = "0">
-               </Location>
-               <Location
                   uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - bfad8b5da3521667"
                   shouldBeEnabled = "Yes"
                   ignoreCount = "0"
@@ -302,6 +288,20 @@
                   endingColumnNumber = "9223372036854775807"
                   startingLineNumber = "1003"
                   endingLineNumber = "1003">
+               </Location>
+               <Location
+                  uuid = "26E3B738-0F65-4050-8992-2635C19F05A4 - c54f72c9c41b6e8f"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "vpn2socks.TCPConnection.__deallocating_deinit"
+                  moduleName = "CoNETVPN1.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/peter/Downloads/SilentPass-iOS/vpn2socks/Sources/vpn2socks/TCPConnection.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "0"
+                  endingLineNumber = "0">
                </Location>
             </Locations>
          </BreakpointContent>

@@ -30,7 +30,7 @@ public final class LayerMinusBridge {
           }))
     }
     
-    private static let GLOBAL_BUFFER_BUDGET = 10 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 6 * 1024 * 1024
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0
@@ -328,8 +328,8 @@ public final class LayerMinusBridge {
 
     // —— 发送在途(in-flight)预算，用于约束“直发小包”绕过 cuBuffer 的场景
     private var inflightBytes: Int = 0
-    private var inflightSizes = [UInt64: Int]()   // seq -> bytes
-    private let INFLIGHT_BYTES_BUDGET = 512 * 1024   // 512KB（可按需调大到 768KB/1MB）
+
+    private let INFLIGHT_BYTES_BUDGET = 384 * 1024   // 512KB（可按需调大到 768KB/1MB）
     private let INFLIGHT_COUNT_BUDGET = 96          // 在途包数上限，双保险
 
     private var sendSeq: UInt64 = 0
@@ -653,9 +653,33 @@ public final class LayerMinusBridge {
     
     deinit {
         log("🔴 DESTROYED LayerMinusBridge #\(id)")
-        if !closed {
-            log("⚠️ WARNING: LayerMinusBridge #\(id) destroyed without proper closing!")
-        }
+		if !closed {
+			log("⚠️ WARNING: LayerMinusBridge #\(id) destroyed without proper closing!")
+			
+			// 强制同步清理
+			stateLock.lock()
+			closed = true
+			stateLock.unlock()
+			
+			// 清理所有定时器(不等待回调)
+			firstByteWatchdog?.cancel()
+			drainTimer?.cancel()
+			uploadStuckTimer?.cancel()
+			cuFlushTimer?.cancel()
+			stTimer?.cancel()
+			resumeCheckTimer?.cancel()
+			backpressureTimer?.cancel()
+			bbrTimer?.cancel()
+			roleTimer?.cancel()
+			#if DEBUG
+			memSummaryTimer?.cancel()
+			#endif
+			
+			// 强制关闭连接
+			upstream?.cancel()
+			downstream?.cancel()
+			client.cancel()
+		}
     }
     
     #if DEBUG
@@ -732,27 +756,36 @@ public final class LayerMinusBridge {
     
     @inline(__always)
     private func safeStopTimer(_ t: inout DispatchSourceTimer?) {
-        guard let x = t else { return }
-        x.setEventHandler {}      // 先断电
-        x.cancel()                // 再取消
-        t = nil                   // 置空
+        guard let timer = t else { return }
+		t = nil  // 先置空防止重入
+		
+		// 使用信号量确保handler完成
+		let sem = DispatchSemaphore(value: 0)
+		timer.setEventHandler {
+			sem.signal()
+		}
+		timer.cancel()
+		_ = sem.wait(timeout: .now() + .milliseconds(50))
     }
 
     @inline(__always)
     private func gracefulCloseConnection(_ c: inout NWConnection?, label: String) {
         guard let conn = c else { return }
-        // 断开回调，避免 cancel 时 stateUpdateHandler 再次访问 self
-        conn.stateUpdateHandler = { _ in }
-        // 尝试 half-close：这一步即便失败也不影响后续 cancel
-        conn.send(content: nil, completion: .contentProcessed { [weak self] _ in
-            guard let s = self, s.alive() else { return }
-            // 给内核一点点时间把 FIN/队列送出去，避免即刻 cancel 触发底层断言
-            s.queue.asyncAfter(deadline: .now() + .milliseconds(2)) { [weak s] in
-                guard s?.alive() ?? false else { return }
-                conn.cancel()
-            }
-        })
-        c = nil
+		c = nil  // 立即置空
+		
+		// 标记操作开始
+		pendingOperations.incrementAndGet()
+		
+		// 清除handler防止回调
+		conn.stateUpdateHandler = nil
+		
+		conn.send(content: nil, completion: .contentProcessed { [weak self] _ in
+			self?.pendingOperations.decrementAndGet()
+			// 延迟取消给内核时间
+			self?.queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
+				conn.cancel()
+			}
+		})
     }
     
     private var isCancelling = false
@@ -772,76 +805,111 @@ public final class LayerMinusBridge {
             default:
                 log("KILL_CLASS=MISC note=\(reason)")
             }
-        
-#if DEBUG
-safeStopTimer(&memSummaryTimer)
-#endif
-
-            // —— 可重入防抖 + 标记关闭（保持你现有的 stateLock 语义）
-            stateLock.lock()
-            if closed || isCancelling { stateLock.unlock(); return }
-            closed = true
-            isCancelling = true
-            stateLock.unlock()
-
-            // 停止数据面：立即暂停继续收
-            pausedC2U = true
-
-            // —— 安全停表：所有计时器先“断电”再 cancel，避免尾随触发
-            safeStopTimer(&firstByteWatchdog)
-            safeStopTimer(&drainTimer)
-            safeStopTimer(&uploadStuckTimer)
-            safeStopTimer(&cuFlushTimer)
-            safeStopTimer(&stTimer)
-            safeStopTimer(&resumeCheckTimer)
-            safeStopTimer(&backpressureTimer)   // ← 新增：把背压定时器也停掉
-
-            safeStopTimer(&bbrTimer)
-
-            
-
-            // —— 结清在途 & 缓冲、释放全局预算（保持你原有逻辑）
-            if !cuBuffer.isEmpty { subGlobalBytes(cuBuffer.count) }
-            if !stBuffer.isEmpty { subGlobalBytes(stBuffer.count) }
-            inflightSizes.removeAll(keepingCapacity: false)
-            inflight.removeAll(keepingCapacity: false)
-            inflightBytes = 0
-            cuBuffer.removeAll(keepingCapacity: false)
-            stBuffer.removeAll(keepingCapacity: false)
-
-            // —— KPI 在“硬关闭”前打印（保留）
-            kpiLog(reason: reason)
-            log("cancel: \(reason)")
-
-
-            // —— 软关闭三条连接
-            gracefulCloseConnection(&upstream,   label: "UP")      // 可变可置空
-            gracefulCloseConnection(&downstream, label: "DOWN")    // 可变可置空
-            gracefulCloseImmutableConnection(client, label: "CLIENT") // 不可变，只做优雅收尾
-
-            // —— onClosed 放最后，且异步回调，避免回调里再同步重入
-            if let cb = onClosed {
-                let bid = id
-                queue.async { cb(bid) }
-            }
-			DomainGate.shared.release(domain: etld1(of: self.resHost))
-            isCancelling = false
+    
+		// 防重入检查
+		stateLock.lock()
+		if closed || isCancelling { stateLock.unlock(); return }
+		closed = true
+		isCancelling = true
+		stateLock.unlock()
+		
+		// 等待pending操作完成
+		var waitCount = 0
+		while pendingOperations.get() > 0 && waitCount < 100 {
+			Thread.sleep(forTimeInterval: 0.01)
+			waitCount += 1
+		}
+		
+		pausedC2U = true
+		
+		// 安全停止所有定时器（只调用一次）
+		#if DEBUG
+		safeStopTimer(&memSummaryTimer)
+		#endif
+		safeStopTimer(&firstByteWatchdog)
+		safeStopTimer(&drainTimer)
+		safeStopTimer(&uploadStuckTimer)
+		safeStopTimer(&cuFlushTimer)
+		safeStopTimer(&stTimer)
+		safeStopTimer(&resumeCheckTimer)
+		safeStopTimer(&backpressureTimer)
+		safeStopTimer(&bbrTimer)
+		safeStopTimer(&roleTimer)
+		
+		// 清理缓冲
+		if !cuBuffer.isEmpty { subGlobalBytes(cuBuffer.count) }
+		if !stBuffer.isEmpty { subGlobalBytes(stBuffer.count) }
+		
+		inflightBytes = 0
+		inflight.removeAll(keepingCapacity: false)
+		cuBuffer.removeAll(keepingCapacity: false)
+		stBuffer.removeAll(keepingCapacity: false)
+		
+		// KPI日志
+		kpiLog(reason: reason)
+		log("cancel: \(reason)")
+		
+		// 软关闭连接
+		gracefulCloseConnection(&upstream, label: "UP")
+		gracefulCloseConnection(&downstream, label: "DOWN")
+		gracefulCloseImmutableConnection(client, label: "CLIENT")
+		
+		// 回调
+		if let cb = onClosed {
+			let bid = id
+			queue.async { cb(bid) }
+		}
+		
+		DomainGate.shared.release(domain: etld1(of: self.resHost))
+		isCancelling = false
+		
     }
+
+
+	private var pendingOperations = AtomicInteger()
+
+	// 添加 AtomicInteger 实现
+	private class AtomicInteger {
+		private var value: Int = 0
+		private let lock = NSLock()
+		
+		init() {}
+		
+		func get() -> Int {
+			lock.lock()
+			defer { lock.unlock() }
+			return value
+		}
+		
+		func incrementAndGet() -> Int {
+			lock.lock()
+			defer { lock.unlock() }
+			value += 1
+			return value
+		}
+		
+		func decrementAndGet() -> Int {
+			lock.lock()
+			defer { lock.unlock() }
+			value -= 1
+			return value
+		}
+	}
 
     
     private var UUID: String?
     
     @inline(__always)
     private func gracefulCloseImmutableConnection(_ conn: NWConnection, label: String) {
-        // 切断回调，避免 cancel 时回调里再访问 self
-        conn.stateUpdateHandler = { _ in }
-        // half-close（发送 FIN），然后稍后再 cancel，避免底层断言
-        conn.send(content: nil, completion: .contentProcessed { [weak self] _ in
-            guard let s = self, s.alive() else { return }
-            s.queue.asyncAfter(deadline: .now() + .milliseconds(2)) {
-                conn.cancel()
-            }
-        })
+		pendingOperations.incrementAndGet()
+
+		conn.stateUpdateHandler = nil
+		conn.send(content: nil, completion: .contentProcessed { [weak self] _ in
+			self?.pendingOperations.decrementAndGet()
+			self?.queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
+				conn.cancel()
+			}
+		})
     }
     
     public func start(
@@ -1221,7 +1289,12 @@ self.startMemSummary()
 		let t = DispatchSource.makeTimerSource(queue: queue)
 		t.schedule(deadline: .now() + .milliseconds(ROLE_INTERVAL_MS),
 			repeating: .milliseconds(ROLE_INTERVAL_MS))
-		t.setEventHandler { [weak self] in self?.recomputePrimaryRole() }
+		t.setEventHandler { [weak self] in
+			guard let s = self, s.alive() else { return }
+			s.recomputePrimaryRole()
+			s.applyPressureCapsIfNeeded()
+		}
+
 		roleTimer = t
 		t.resume()
 	}
@@ -1229,126 +1302,114 @@ self.startMemSummary()
     private func pumpClientToUpstream() {
         if closed { return }
         
-        client.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] (data, _, isComplete, err) in
-            
-            
-            guard let self = self else { return }
-            if !self.alive() { return }
-            
-            if let err = err {
-                self.log("UUID:\(self.UUID ?? "") client recv err: \(err)")
-                
-                // 避免在 receive 回调栈内同步取消，引发重入/竞态
-                self.queue.async { self.cancel(reason: "UUID:\(self.UUID ?? "") client recv err") }
-                
-                
-                
-                
-                return
-            }
-            
-            if let d = data, !d.isEmpty {
+		 pendingOperations.incrementAndGet()  // 进入操作
+			client.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
 
-				self.winUpBytes &+= d.count
-                
-                self.vlog("UUID:\(self.UUID ?? "") recv from client: \(d.count)B")
-
-                // 僅在疑似上傳測速時才走 ST 1ms 微合併；首頁/一般流量走一般微批
-                if self.isSpeedtestUploadMode && (1...300).contains(d.count) {
-                    self.smallC2UEvents &+= 1
-
-                    // 🔸 改为：测速上传微合并（首包已发出后才启动，避免影响握手）
-                    if self.tFirstSend != nil {
-                        self.stBuffer.append(d)
-                        self.addGlobalBytes(d.count)
-
-                        // 全局预算触发（与 cuBuffer 一致的防线）：立即 flush 并暂停读
-                        Self.globalLock.lock()
-                        let overBudget = Self.globalBufferedBytes > Self.GLOBAL_BUFFER_BUDGET
-                        Self.globalLock.unlock()
-
-                        if self.pausedC2U && self.cuBuffer.count < Int(Double(self.currentBufferLimit) * 0.5) { // 设定一个阈值来解除背压
-                            self.pausedC2U = false
-                            self.adjustBufferLimit()
-                            self.backpressureTimer?.cancel()
-                            self.backpressureTimer = nil
-                        }
-                        
-                        if overBudget || self.stBuffer.count >= self.currentBufferLimit {
-
-                            if self.pausedC2U == false {
-                                self.pausedC2U = true
-                                self.adjustBufferLimit() // 动态调整
-                                scheduleBackpressureTimer()
-                            }
-
-                        } else if self.stBuffer.count >= self.ST_FLUSH_BYTES {
-                            self.flushSTBuffer()
-                        } else {
-                            self.scheduleSTFlush()
-                        }
-                    } else {
-                        // 首包未完成前仍保留原直发（避免影响握手）
-                        self.sendToUpstream(d, remark: "c->u")
-                    }
-                } else {
-                    // 其它：累积到缓冲，达到阈值立即冲刷，否则启动短定时器
-                    self.appendToCUBuffer(d)
-                }
-
-
-                // 若已收到上游的 100-Continue，则统计 100 之后客户端是否真的发了实体
-                if self.saw100Continue {
-                    self.bodyBytesAfter100 &+= d.count
-                }
-
-
-//                if !self.isSpeedtestTarget {
-//                    if self.cuBuffer.count >= self.CU_FLUSH_BYTES { self.flushCUBuffer() }
-//                    else { self.scheduleCUFlush() }
-//                }
-
-                // 仅当本次不是“测速小块直发”时，才参与微批触发判断
-				if !(self.isSpeedtestUploadMode && (1...300).contains(d.count)) {
-					let effBytes = self.cuFlushBytesOverride ?? self.CU_FLUSH_BYTES
-					let effMs    = self.cuFlushMsOverride    ?? self.CU_FLUSH_MS
-					if self.cuBuffer.count >= effBytes { self.flushCUBuffer() }
-					else { self.scheduleCUFlush(afterMs: effMs) }
+				defer {
+					self?.pendingOperations.decrementAndGet()  // 确保退出
 				}
-            }
-            
-            
-            if isComplete {
-                self.log("UUID:\(self.UUID ?? "") client EOF")
-                
-                self.eofClient = true
 
-                // 先把缓冲冲刷出去，再进入排水期/或酌情 half-close
-                self.flushCUBuffer()
-                
-                self.flushSTBuffer()   // 把测速合包缓冲也冲掉，释放全局预算
+				guard let self = self else { return }
+				if !self.alive() { return }
+				
+				if let err = err {
+					self.log("UUID:\(self.UUID ?? "") client recv err: \(err)")
+					self.queue.async { self.cancel(reason: "UUID:\(self.UUID ?? "") client recv err") }
+					return
+				}
+				
+				if let d = data, !d.isEmpty {
 
-                // ★ 若已观测到上游发过 100-Continue，但客户端尚未发送任何实体，
-                //   暂不 half-close 上游（避免把请求体“宣告写完”）；仅进入空闲计时，等待自然收尾
-                if (self.saw100Continue && self.bodyBytesAfter100 == 0) || self.uploadStuck {
-                    self.scheduleDrainCancel(hint: "UUID:\(self.UUID ?? "") client EOF (deferred half-close due to 100-Continue)")
-                } else {
-                    // 常规路径：half-close 上游写端，再进入排水
-                    self.upstream?.send(content: nil, completion: .contentProcessed({ _ in }))
-                    self.scheduleDrainCancel(hint: "UUID:\(self.UUID ?? "") client EOF")
-                }
-                
-                return
-            }
-            
-            // 继续接收
-            if !self.pausedC2U {
-                self.pumpClientToUpstream()
-            } else {
-                self.vlog("UUID:\(self.UUID ?? "") pause c->u receive due to backpressure")
-            }
-        }
-    }
+					self.winUpBytes &+= d.count
+					
+					self.vlog("UUID:\(self.UUID ?? "") recv from client: \(d.count)B")
+
+					// 僅在疑似上傳測速時才走 ST 1ms 微合併；首頁/一般流量走一般微批
+					if self.isSpeedtestUploadMode && (1...300).contains(d.count) {
+						self.smallC2UEvents &+= 1
+
+						// 🔸 改为：测速上传微合并（首包已发出后才启动，避免影响握手）
+						if self.tFirstSend != nil {
+							self.stBuffer.append(d)
+							self.addGlobalBytes(d.count)
+
+							// 全局预算触发（与 cuBuffer 一致的防线）：立即 flush 并暂停读
+							Self.globalLock.lock()
+							let overBudget = Self.globalBufferedBytes > Self.GLOBAL_BUFFER_BUDGET
+							Self.globalLock.unlock()
+
+							if self.pausedC2U && self.cuBuffer.count < Int(Double(self.currentBufferLimit) * 0.5) { // 设定一个阈值来解除背压
+								self.pausedC2U = false
+								self.adjustBufferLimit()
+								self.backpressureTimer?.cancel()
+								self.backpressureTimer = nil
+							}
+							
+							if overBudget || self.stBuffer.count >= self.currentBufferLimit {
+
+								if self.pausedC2U == false {
+									self.pausedC2U = true
+									self.adjustBufferLimit() // 动态调整
+									scheduleBackpressureTimer()
+								}
+
+							} else if self.stBuffer.count >= self.ST_FLUSH_BYTES {
+								self.flushSTBuffer()
+							} else {
+								self.scheduleSTFlush()
+							}
+						} else {
+							// 首包未完成前仍保留原直发（避免影响握手）
+							self.sendToUpstream(d, remark: "c->u")
+						}
+					} else {
+						// 其它：累积到缓冲，达到阈值立即冲刷，否则启动短定时器
+						self.appendToCUBuffer(d)
+					}
+
+
+					// 若已收到上游的 100-Continue，则统计 100 之后客户端是否真的发了实体
+					if self.saw100Continue {
+						self.bodyBytesAfter100 &+= d.count
+					}
+
+					// 仅当本次不是“测速小块直发”时，才参与微批触发判断
+					if !(self.isSpeedtestUploadMode && (1...300).contains(d.count)) {
+						let effBytes = self.cuFlushBytesOverride ?? self.CU_FLUSH_BYTES
+						let effMs    = self.cuFlushMsOverride    ?? self.CU_FLUSH_MS
+						if self.cuBuffer.count >= effBytes { self.flushCUBuffer() }
+						else { self.scheduleCUFlush(afterMs: effMs) }
+					}
+				}
+				
+				
+				if isComplete {
+					self.log("UUID:\(self.UUID ?? "") client EOF")
+					self.eofClient = true
+					self.flushCUBuffer()
+					self.flushSTBuffer()
+					
+					if (self.saw100Continue && self.bodyBytesAfter100 == 0) || self.uploadStuck {
+						self.scheduleDrainCancel(hint: "UUID:\(self.UUID ?? "") client EOF (deferred)")
+					} else {
+						self.upstream?.send(content: nil, completion: .contentProcessed({ _ in }))
+						self.scheduleDrainCancel(hint: "UUID:\(self.UUID ?? "") client EOF")
+					}
+					return
+				}
+				
+				// 继续接收
+				if !self.pausedC2U {
+					self.pumpClientToUpstream()
+				} else {
+					self.vlog("UUID:\(self.UUID ?? "") pause c->u receive due to backpressure")
+				}
+			}
+							
+						
+					
+				
+	}
 
 	private func scheduleCUFlush(afterMs: Int) {
 		cuFlushTimer?.setEventHandler {}
@@ -1531,6 +1592,34 @@ self.startMemSummary()
             self.pumpDownstreamToClient()
         }
     }
+
+	private func applyPressureCapsIfNeeded() {
+		Self.globalLock.lock()
+		let g = Self.globalBufferedBytes
+		let budget = Self.GLOBAL_BUFFER_BUDGET
+		Self.globalLock.unlock()
+
+		let util = Double(g) / Double(budget)
+		if util >= 0.90 {
+			// 壓力很大：兩邊都收緊（保命）
+			if downReadHardCap != 4*1024 || cuFlushBytesOverride != 4*1024 || cuFlushMsOverride != 4 {
+				downReadHardCap = 4 * 1024
+				cuFlushBytesOverride = 4 * 1024
+				cuFlushMsOverride = 4
+				log(String(format:"PRESSURE cap ON (util=%.0f%%): downRead=4KB, upFlush=4KB/4ms", util*100))
+			}
+		} else if util <= 0.50 {
+			// 壓力低：解除壓力護欄（保留角色導向的 caps）
+			if cuFlushBytesOverride == 4*1024 || cuFlushMsOverride == 4 || downReadHardCap == 4*1024 {
+				cuFlushBytesOverride = nil
+				cuFlushMsOverride = nil
+				// 若當前角色不是 upstream-primary，就解除 downRead 硬上限
+				if primaryRole != .upstream { downReadHardCap = nil }
+				log(String(format:"PRESSURE cap OFF (util=%.0f%%)", util*100))
+			}
+		}
+	}
+
     
     // 首包回包看门狗（避免黑洞 60–100s 挂死；测速上传场景按策略放宽/禁用）
     private var firstByteWatchdog: DispatchSourceTimer?
@@ -1554,7 +1643,7 @@ self.startMemSummary()
 
         // —— 入账在途体积，并在超预算时暂停 c->u 读取
         let sz = data.count
-        inflightSizes[seq] = sz
+
         inflightBytes &+= sz
         
         if inflightBytes >= B || inflight.count >= C {
@@ -1568,31 +1657,30 @@ self.startMemSummary()
 
         vlog("send \(remark) \(data.count)B -> upstream #\(seq)")
         
-        
+        pendingOperations.incrementAndGet()  // 标记操作开始
         
         up.send(content: data, completion: .contentProcessed({ [weak self] err in
             
+			defer {
+				self?.pendingOperations.decrementAndGet()
+			}
+
+
             guard let self = self, self.alive() else { return }
 
-            // —— ★★ 无论如何，先做一次出账（只会在第一次回调时成功扣减）
-            let debited: Int = {
-                if let n = self.inflightSizes.removeValue(forKey: seq) {
-                    self.inflightBytes &-= n
-                    if self.inflightBytes < 0 { self.inflightBytes = 0 }
-                    return n
-                }
-                return 0
-            }()
-            
-            // 去重：只处理一次完成回调
+			
 
-            let firstCompletion = self.inflight.remove(seq) != nil
-            if !firstCompletion {
-                // 已经处理过：只补个日志并尝试恢复读
-                self.log("WARN dup completion for #\(seq), ignore (debited=\(debited))")
-                self.maybeResumeAfterInflightDrained()
-                return
-            }
+            // —— ★★ 无论如何，先做一次出账（只会在第一次回调时成功扣减）
+			let firstCompletion = self.inflight.remove(seq) != nil
+
+			if firstCompletion {
+				self.inflightBytes &-= sz
+				if self.inflightBytes < 0 { self.inflightBytes = 0 }
+			} else {
+				self.vlog("dup completion for #\(seq), ignore")
+				self.maybeResumeAfterInflightDrained()
+				return
+			}
 
             if let err = err {
                 self.log("upstream send err: \(err)")
