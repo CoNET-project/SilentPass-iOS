@@ -71,13 +71,13 @@ public final class LayerMinusBridge {
     
     @inline(__always)
     private func safeStopTimer(_ t: inout DispatchSourceTimer?) {
-        guard let timer = t else { return }
-        t = nil // 先置空，防止重入
-        let sem = DispatchSemaphore(value: 0)
-        timer.setEventHandler {}              // 断电，避免尾随触发
-        timer.setCancelHandler { sem.signal() } // ← 关键：用 cancelHandler 收尾
-        timer.cancel()
-        _ = sem.wait(timeout: .now() + .milliseconds(50))
+		guard let timer = t else { return }
+			t = nil // 先置空，防止重入
+			let sem = DispatchSemaphore(value: 0)
+			timer.setEventHandler {}              // 断电，避免尾随触发
+			timer.setCancelHandler { sem.signal() }
+			timer.cancel()
+			_ = sem.wait(timeout: .now() + .milliseconds(50))
     }
     
     #if DEBUG
@@ -100,89 +100,33 @@ public final class LayerMinusBridge {
         return nil
     }
     
-    /// 每 2s 打一次“水位/内存”摘要（仅 DEBUG）
-    private func startMemSummary() {
-        // 先停旧的（防重入）
-        memSummaryTimer?.setEventHandler {}
-        memSummaryTimer?.cancel()
-        memSummaryTimer = nil
-
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + .seconds(5), repeating: .seconds(5))
-        t.setEventHandler { [weak self] in
-
-			autoreleasepool {
-				guard let s = self, s.alive() else { return }
-
-				// 读取全局与本连接水位
-				Self.globalLock.lock()
-				let globalBytes = Self.globalBufferedBytes
-				Self.globalLock.unlock()
-
-				let inflightB = s.inflightBytes
-				let inflightN = s.inflight.count
-				let cuLen = s.cuBuffer.count
-				let stLen = s.stBuffer.count
-				let paused = s.pausedC2U ? 1 : 0
-				let limit = s.currentBufferLimit
-				let up = s.bytesUp
-				let down = s.bytesDown
-
-				// 进程 RSS（可失败时就不打印）
-				if let rss = s.processResidentSizeMB() {
-					s.log(String(format:
-						"MEM summary: rss=%.1fMB global=%dB inflight=%dB(#%d) cu=%dB st=%dB paused=%d limit=%dB up=%d down=%d",
-						rss, globalBytes, inflightB, inflightN, cuLen, stLen, paused, limit, up, down))
-					s.log(String(format:
-					"MEM summary: ... d_bw_max=%.0fbps d_minRTT=%.1fms d_inf=%dB read=%d pausedD2C=%d",
-					s.d_bbrBwMax_bps, s.d_bbrMinRtt_ms, s.downInflightBytes, s.downMaxRead, s.pausedD2C ? 1 : 0))
-				} else {
-					s.log(String(format:
-						"MEM summary: rss=NA global=%dB inflight=%dB(#%d) cu=%dB st=%dB paused=%d limit=%dB up=%d down=%d",
-						globalBytes, inflightB, inflightN, cuLen, stLen, paused, limit, up, down))
-				}
-			}
-        }
-        memSummaryTimer = t
-        t.resume()
-    }
     #endif
     
 
     private var currentBufferLimit: Int = 4 * 1024 // 初始大小 4KB
-    private let maxBufferLimit: Int = 256 * 1024 // 最大大小 1MB
+    private let maxBufferLimit: Int = 256 * 1024 // 最大大小 256KB
     private var backpressureTimer: DispatchSourceTimer?
 
         // 新增：在背压状态下，每 50ms 动态调整一次缓冲区大小
     private func scheduleBackpressureTimer() {
-        guard pausedC2U else { return }
-        
-        // 如果定时器已存在，先取消以避免重复
-        backpressureTimer?.cancel()
-
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
-        t.setEventHandler { [weak self] in
-
+        guard pausedC2U, backpressureTimer == nil else { return } // 只排一次
+		let t = DispatchSource.makeTimerSource(queue: queue)
+		t.schedule(deadline: .now() + .milliseconds(100))         // 轻推 100ms
+		t.setEventHandler { [weak self] in
 			autoreleasepool {
 				guard let s = self, s.alive() else { return }
-				
-				// 如果背压状态已解除，取消定时器
-				if !s.pausedC2U {
-					s.backpressureTimer?.cancel()
-					s.backpressureTimer = nil
-					return
+				if s.pausedC2U {
+					let old = s.currentBufferLimit
+					s.adjustBufferLimit()
+					if old != s.currentBufferLimit { s.log("Backpressure: \(old)->\(s.currentBufferLimit)B") }
 				}
-
-				let oldLimit = s.currentBufferLimit     // ← 先捕获旧值
-				s.adjustBufferLimit()                   // ← 再调整
-				if oldLimit != s.currentBufferLimit {
-					s.log("Backpressure: \(oldLimit)->\(s.currentBufferLimit)B")
-				}
+				s.backpressureTimer?.setEventHandler {}
+				s.backpressureTimer?.cancel()
+				s.backpressureTimer = nil
 			}
-        }
-        backpressureTimer = t
-        t.resume()
+		}
+		backpressureTimer = t
+		t.resume()
     }
 	// === Flow primary detection & caps ===
 	private enum FlowPrimary { case upstream, downstream, balanced }
@@ -365,99 +309,18 @@ public final class LayerMinusBridge {
 
     // 启动最小版 BBR 采样器（200ms）
      private func startBBRSampler() {
-         // 停旧
-
-		 safeStopTimer(&bbrTimer)
-         bbrTimer?.setEventHandler {}
-         bbrTimer?.cancel()
-         bbrTimer = nil
-
-         bbrPrevBytesUp = bytesUp
-         bbrSampleTs = .now()
-         bbrState = .startup
-         bbrPacingGain = 2.0
-         bbrCwndGain = 2.0
-         bbrProbeIndex = 0
-         bbrBwMax_bps = 0
-
-         let t = DispatchSource.makeTimerSource(queue: queue)
-         t.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
-         t.setEventHandler { [weak self] in
-
-		 	autoreleasepool {
-				guard let s = self, s.alive() else { return }
-
-				// —— 带宽采样（上行）
-				let now = DispatchTime.now()
-				let dtNs = now.uptimeNanoseconds &- s.bbrSampleTs.uptimeNanoseconds
-				if dtNs > 0 {
-					let dt = Double(dtNs) / 1e9
-					let delta = max(0, s.bytesUp - s.bbrPrevBytesUp)
-					let bps = Double(delta) * 8.0 / max(dt, 1e-6)       // bytes -> bits
-					s.bbrBwUp_bps = bps
-					s.bbrBwMax_bps = max(s.bbrBwMax_bps * 0.9, bps)     // 轻微衰减的最大滤波
-				}
-				s.bbrPrevBytesUp = s.bytesUp
-				s.bbrSampleTs = now
-
-				// —— RTT 维护：用 TTFB 作为 minRTT，10s 过期允许刷新
-				if let tfb = s.tFirstByte {
-					let rttMs = s.diffMs(start: s.tStart, end: tfb)
-					if rttMs > 0 {
-						let ageMs = s.diffMs(start: s.bbrMinRttStamp, end: now)
-						if rttMs < s.bbrMinRtt_ms || ageMs > 10_000 {
-							s.bbrMinRtt_ms = max(1.0, rttMs)
-							s.bbrMinRttStamp = now
-						}
-					}
-				}
-
-				// —— BDP 估计
-				let bw = max(s.bbrBwMax_bps, 0)               // bits/s
-				let rtt = max(s.bbrMinRtt_ms, 1.0)            // ms
-				let bdpBytes = Int((bw / 8.0) * (rtt / 1000.0))
-
-				// —— 状态机（极简）
-				switch s.bbrState {
-				case .startup:
-					let growthOK = (s.bbrBwUp_bps > 0 && s.bbrBwMax_bps > 0 && s.bbrBwUp_bps >= 0.9 * s.bbrBwMax_bps)
-					if growthOK == false && bdpBytes > 0 {
-						s.bbrState = .drain
-						s.bbrPacingGain = 0.75
-						s.bbrCwndGain = 1.0
-						s.log("BBR->DRAIN bw=\(Int(bw))bps minRTT=\(String(format: "%.1f", rtt))ms")
-					}
-				case .drain:
-					if s.inflightBytes <= bdpBytes {
-						s.bbrState = .probeBW
-						s.bbrProbeIndex = 0
-						s.bbrPacingGain = s.bbrProbeCycle[s.bbrProbeIndex]
-						s.bbrCwndGain = 2.0
-						s.log("BBR->PROBE_BW bw=\(Int(bw))bps minRTT=\(String(format: "%.1f", rtt))ms")
-					}
-				case .probeBW:
-					s.bbrProbeIndex = (s.bbrProbeIndex + 1) % s.bbrProbeCycle.count
-					s.bbrPacingGain = s.bbrProbeCycle[s.bbrProbeIndex]
-					// cwndGain 维持 2.0（可按需收敛）
-				}
-			}
-         }
-
-         do {
-            let now = DispatchTime.now()
-            let dtNs = now.uptimeNanoseconds &- d_bbrSampleTs.uptimeNanoseconds
-            if dtNs > 0 {
-                let dt = Double(dtNs) / 1e9
-                let delta = max(0, downDeliveredBytes - d_bbrPrevDelivered)   // 本周期真正交付给 client 的字节
-                let bps = Double(delta) * 8.0 / max(dt, 1e-6)
-                d_bbrBw_bps = bps
-                d_bbrBwMax_bps = max(d_bbrBwMax_bps * 0.9, bps)               // 轻微衰减的 max filter
-            }
-            d_bbrPrevDelivered = downDeliveredBytes
-            d_bbrSampleTs = now
-        }
-         bbrTimer = t
-         t.resume()
+		// 保守停旧（兼容旧版本）
+		bbrTimer?.setEventHandler {}
+		bbrTimer?.cancel()
+		bbrTimer = nil
+		// 初始化一次状态
+		bbrPrevBytesUp = bytesUp
+		bbrSampleTs = .now()
+		bbrState = .startup
+		bbrPacingGain = 2.0
+		bbrCwndGain = 2.0
+		bbrProbeIndex = 0
+		bbrBwMax_bps = 0
      }
 
      @inline(__always)
@@ -693,18 +556,20 @@ public final class LayerMinusBridge {
 			stateLock.unlock()
 			
 			// 清理所有定时器(不等待回调)
-			firstByteWatchdog?.cancel()
-			drainTimer?.cancel()
-			uploadStuckTimer?.cancel()
-			cuFlushTimer?.cancel()
-			stTimer?.cancel()
-			resumeCheckTimer?.cancel()
-			backpressureTimer?.cancel()
-			bbrTimer?.cancel()
-			roleTimer?.cancel()
+			safeStopTimer(&firstByteWatchdog)
+			safeStopTimer(&drainTimer)
+			safeStopTimer(&uploadStuckTimer)
+			safeStopTimer(&cuFlushTimer)
+			safeStopTimer(&stTimer)
+			safeStopTimer(&resumeCheckTimer)
+			safeStopTimer(&backpressureTimer)
+			safeStopTimer(&bbrTimer)
+			safeStopTimer(&roleTimer)
 			#if DEBUG
-			memSummaryTimer?.cancel()
+				safeStopTimer(&memSummaryTimer)
 			#endif
+
+			BridgeCoordinator.shared.remove(self)
 			
 			// 强制关闭连接
 			upstream?.cancel()
@@ -735,6 +600,12 @@ public final class LayerMinusBridge {
     }
     
     public func start(withFirstBody firstBodyBase64: String) {
+		BridgeCoordinator.shared.add(self)
+		BridgeCoordinator.shared.ensure200ms()
+		#if DEBUG
+		BridgeCoordinator.shared.ensure5sMemSummary()
+		#endif
+
         queue.async { [weak self] in
             guard let self = self else { return }
             
@@ -743,10 +614,6 @@ public final class LayerMinusBridge {
             // KPI: 记录会话起点，用于计算 hsRTT / TTFB / 总时长
             self.tStart = .now()
             self.startBBRSampler()
-            
-            #if DEBUG
-            self.startMemSummary()
-            #endif
             
             self.log("start -> \(self.reqHost):\(self.reqPort) <-- \(self.resHost):\(self.resPort), firstBody(Base64) len=\(firstBodyBase64.count)")
             
@@ -843,31 +710,23 @@ public final class LayerMinusBridge {
 		
 		pausedC2U = true
 		
-		// 安全停止所有定时器（只调用一次）
-		#if DEBUG
-		safeStopTimer(&memSummaryTimer)
-		#endif
-		// 立即停止所有定时器（使用改进的方法）
-		let timers: [inout DispatchSourceTimer?] = [
-			&memSummaryTimer,
-			&firstByteWatchdog,
-			&drainTimer,
-			&uploadStuckTimer,
-			&cuFlushTimer,
-			&stTimer,
-			&resumeCheckTimer,
-			&backpressureTimer,
-			&bbrTimer,
-			&roleTimer
-		]
-		
-		for var timer in timers {
-			if let t = timer {
-				timer = nil
-				t.setEventHandler(handler: nil)
-				t.cancel()
-			}
-		}
+        // 先停 DEBUG 的
+        #if DEBUG
+        safeStopTimer(&memSummaryTimer)
+        #endif
+
+        // 再停业务定时器
+		BridgeCoordinator.shared.remove(self)
+
+        safeStopTimer(&firstByteWatchdog)
+        safeStopTimer(&drainTimer)
+        safeStopTimer(&uploadStuckTimer)
+        safeStopTimer(&cuFlushTimer)
+        safeStopTimer(&stTimer)
+        safeStopTimer(&resumeCheckTimer)
+        safeStopTimer(&backpressureTimer)
+        safeStopTimer(&bbrTimer)
+        safeStopTimer(&roleTimer)
 		
 		// 清理缓冲区并释放内存
 		autoreleasepool {
@@ -883,15 +742,6 @@ public final class LayerMinusBridge {
 			inflightBytes = 0
 			inflight.removeAll()
 		}
-		
-		// 清理缓冲
-		if !cuBuffer.isEmpty { subGlobalBytes(cuBuffer.count) }
-		if !stBuffer.isEmpty { subGlobalBytes(stBuffer.count) }
-		
-		inflightBytes = 0
-		inflight.removeAll(keepingCapacity: false)
-		cuBuffer.removeAll(keepingCapacity: false)
-		stBuffer.removeAll(keepingCapacity: false)
 		
 		// KPI日志
 		kpiLog(reason: reason)
@@ -912,6 +762,26 @@ public final class LayerMinusBridge {
 		isCancelling = false
 		
     }
+
+	// 每 200ms 被 Coordinator 派发一次，跑在“本连接的 queue”上
+	func onTick200() {
+		guard alive() else { return }
+
+		// (a) 原 startBBRSampler() 里的采样/状态机逻辑，整体搬到这里
+		bbrOnTick()
+
+		// (b) 原 roleTimer 每 300ms 的角色判定/护栏（你已有 recomputePrimaryRole）
+		// 以 200ms tick 代替 300ms，效果更实时
+		recomputePrimaryRole()
+		applyPressureCapsIfNeeded()
+
+		// (c) 替代 scheduleBackpressureTimer() 的循环：仅在 pausedC2U 时调整
+		if pausedC2U {
+			let old = currentBufferLimit
+			adjustBufferLimit()
+			if old != currentBufferLimit { log("Backpressure: \(old)->\(currentBufferLimit)B") }
+		}
+	}
 
 
 	private var pendingOperations = AtomicInteger()
@@ -967,6 +837,13 @@ public final class LayerMinusBridge {
         resFirstBodyBase64: String,
         UUID: String
     ) {
+
+		BridgeCoordinator.shared.add(self)
+		BridgeCoordinator.shared.ensure200ms()
+		#if DEBUG
+		BridgeCoordinator.shared.ensure5sMemSummary()
+		#endif
+
         self.UUID = UUID
         queue.async { [weak self] in
             guard let self = self, self.alive() else { return }
@@ -975,10 +852,6 @@ public final class LayerMinusBridge {
 
             // 启动 BBR 采样器
             self.startBBRSampler()
-
-#if DEBUG
-self.startMemSummary()
-#endif
             self.log("start (dual-first-body) -> req=\(self.reqHost):\(self.reqPort)  res=\(self.resHost):\(self.resPort)  reqLen=\(reqFirstBodyBase64.count)  resLen=\(resFirstBodyBase64.count)")
 
             guard let reqFirst = Data(base64Encoded: reqFirstBodyBase64), !reqFirst.isEmpty else {
@@ -1142,7 +1015,6 @@ self.startMemSummary()
                     log("conn identity check: down === up ? \(self.downstream === self.upstream)")
                 }
 
-				ensureRoleTimer()
             }
         }
 
@@ -1295,8 +1167,10 @@ self.startMemSummary()
 					t2.schedule(deadline: .now() + .milliseconds(s.CU_EXTRA_MS))
 					
 					t2.setEventHandler { [weak s] in
-						guard let s = s, s.alive() else { return }
-						s.flushCUBuffer()
+						autoreleasepool {
+							guard let s = s, s.alive() else { return }
+							s.flushCUBuffer()
+						}
 					}
 					
 					
@@ -1345,22 +1219,7 @@ self.startMemSummary()
         }
     }
 
-	private func ensureRoleTimer() {
-		if roleTimer != nil { return }
-		let t = DispatchSource.makeTimerSource(queue: queue)
-		t.schedule(deadline: .now() + .milliseconds(ROLE_INTERVAL_MS),
-			repeating: .milliseconds(ROLE_INTERVAL_MS))
-		t.setEventHandler { [weak self] in
-			autoreleasepool {
-				guard let s = self, s.alive() else { return }
-				s.recomputePrimaryRole()
-				s.applyPressureCapsIfNeeded()
-			}
-		}
-
-		roleTimer = t
-		t.resume()
-	}
+	private func ensureRoleTimer() { /* shared tick via BridgeCoordinator; no-op */ }
     
     private func pumpClientToUpstream() {
         if closed { return }
@@ -1644,10 +1503,6 @@ self.startMemSummary()
 						self.scheduleDrainCancel(hint: "upstream EOF (still draining to client)")
 					}
 
-					if self.eofClient {
-						self.scheduleDrainCancel(hint: "client EOF (downstream->client activity)")
-					}
-
 					if !self.pausedD2C { self.pumpDownstreamToClient() }
 				}
 
@@ -1658,8 +1513,6 @@ self.startMemSummary()
 					self.scheduleDrainCancel(hint: "downstream EOF")
 					return
 				}
-
-				self.pumpDownstreamToClient()
 			}
         }
     }
@@ -1818,7 +1671,9 @@ self.startMemSummary()
 						self.vlog("speedtest upload-mode: watchdog disabled")
 					}
 				}
+				self.maybeResumeAfterInflightDrained()
 			}
+
         }))
     }
     
@@ -1848,34 +1703,37 @@ self.startMemSummary()
 
         let sendStart = DispatchTime.now()
         client.send(content: data, completion: .contentProcessed({ [weak self] err in
-            guard let self = self, self.alive() else { return }
 
-            // 下行 in-flight 出账（兜底）
-            self.downInflightBytes &-= data.count
-            if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
-            self.downInflightCount &-= 1
-            if self.downInflightCount < 0 { self.downInflightCount = 0 }
+			autoreleasepool {
+				guard let self = self, self.alive() else { return }
 
-            if let err = err {
-                self.log("client send err: \(err)")
-                self.queue.async { self.cancel(reason: "client send err") }
-            } else {
-                self.vlog("sent \(remark) successfully")
-                // 下行 BBR：统计交付字节 + 单块“发送完成时延”作为 RTT 样本
-                self.downDeliveredBytes &+= data.count
-                let dtNs = DispatchTime.now().uptimeNanoseconds &- sendStart.uptimeNanoseconds
-                let ms = Double(dtNs) / 1e6
-                if ms > 0 {
-                    let ageMs = self.diffMs(start: self.d_bbrMinRttStamp, end: DispatchTime.now())
-                    if ms < self.d_bbrMinRtt_ms || ageMs > 10_000 {
-                        self.d_bbrMinRtt_ms = ms
-                        self.d_bbrMinRttStamp = DispatchTime.now()
-                    }
-                }
-            }
+				// 下行 in-flight 出账（兜底）
+				self.downInflightBytes &-= data.count
+				if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
+				self.downInflightCount &-= 1
+				if self.downInflightCount < 0 { self.downInflightCount = 0 }
 
-            // in-flight 降到阈值以下时尝试恢复下行接收
-            self.maybeResumeDownAfterInflightDrained()
+				if let err = err {
+					self.log("client send err: \(err)")
+					self.queue.async { self.cancel(reason: "client send err") }
+				} else {
+					self.vlog("sent \(remark) successfully")
+					// 下行 BBR：统计交付字节 + 单块“发送完成时延”作为 RTT 样本
+					self.downDeliveredBytes &+= data.count
+					let dtNs = DispatchTime.now().uptimeNanoseconds &- sendStart.uptimeNanoseconds
+					let ms = Double(dtNs) / 1e6
+					if ms > 0 {
+						let ageMs = self.diffMs(start: self.d_bbrMinRttStamp, end: DispatchTime.now())
+						if ms < self.d_bbrMinRtt_ms || ageMs > 10_000 {
+							self.d_bbrMinRtt_ms = ms
+							self.d_bbrMinRttStamp = DispatchTime.now()
+						}
+					}
+				}
+
+				// in-flight 降到阈值以下时尝试恢复下行接收
+				self.maybeResumeDownAfterInflightDrained()
+			}
         }))
     }
 
@@ -1892,6 +1750,59 @@ self.startMemSummary()
     private func diffMs(start: DispatchTime, end: DispatchTime) -> Double {
         return Double(end.uptimeNanoseconds &- start.uptimeNanoseconds) / 1e6
     }
+
+	#if DEBUG
+	private var memSummaryTimer: DispatchSourceTimer?
+
+	@inline(__always)
+	private func processResidentSizeMB() -> Double? {
+		var info = mach_task_basic_info()
+		var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: info) / MemoryLayout<natural_t>.size)
+		let kr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+			$0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+				task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+			}
+		}
+		return (kr == KERN_SUCCESS) ? Double(info.resident_size) / (1024.0 * 1024.0) : nil
+	}
+	/// 每 5s 打一次“水位/内存”摘要（仅 DEBUG）
+	private func startMemSummary() {
+		memSummaryTimer?.setEventHandler {}
+		memSummaryTimer?.cancel()
+		memSummaryTimer = nil
+
+		let t = DispatchSource.makeTimerSource(queue: queue)
+		t.schedule(deadline: .now() + .seconds(5), repeating: .seconds(5))
+		t.setEventHandler { [weak self] in
+			autoreleasepool {
+				guard let s = self, s.alive() else { return }
+				Self.globalLock.lock()
+				let globalBytes = Self.globalBufferedBytes
+				Self.globalLock.unlock()
+
+				let inflightB = s.inflightBytes
+				let inflightN = s.inflight.count
+				let cuLen = s.cuBuffer.count
+				let stLen = s.stBuffer.count
+				let paused = s.pausedC2U ? 1 : 0
+				let limit  = s.currentBufferLimit
+				let up     = s.bytesUp
+				let down   = s.bytesDown
+
+				if let rss = s.processResidentSizeMB() {
+					s.log(String(format: "MEM summary: rss=%.1fMB global=%dB inflight=%dB(#%d) cu=%dB st=%dB paused=%d limit=%dB up=%d down=%d",
+								rss, globalBytes, inflightB, inflightN, cuLen, stLen, paused, limit, up, down))
+				} else {
+					s.log(String(format: "MEM summary: rss=NA global=%dB inflight=%dB(#%d) cu=%dB st=%dB paused=%d limit=%dB up=%d down=%d",
+								globalBytes, inflightB, inflightN, cuLen, stLen, paused, limit, up, down))
+				}
+			}
+		}
+		memSummaryTimer = t
+		t.resume()
+	}
+	#endif
+
 }
 
 final class DomainGate {
@@ -1947,5 +1858,102 @@ final class DomainGate {
                 next()
             }
         }
+    }
+}
+
+// 放在同文件底部或新文件中
+final class BridgeCoordinator {
+    static let shared = BridgeCoordinator()
+    private let q = DispatchQueue(label: "LayerMinusBridge.Coordinator", qos: .userInitiated)
+
+    private struct WeakBox { weak var v: LayerMinusBridge? }
+    private var conns: [WeakBox] = []
+
+    private var tick200: DispatchSourceTimer?
+    private var tick5s: DispatchSourceTimer?
+
+    func add(_ b: LayerMinusBridge) {
+        q.async { self.compact(); self.conns.append(.init(v: b)) }
+    }
+    func remove(_ b: LayerMinusBridge) {
+        q.async { self.conns.removeAll { $0.v == nil || $0.v === b } }
+    }
+    private func compact() { conns.removeAll { $0.v == nil } }
+
+    // 200ms 共享 tick：给每个连接派发「BBR/role/backpressure」周期工作
+    func ensure200ms() {
+        q.async {
+            guard self.tick200 == nil else { return }
+            let t = DispatchSource.makeTimerSource(queue: self.q)
+            t.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
+            t.setEventHandler { [weak self] in
+                guard let self = self else { return }
+                var alive: [WeakBox] = []
+                for box in self.conns {
+                    if let b = box.v, b.alive() {
+                        alive.append(box)
+                        b.queue.async { b.onTick200() }   // ← 派发到连接自己的队列
+                    }
+                }
+                self.conns = alive   // 压缩空槽
+            }
+            self.tick200 = t; t.resume()
+        }
+    }
+
+    #if DEBUG
+    // 5s 共享内存摘要（只打一条全局线）
+    func ensure5sMemSummary() {
+        q.async {
+            guard self.tick5s == nil else { return }
+            let t = DispatchSource.makeTimerSource(queue: self.q)
+            t.schedule(deadline: .now() + .seconds(5), repeating: .seconds(5))
+            t.setEventHandler { [weak self] in
+                guard let self = self else { return }
+                // 统计活动连接数
+                let active = self.conns.compactMap { $0.v?.alive() == true ? $0.v : nil }
+                // 利用已有的全局水位
+                LayerMinusBridge.globalLock.lock()
+                let g = LayerMinusBridge.globalBufferedBytes
+                LayerMinusBridge.globalLock.unlock()
+                if let any = active.first, let rss = any.processResidentSizeMB() {
+                    any.log(String(format:"GLOBAL summary: rss=%.1fMB global=%dB conns=%d", rss, g, active.count))
+                } else if let any = active.first {
+                    any.log("GLOBAL summary: rss=NA global=\(g)B conns=\(active.count)")
+                }
+            }
+            self.tick5s = t; t.resume()
+        }
+    }
+    #endif
+}
+
+
+extension LayerMinusBridge {
+    private func checkMemoryPressure() {
+        let info = ProcessInfo.processInfo
+        let physicalMemory = info.physicalMemory
+        let threshold = physicalMemory / 10  // 10% 阈值
+        
+        if let rss = processResidentSizeMB(), 
+           rss > Double(threshold) / (1024 * 1024) {
+            // 触发紧急清理
+            emergencyCleanup()
+        }
+    }
+    
+    private func emergencyCleanup() {
+        // 1. 清理缓冲区
+        cuBuffer = Data()
+        stBuffer = Data()
+        
+        // 2. 取消非关键定时器
+        safeStopTimer(&roleTimer)
+        safeStopTimer(&backpressureTimer)
+        
+        // 3. 强制 GC
+        autoreleasepool { }
+        
+        log("Emergency cleanup triggered")
     }
 }
