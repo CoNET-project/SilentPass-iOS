@@ -107,7 +107,7 @@ func makeJSONData(_ inStr: String) -> String? {
     return json
 }
 
-
+//      ServerConnection LayerMinusBridge
 public final class ServerConnection {
     
     // 命中黑名单 → 立即废止（HTTP 返回 403；SOCKS5 返回 0x02），统一在 ServerConnection 的 queue 上执行
