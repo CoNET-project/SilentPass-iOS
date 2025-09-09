@@ -165,14 +165,34 @@ public final class LayerMinusBridge {
         backpressureTimer = t
         t.resume()
     }
+	// === Flow primary detection & caps ===
+	private enum FlowPrimary { case upstream, downstream, balanced }
+	private var primaryRole: FlowPrimary = .balanced
+
+	// 最近窗口（每 300ms 累計）的上下行量
+	private var winUpBytes = 0
+	private var winDownBytes = 0
+	private var roleTimer: DispatchSourceTimer?
+	private let ROLE_INTERVAL_MS = 300
+
+	// 抖動抑制：連續 N 個窗口一致才切換
+	private var pendingRole: FlowPrimary = .balanced
+	private var pendingStreak = 0
+	private let ROLE_HYSTERESIS = 2
+
+	// “硬上限”鉤子（nil 表示不施加）
+	private var downReadHardCap: Int? = nil           // 次要方向為下行時：4KB
+	private var cuFlushBytesOverride: Int? = nil      // 次要方向為上行時：4KB
+	private var cuFlushMsOverride: Int? = nil         // 次要方向為上行時：4ms
+
     
     // ==== 下行(d->c)背压/BBR ====
     private var pausedD2C = false
     private var downInflightBytes = 0        // 已送入 client、尚未完成的字节数
     private var downInflightCount = 0
-    private var downMaxRead = 64 * 1024      // 动态读窗口
+    private var downMaxRead = 32 * 1024      // 动态读窗口
     private let DOWN_MIN_READ = 4 * 1024
-    private let DOWN_MAX_READ = 64 * 1024
+    private let DOWN_MAX_READ = 32 * 1024
 
     // 下行最小版 BBR（以真正“交付给 client”的速率为准）
     private var d_bbrBw_bps: Double = 0
@@ -255,6 +275,13 @@ public final class LayerMinusBridge {
                 log("Adjust down read: \(oldRead) -> \(downMaxRead)")
             }
 
+			// 角色導致的硬上限（僅作天花板，BBR 在此之內動態）
+			if let cap = self.downReadHardCap, downMaxRead > cap {
+				let o = downMaxRead
+				downMaxRead = cap
+				log("down read cap: \(o) -> \(downMaxRead)")
+			}
+
             // 命中/脱离目标触发暂停/恢复
             if downInflightBytes >= targetDown {
                 if !pausedD2C {
@@ -303,7 +330,7 @@ public final class LayerMinusBridge {
     private var inflightBytes: Int = 0
     private var inflightSizes = [UInt64: Int]()   // seq -> bytes
     private let INFLIGHT_BYTES_BUDGET = 512 * 1024   // 512KB（可按需调大到 768KB/1MB）
-    private let INFLIGHT_COUNT_BUDGET = 256          // 在途包数上限，双保险
+    private let INFLIGHT_COUNT_BUDGET = 96          // 在途包数上限，双保险
 
     private var sendSeq: UInt64 = 0
     private var inflight = Set<UInt64>()
@@ -311,8 +338,8 @@ public final class LayerMinusBridge {
     // --- 上行(c->u)微批：64KB 或 5ms 触发 ---
     private var cuBuffer = Data()
     private var cuFlushTimer: DispatchSourceTimer?
-    private let CU_FLUSH_BYTES = 48 * 1024
-    private let CU_FLUSH_MS = 10
+    private let CU_FLUSH_BYTES = 32 * 1024
+    private let CU_FLUSH_MS = 8
     // 当定时到点但缓冲小于该值时，允许再延一次以攒到更“胖”的报文
     private let CU_MIN_FLUSH_BYTES = 8 * 1024
     private let CU_EXTRA_MS = 10
@@ -543,7 +570,7 @@ public final class LayerMinusBridge {
     private func flushSTBuffer() {
         guard !stBuffer.isEmpty, !closed else { return }
         let payload = stBuffer
-        stBuffer.removeAll(keepingCapacity: true)
+        stBuffer.removeAll(keepingCapacity: false)
         subGlobalBytes(payload.count)
 
         let (B, _) = self.inflightBudget()
@@ -692,7 +719,12 @@ public final class LayerMinusBridge {
             }
             
             // 开始连接上游并转发数据
-            self.connectUpstreamAndRun(reqFirstBody: firstBody, resFirstBody: nil)
+            let domain = etld1(of: self.resHost)
+            DomainGate.shared.acquire(domain: domain) { [weak self] in
+                guard let s = self, s.alive() else { return }
+                s.connectUpstreamAndRun(reqFirstBody: firstBody, resFirstBody: nil)
+            }
+            
             
         }
     }
@@ -792,7 +824,7 @@ safeStopTimer(&memSummaryTimer)
                 let bid = id
                 queue.async { cb(bid) }
             }
-
+			DomainGate.shared.release(domain: etld1(of: self.resHost))
             isCancelling = false
     }
 
@@ -843,7 +875,16 @@ self.startMemSummary()
             }
             
             self.log("start -> req.len=\(reqFirst.count) res.len=\(resFirst.count) req=\(self.reqHost):\(self.reqPort) res=\(self.resHost):\(self.resPort)")
-            self.connectUpstreamAndRun(reqFirstBody: reqFirst, resFirstBody: resFirst)
+
+
+            // 開始連線上游並轉發資料（以 eTLD+1 做併發閘門）
+            let domain = etld1(of: self.resHost)
+            DomainGate.shared.acquire(domain: etld1(of: self.resHost)) { [weak self] in
+                guard let s = self, s.alive() else { return }
+                s.connectUpstreamAndRun(reqFirstBody: reqFirst, resFirstBody: resFirst)
+            }
+
+            
         }
     }
     
@@ -863,7 +904,9 @@ self.startMemSummary()
             if self.tFirstSend == nil {    // 仅首包标记
                 self.tFirstSend = .now()
                 self.log("REQ-FIRST sent successfully (mark tFirstSend)")
-                if !self.isSpeedtestTarget {
+
+                 // 首頁不要關 watchdog；只有上傳測速才關
+                if !self.isSpeedtestUploadMode {
                     let delay: TimeInterval = (self.reqPort == 443) ? 15.0 : 8.0
                     let wd = DispatchSource.makeTimerSource(queue: self.queue)
                     wd.schedule(deadline: .now() + delay)
@@ -875,7 +918,7 @@ self.startMemSummary()
                     self.firstByteWatchdog = wd
                     wd.resume()
                 } else {
-                    self.vlog("speedtest: watchdog disabled")
+                    self.vlog("speedtest upload-mode: watchdog disabled")
                 }
             }
         }))
@@ -976,6 +1019,8 @@ self.startMemSummary()
                     pumpDownstreamToClient()
                     log("conn identity check: down === up ? \(self.downstream === self.upstream)")
                 }
+
+				ensureRoleTimer()
             }
         }
 
@@ -993,7 +1038,7 @@ self.startMemSummary()
                 }
                 maybeKickPumps()
             case .waiting(let e):
-                s.log("UP waiting: UUID:\(s.UUID ?? "") \(e)  UUID:\(s.UUID ?? "") ")
+                s.log("UP waiting: UUID:\(s.UUID ?? "") \(e)")
             case .failed(let e):
                 s.log("UP failed: UUID:\(s.UUID ?? "") \(e)"); s.queue.async { s.cancel(reason: "upstream failed") }
             case .cancelled:
@@ -1031,6 +1076,60 @@ self.startMemSummary()
             down.start(queue: queue)
         }
     }
+
+	private func recomputePrimaryRole() {
+		let up = self.winUpBytes
+		let down = self.winDownBytes
+		self.winUpBytes = 0
+		self.winDownBytes = 0
+
+		// 阈值：至少 16KB，且一方是另一方的 3 倍
+		let MIN_BYTES = 16 * 1024
+		let ratio: Double = (down == 0) ? (up > 0 ? .infinity : 1) : Double(up) / Double(down)
+
+		let newRole: FlowPrimary
+		if up >= MIN_BYTES && ratio >= 3.0 {
+			newRole = .upstream
+		} else if down >= MIN_BYTES && (1.0/ratio) >= 3.0 {
+			newRole = .downstream
+		} else {
+			newRole = .balanced
+		}
+
+		if newRole == pendingRole {
+			pendingStreak += 1
+		} else {
+			pendingRole = newRole
+			pendingStreak = 1
+		}
+		if pendingStreak >= ROLE_HYSTERESIS && newRole != primaryRole {
+			primaryRole = newRole
+			applyPrimaryCaps()
+		}
+	}
+
+	private func applyPrimaryCaps() {
+		switch primaryRole {
+		case .upstream:
+		// 上行為主：下行讀窗硬上限 4KB
+		downReadHardCap = 4 * 1024
+		cuFlushBytesOverride = nil
+		cuFlushMsOverride = nil
+		log("ROLE -> upstream-primary; cap downRead to 4KB")
+		case .downstream:
+		// 下行為主：上行微批硬上限 4KB/4ms
+			downReadHardCap = nil
+			cuFlushBytesOverride = 4 * 1024
+			cuFlushMsOverride = 4
+		log("ROLE -> downstream-primary; cap up flush to 4KB/4ms")
+		case .balanced:
+			// 解除硬上限
+			downReadHardCap = nil
+			cuFlushBytesOverride = nil
+			cuFlushMsOverride = nil
+			log("ROLE -> balanced; remove hard caps")
+		}
+	}
 
     // 来自 ServerConnection 的 handoff 瞬间标记
     public func markHandoffNow() {
@@ -1104,7 +1203,7 @@ self.startMemSummary()
     private func flushCUBuffer() {
         guard !cuBuffer.isEmpty, !closed else { return }
         let payload = cuBuffer
-        cuBuffer.removeAll(keepingCapacity: true)
+        cuBuffer.removeAll(keepingCapacity: false)
 
         // —— 扣减全局水位
         subGlobalBytes(payload.count)
@@ -1116,6 +1215,16 @@ self.startMemSummary()
             self.maybeResumeAfterInflightDrained()
         }
     }
+
+	private func ensureRoleTimer() {
+		if roleTimer != nil { return }
+		let t = DispatchSource.makeTimerSource(queue: queue)
+		t.schedule(deadline: .now() + .milliseconds(ROLE_INTERVAL_MS),
+			repeating: .milliseconds(ROLE_INTERVAL_MS))
+		t.setEventHandler { [weak self] in self?.recomputePrimaryRole() }
+		roleTimer = t
+		t.resume()
+	}
     
     private func pumpClientToUpstream() {
         if closed { return }
@@ -1139,6 +1248,8 @@ self.startMemSummary()
             }
             
             if let d = data, !d.isEmpty {
+
+				self.winUpBytes &+= d.count
                 
                 self.vlog("UUID:\(self.UUID ?? "") recv from client: \(d.count)B")
 
@@ -1198,10 +1309,12 @@ self.startMemSummary()
 //                }
 
                 // 仅当本次不是“测速小块直发”时，才参与微批触发判断
-                if !(self.isSpeedtestTarget && (1...300).contains(d.count)) {
-                    if self.cuBuffer.count >= self.CU_FLUSH_BYTES { self.flushCUBuffer() }
-                    else { self.scheduleCUFlush() }
-                }
+				if !(self.isSpeedtestUploadMode && (1...300).contains(d.count)) {
+					let effBytes = self.cuFlushBytesOverride ?? self.CU_FLUSH_BYTES
+					let effMs    = self.cuFlushMsOverride    ?? self.CU_FLUSH_MS
+					if self.cuBuffer.count >= effBytes { self.flushCUBuffer() }
+					else { self.scheduleCUFlush(afterMs: effMs) }
+				}
             }
             
             
@@ -1236,6 +1349,19 @@ self.startMemSummary()
             }
         }
     }
+
+	private func scheduleCUFlush(afterMs: Int) {
+		cuFlushTimer?.setEventHandler {}
+		cuFlushTimer?.cancel()
+		let t = DispatchSource.makeTimerSource(queue: queue)
+		t.schedule(deadline: .now() + .milliseconds(afterMs))
+		t.setEventHandler { [weak self] in
+			guard let s = self, s.alive() else { return }
+			s.flushCUBuffer()
+		}
+		cuFlushTimer = t
+		t.resume()
+	}
     
     
     
@@ -1276,6 +1402,13 @@ self.startMemSummary()
 	private var lastDownListenLog: DispatchTime?
 	private let DOWN_LISTEN_LOG_MIN_INTERVAL_MS: Double = 500
 
+	@inline(__always)
+	private func etld1(of host: String) -> String {
+		let parts = host.lowercased().split(separator: ".")
+		if parts.count >= 2 { return parts.suffix(2).joined(separator: ".") }
+		return host.lowercased()
+	}
+
 	private func pumpDownstreamToClient() {
         if closed { return }
 
@@ -1294,7 +1427,7 @@ self.startMemSummary()
 			if elapsedMs >= DOWN_LISTEN_LOG_MIN_INTERVAL_MS { shouldLog = true }
 		}
 		if shouldLog {
-			self.log("downstream READY TO LISTEN pausedD2C=\(self.pausedD2C ? 1 : 0) read=\(self.downMaxRead)B")
+			log("downstream READY TO LISTEN pausedD2C=\(self.pausedD2C ? 1 : 0) read=\(self.downMaxRead)B")
 			didLogDownListenOnce = true
 			lastDownListenLog = now
 		}
@@ -1321,7 +1454,24 @@ self.startMemSummary()
             }
 
             if let d = data, !d.isEmpty {
+				self.winDownBytes &+= d.count
+
                 self.vlog("recv from downstream: \(d.count)B")
+				self.downLogBytesAccum &+= d.count
+				let now2 = DispatchTime.now()
+				var shouldAggLog = false
+				if let last = self.lastDownLog {
+					let elp = Double(now2.uptimeNanoseconds &- last.uptimeNanoseconds) / 1_000_000.0
+					if elp >= self.DOWN_LOG_MIN_INTERVAL_MS || self.downLogBytesAccum >= 64*1024 { shouldAggLog = true }
+				} else { shouldAggLog = true }
+
+				if shouldAggLog {
+
+					self.vlog("recv from downstream (agg): \(self.downLogBytesAccum)B")
+
+					self.downLogBytesAccum = 0
+					self.lastDownLog = now2
+				}
                 
                 
                 if self.tFirstByte == nil {
@@ -1358,8 +1508,7 @@ self.startMemSummary()
                 self.bytesDown &+= d.count
                 self.sendToClient(d, remark: "down->client")
                 
-                if self.eofClient { self.scheduleDrainCancel(hint: "client EOF (downstream->client activity)") }  // 你已有
-                // 再补：如果“上游写端 half-close”已发送，但下行仍在流动，也刷新
+                // 如果“上游寫端 half-close”已發送，但下行仍在流動，也刷新
                 if self.eofUpstream {
                     self.scheduleDrainCancel(hint: "upstream EOF (still draining to client)")
                 }
@@ -1386,6 +1535,10 @@ self.startMemSummary()
     // 首包回包看门狗（避免黑洞 60–100s 挂死；测速上传场景按策略放宽/禁用）
     private var firstByteWatchdog: DispatchSourceTimer?
     private var resumeCheckTimer: DispatchSourceTimer?
+
+	private var downLogBytesAccum = 0
+	private var lastDownLog: DispatchTime?
+	private let DOWN_LOG_MIN_INTERVAL_MS: Double = 400
     
     private func sendToUpstream(_ data: Data, remark: String) {
         
@@ -1455,7 +1608,7 @@ self.startMemSummary()
                 self.log("sent firstBody successfully (mark tFirstSend)")
 
                 // —— Speedtest “上行卡住”探测：首包发出后启动 8s 观察窗口
-                if self.isSpeedtestTarget {
+                if self.isSpeedtestUploadMode {
                     self.bytesUpAtFirstSend = self.bytesUp
                     self.uploadStuckTimer?.cancel()
                     let t = DispatchSource.makeTimerSource(queue: self.queue)
@@ -1575,5 +1728,61 @@ self.startMemSummary()
     
     private func diffMs(start: DispatchTime, end: DispatchTime) -> Double {
         return Double(end.uptimeNanoseconds &- start.uptimeNanoseconds) / 1e6
+    }
+}
+
+final class DomainGate {
+    static let shared = DomainGate(limitPerDomain: 24, globalLimit: 96)
+    private let q = DispatchQueue(label: "domain.gate")
+    private let perLimit: Int
+    private let globalLimit: Int
+    private var per: [String:Int] = [:]
+    private var global = 0
+    private var pend: [String:[() -> Void]] = [:]
+    init(limitPerDomain: Int, globalLimit: Int) { self.perLimit = limitPerDomain; self.globalLimit = globalLimit }
+    func acquire(domain: String, run: @escaping () -> Void) {
+        q.async {
+            if self.global >= self.globalLimit || (self.per[domain] ?? 0) >= self.perLimit {
+                self.pend[domain, default: []].append(run)
+            } else {
+                self.global += 1
+                self.per[domain, default: 0] += 1
+                run()
+            }
+        }
+    }
+
+	private var _lastTune = DispatchTime.now()
+//	private func maybeRetuneGate() {
+//		let now = DispatchTime.now()
+//		let ms = Double(now.uptimeNanoseconds - _lastTune.uptimeNanoseconds) / 1_000_000.0
+//		guard ms >= 1000 else { return }
+//		_lastTune = now
+//
+//		// 觀察目前活躍的 bridge 數（你若有集中管理，可替換；沒有就用估計值）
+//		let active = LayerMinusBridge.liveCount // 若你沒有，改成你現有的活躍計數
+//		// 粗略策略：少於 16 → 放到 12/48；多於 32 → 退到 8/36；超過 40 → 退到 6/24
+//		if active < 16 {
+//			DomainGate.shared.setDynamicLimits(per: 12, global: 48)
+//		} else if active < 32 {
+//			DomainGate.shared.setDynamicLimits(per: 10, global: 40)
+//		} else if active < 40 {
+//			DomainGate.shared.setDynamicLimits(per: 8, global: 36)
+//		} else {
+//			DomainGate.shared.setDynamicLimits(per: 6, global: 24)
+//		}
+//	}
+    func release(domain: String) {
+        q.async {
+            if self.global > 0 { self.global -= 1 }
+            if let c = self.per[domain], c > 0 { self.per[domain] = c - 1 }
+            if var queue = self.pend[domain], !queue.isEmpty {
+                let next = queue.removeFirst()
+                self.pend[domain] = queue
+                self.global += 1
+                self.per[domain, default: 0] += 1
+                next()
+            }
+        }
     }
 }
