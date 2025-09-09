@@ -30,7 +30,7 @@ public final class LayerMinusBridge {
           }))
     }
     
-    private static let GLOBAL_BUFFER_BUDGET = 5 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 10 * 1024 * 1024
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0
@@ -42,15 +42,30 @@ public final class LayerMinusBridge {
     private var uploadStuck = false
     @inline(__always)
     private var isSpeedtestTarget: Bool {
-        // 仅对 8080/443 且域名命中测速特征的连接生效
-//        let h = targetHost.lowercased()
-//        return (targetPort == 8080 || targetPort == 443) &&
-//               (h.hasSuffix("ooklaserver.net")
-//                 || h.hasSuffix("speedtest.net")
-//                 || h.contains("measurementlab")
-//                 || h.contains("mlab"))
-        return true
+		let h = resHost.lowercased()
+		let p = resPort
+		if (p == 443 || p == 8080) &&
+			(h.hasSuffix("speedtest.net")
+				|| h.hasSuffix("ooklaserver.net")
+				|| h.contains("measurementlab")
+				|| h.contains("mlab")
+				|| h.hasSuffix("fast.com")) {
+			return true
+		}
+		return false
     }
+
+		/// 僅當“像是上傳測速”時才開啟 1ms 上行微合併與關閉 TTFB 看門狗
+	/// 啟發式：目標為測速站，且自 UP ready 起超過 1500ms 仍未見任何下行首字節
+	@inline(__always)
+	private var isSpeedtestUploadMode: Bool {
+		guard isSpeedtestTarget else { return false }
+		if let r = tReady {
+			let ageMs = diffMs(start: r, end: .now())
+			if tFirstByte == nil && ageMs >= 1500 { return true }
+		}
+		return false
+	}
     
     #if DEBUG
     private var memSummaryTimer: DispatchSourceTimer?
@@ -118,11 +133,11 @@ public final class LayerMinusBridge {
     #endif
     
 
-	private var currentBufferLimit: Int = 4 * 1024 // 初始大小 4KB
-	private let maxBufferLimit: Int = 256 * 1024 // 最大大小 1MB
-	private var backpressureTimer: DispatchSourceTimer?
+    private var currentBufferLimit: Int = 4 * 1024 // 初始大小 4KB
+    private let maxBufferLimit: Int = 256 * 1024 // 最大大小 1MB
+    private var backpressureTimer: DispatchSourceTimer?
 
-	    // 新增：在背压状态下，每 50ms 动态调整一次缓冲区大小
+        // 新增：在背压状态下，每 50ms 动态调整一次缓冲区大小
     private func scheduleBackpressureTimer() {
         guard pausedC2U else { return }
         
@@ -174,117 +189,117 @@ public final class LayerMinusBridge {
     private let D_BBR_FALLBACK_BUDGET_BYTES = 1 * 1024 * 1024
 
 
-	private func adjustBufferLimit() {
+    private func adjustBufferLimit() {
         // ===== 上行 (client -> upstream) =====
-		let oldUploadLimit = currentBufferLimit
+        let oldUploadLimit = currentBufferLimit
 
-		// 全局水位
-		Self.globalLock.lock()
-		let globalBytes = Self.globalBufferedBytes
-		Self.globalLock.unlock()
+        // 全局水位
+        Self.globalLock.lock()
+        let globalBytes = Self.globalBufferedBytes
+        Self.globalLock.unlock()
 
-		// 结合（上行）BBR 的动态 in-flight 预算，决定是否允许扩张
-		let (B, C) = inflightBudget()
-		let canGrowUpload = globalBytes <= Self.GLOBAL_BUFFER_BUDGET
-						&& inflightBytes < (B * 90) / 100
-						&& inflight.count < (C * 90) / 100
+        // 结合（上行）BBR 的动态 in-flight 预算，决定是否允许扩张
+        let (B, C) = inflightBudget()
+        let canGrowUpload = globalBytes <= Self.GLOBAL_BUFFER_BUDGET
+                        && inflightBytes < (B * 90) / 100
+                        && inflight.count < (C * 90) / 100
 
-		if pausedC2U {
-			if canGrowUpload {
-				currentBufferLimit = min(currentBufferLimit * 2, maxBufferLimit)  // 温和扩张
-			}
-			// else: 不具备扩张条件，维持现状，避免峰值继续放大
-		} else {
-			currentBufferLimit = max(currentBufferLimit / 4, 4 * 1024)            // 快速收敛
-		}
+        if pausedC2U {
+            if canGrowUpload {
+                currentBufferLimit = min(currentBufferLimit * 2, maxBufferLimit)  // 温和扩张
+            }
+            // else: 不具备扩张条件，维持现状，避免峰值继续放大
+        } else {
+            currentBufferLimit = max(currentBufferLimit / 4, 4 * 1024)            // 快速收敛
+        }
 
-		if currentBufferLimit != oldUploadLimit {
-			log("Adjust upload buffer: \(oldUploadLimit) -> \(currentBufferLimit)")
-		}
+        if currentBufferLimit != oldUploadLimit {
+            log("Adjust upload buffer: \(oldUploadLimit) -> \(currentBufferLimit)")
+        }
 
-		// ===== 下行 (downstream -> client) =====
-		let targetDown = downInflightBudgetBytes()
+        // ===== 下行 (downstream -> client) =====
+        let targetDown = downInflightBudgetBytes()
 
-		// 根据占用调整读取粒度（抑峰/提吞吐）
-		let oldRead = downMaxRead
+        // 根据占用调整读取粒度（抑峰/提吞吐）
+        let oldRead = downMaxRead
 
-		// ★ 平滑起步：TTFB 后 300ms 内或交付 <128KB，不要节流，窗口拉满
-		let smoothStart: Bool = {
-			if let tfb = tFirstByte {
-				let ageMs = diffMs(start: tfb, end: .now())
-				return ageMs < 300 || downDeliveredBytes < 192 * 1024
-			}
-			return true // 还没拿到首字节，也认为在平滑期
-		}()
-
-
-
-		if smoothStart {
-			if downMaxRead != DOWN_MAX_READ {
-				downMaxRead = DOWN_MAX_READ
-				vlog("smooth-start: force read=\(downMaxRead)")
-			}
-			if pausedD2C {
-				pausedD2C = false
-				vlog("smooth-start: force resume d->c")
-				pumpDownstreamToClient()
-			}
-		} else {
-			if pausedD2C || downInflightBytes >= (targetDown * 90) / 100 {
-				downMaxRead = max(downMaxRead / 2, DOWN_MIN_READ)     // 压力大：减半
-			} else if downInflightBytes <= (targetDown * 40) / 100 {
-				downMaxRead = min(downMaxRead * 2, DOWN_MAX_READ)     // 压力小：翻倍
-			}
-
-			if downMaxRead != oldRead {
-				log("Adjust down read: \(oldRead) -> \(downMaxRead)")
-			}
-
-			// 命中/脱离目标触发暂停/恢复
-			if downInflightBytes >= targetDown {
-				if !pausedD2C {
-					pausedD2C = true
-					vlog("pause d->c: inflight=\(downInflightBytes) >= target=\(targetDown), read=\(downMaxRead)")
-				}
-			} else if pausedD2C, downInflightBytes <= (targetDown * 90) / 100 {
-				pausedD2C = false
-				vlog("resume d->c: inflight=\(downInflightBytes) <= 0.9*target, read=\(downMaxRead)")
-				pumpDownstreamToClient()
-			}
-		}
-	}
+        // ★ 平滑起步：TTFB 后 300ms 内或交付 <128KB，不要节流，窗口拉满
+        let smoothStart: Bool = {
+            if let tfb = tFirstByte {
+                let ageMs = diffMs(start: tfb, end: .now())
+                return ageMs < 300 || downDeliveredBytes < 192 * 1024
+            }
+            return true // 还没拿到首字节，也认为在平滑期
+        }()
 
 
-	// ====== Minimal BBR (upload) ======
-	private enum BBRState { case startup, drain, probeBW }
-	private var bbrState: BBRState = .startup
 
-	// 上行带宽估计：bytesUp 增量 / 采样间隔
-	private var bbrBwUp_bps: Double = 0          // 当前瞬时估计（bits/s）
-	private var bbrBwMax_bps: Double = 0         // 窗口内最大值（近似 max filter）
-	private var bbrPrevBytesUp: Int = 0
-	private var bbrSampleTs: DispatchTime = .now()
+        if smoothStart {
+            if downMaxRead != DOWN_MAX_READ {
+                downMaxRead = DOWN_MAX_READ
+                vlog("smooth-start: force read=\(downMaxRead)")
+            }
+            if pausedD2C {
+                pausedD2C = false
+                vlog("smooth-start: force resume d->c")
+                pumpDownstreamToClient()
+            }
+        } else {
+            if pausedD2C || downInflightBytes >= (targetDown * 90) / 100 {
+                downMaxRead = max(downMaxRead / 2, DOWN_MIN_READ)     // 压力大：减半
+            } else if downInflightBytes <= (targetDown * 40) / 100 {
+                downMaxRead = min(downMaxRead * 2, DOWN_MAX_READ)     // 压力小：翻倍
+            }
 
-	// RTT 估计：以 TTFB 为 minRTT 初值（ms）
-	private var bbrMinRtt_ms: Double = 100.0
-	private var bbrMinRttStamp: DispatchTime = .now()
+            if downMaxRead != oldRead {
+                log("Adjust down read: \(oldRead) -> \(downMaxRead)")
+            }
 
-	// pacing/cwnd gain（极简）
-	private var bbrPacingGain: Double = 2.0
-	private var bbrCwndGain: Double = 2.0
-	private var bbrProbeCycle: [Double] = [1.25, 0.75, 1, 1, 1, 1, 1, 1]
-	private var bbrProbeIndex: Int = 0
+            // 命中/脱离目标触发暂停/恢复
+            if downInflightBytes >= targetDown {
+                if !pausedD2C {
+                    pausedD2C = true
+                    vlog("pause d->c: inflight=\(downInflightBytes) >= target=\(targetDown), read=\(downMaxRead)")
+                }
+            } else if pausedD2C, downInflightBytes <= (targetDown * 90) / 100 {
+                pausedD2C = false
+                vlog("resume d->c: inflight=\(downInflightBytes) <= 0.9*target, read=\(downMaxRead)")
+                pumpDownstreamToClient()
+            }
+        }
+    }
 
-	// 采样定时器
-	private var bbrTimer: DispatchSourceTimer?
 
-	// 预算夹紧与回退
-	private let BBR_MIN_BUDGET_BYTES: Int = 128 * 1024
-	private let BBR_MAX_BUDGET_BYTES: Int = 2 * 1024 * 1024
-	private let BBR_FALLBACK_BUDGET_BYTES: Int = 768 * 1024
-	private let BBR_FALLBACK_COUNT: Int = 320
+    // ====== Minimal BBR (upload) ======
+    private enum BBRState { case startup, drain, probeBW }
+    private var bbrState: BBRState = .startup
 
-	// —— 发送在途(in-flight)预算，用于约束“直发小包”绕过 cuBuffer 的场景
+    // 上行带宽估计：bytesUp 增量 / 采样间隔
+    private var bbrBwUp_bps: Double = 0          // 当前瞬时估计（bits/s）
+    private var bbrBwMax_bps: Double = 0         // 窗口内最大值（近似 max filter）
+    private var bbrPrevBytesUp: Int = 0
+    private var bbrSampleTs: DispatchTime = .now()
+
+    // RTT 估计：以 TTFB 为 minRTT 初值（ms）
+    private var bbrMinRtt_ms: Double = 100.0
+    private var bbrMinRttStamp: DispatchTime = .now()
+
+    // pacing/cwnd gain（极简）
+    private var bbrPacingGain: Double = 2.0
+    private var bbrCwndGain: Double = 2.0
+    private var bbrProbeCycle: [Double] = [1.25, 0.75, 1, 1, 1, 1, 1, 1]
+    private var bbrProbeIndex: Int = 0
+
+    // 采样定时器
+    private var bbrTimer: DispatchSourceTimer?
+
+    // 预算夹紧与回退
+    private let BBR_MIN_BUDGET_BYTES: Int = 128 * 1024
+    private let BBR_MAX_BUDGET_BYTES: Int = 2 * 1024 * 1024
+    private let BBR_FALLBACK_BUDGET_BYTES: Int = 768 * 1024
+    private let BBR_FALLBACK_COUNT: Int = 320
+
+    // —— 发送在途(in-flight)预算，用于约束“直发小包”绕过 cuBuffer 的场景
     private var inflightBytes: Int = 0
     private var inflightSizes = [UInt64: Int]()   // seq -> bytes
     private let INFLIGHT_BYTES_BUDGET = 512 * 1024   // 512KB（可按需调大到 768KB/1MB）
@@ -302,106 +317,106 @@ public final class LayerMinusBridge {
     private let CU_MIN_FLUSH_BYTES = 8 * 1024
     private let CU_EXTRA_MS = 10
 
-	// 启动最小版 BBR 采样器（200ms）
-	 private func startBBRSampler() {
-		 // 停旧
-		 bbrTimer?.setEventHandler {}
-		 bbrTimer?.cancel()
-		 bbrTimer = nil
+    // 启动最小版 BBR 采样器（200ms）
+     private func startBBRSampler() {
+         // 停旧
+         bbrTimer?.setEventHandler {}
+         bbrTimer?.cancel()
+         bbrTimer = nil
 
-		 bbrPrevBytesUp = bytesUp
-		 bbrSampleTs = .now()
-		 bbrState = .startup
-		 bbrPacingGain = 2.0
-		 bbrCwndGain = 2.0
-		 bbrProbeIndex = 0
-		 bbrBwMax_bps = 0
+         bbrPrevBytesUp = bytesUp
+         bbrSampleTs = .now()
+         bbrState = .startup
+         bbrPacingGain = 2.0
+         bbrCwndGain = 2.0
+         bbrProbeIndex = 0
+         bbrBwMax_bps = 0
 
-		 let t = DispatchSource.makeTimerSource(queue: queue)
-		 t.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
-		 t.setEventHandler { [weak self] in
-			 guard let s = self, s.alive() else { return }
+         let t = DispatchSource.makeTimerSource(queue: queue)
+         t.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
+         t.setEventHandler { [weak self] in
+             guard let s = self, s.alive() else { return }
 
-			 // —— 带宽采样（上行）
-			 let now = DispatchTime.now()
-			 let dtNs = now.uptimeNanoseconds &- s.bbrSampleTs.uptimeNanoseconds
-			 if dtNs > 0 {
-				 let dt = Double(dtNs) / 1e9
-				 let delta = max(0, s.bytesUp - s.bbrPrevBytesUp)
-				 let bps = Double(delta) * 8.0 / max(dt, 1e-6)       // bytes -> bits
-				 s.bbrBwUp_bps = bps
-				 s.bbrBwMax_bps = max(s.bbrBwMax_bps * 0.9, bps)     // 轻微衰减的最大滤波
-			 }
-			 s.bbrPrevBytesUp = s.bytesUp
-			 s.bbrSampleTs = now
+             // —— 带宽采样（上行）
+             let now = DispatchTime.now()
+             let dtNs = now.uptimeNanoseconds &- s.bbrSampleTs.uptimeNanoseconds
+             if dtNs > 0 {
+                 let dt = Double(dtNs) / 1e9
+                 let delta = max(0, s.bytesUp - s.bbrPrevBytesUp)
+                 let bps = Double(delta) * 8.0 / max(dt, 1e-6)       // bytes -> bits
+                 s.bbrBwUp_bps = bps
+                 s.bbrBwMax_bps = max(s.bbrBwMax_bps * 0.9, bps)     // 轻微衰减的最大滤波
+             }
+             s.bbrPrevBytesUp = s.bytesUp
+             s.bbrSampleTs = now
 
-			 // —— RTT 维护：用 TTFB 作为 minRTT，10s 过期允许刷新
-			 if let tfb = s.tFirstByte {
-				 let rttMs = s.diffMs(start: s.tStart, end: tfb)
-				 if rttMs > 0 {
-					 let ageMs = s.diffMs(start: s.bbrMinRttStamp, end: now)
-					 if rttMs < s.bbrMinRtt_ms || ageMs > 10_000 {
-						 s.bbrMinRtt_ms = max(1.0, rttMs)
-						 s.bbrMinRttStamp = now
-					 }
-				 }
-			 }
+             // —— RTT 维护：用 TTFB 作为 minRTT，10s 过期允许刷新
+             if let tfb = s.tFirstByte {
+                 let rttMs = s.diffMs(start: s.tStart, end: tfb)
+                 if rttMs > 0 {
+                     let ageMs = s.diffMs(start: s.bbrMinRttStamp, end: now)
+                     if rttMs < s.bbrMinRtt_ms || ageMs > 10_000 {
+                         s.bbrMinRtt_ms = max(1.0, rttMs)
+                         s.bbrMinRttStamp = now
+                     }
+                 }
+             }
 
-			 // —— BDP 估计
-			 let bw = max(s.bbrBwMax_bps, 0)               // bits/s
-			 let rtt = max(s.bbrMinRtt_ms, 1.0)            // ms
-			 let bdpBytes = Int((bw / 8.0) * (rtt / 1000.0))
+             // —— BDP 估计
+             let bw = max(s.bbrBwMax_bps, 0)               // bits/s
+             let rtt = max(s.bbrMinRtt_ms, 1.0)            // ms
+             let bdpBytes = Int((bw / 8.0) * (rtt / 1000.0))
 
-			 // —— 状态机（极简）
-			 switch s.bbrState {
-			 case .startup:
-				 let growthOK = (s.bbrBwUp_bps > 0 && s.bbrBwMax_bps > 0 && s.bbrBwUp_bps >= 0.9 * s.bbrBwMax_bps)
-				 if growthOK == false && bdpBytes > 0 {
-					 s.bbrState = .drain
-					 s.bbrPacingGain = 0.75
-					 s.bbrCwndGain = 1.0
-					 s.log("BBR->DRAIN bw=\(Int(bw))bps minRTT=\(String(format: "%.1f", rtt))ms")
-				 }
-			 case .drain:
-				 if s.inflightBytes <= bdpBytes {
-					 s.bbrState = .probeBW
-					 s.bbrProbeIndex = 0
-					 s.bbrPacingGain = s.bbrProbeCycle[s.bbrProbeIndex]
-					 s.bbrCwndGain = 2.0
-					 s.log("BBR->PROBE_BW bw=\(Int(bw))bps minRTT=\(String(format: "%.1f", rtt))ms")
-				 }
-			 case .probeBW:
-				 s.bbrProbeIndex = (s.bbrProbeIndex + 1) % s.bbrProbeCycle.count
-				 s.bbrPacingGain = s.bbrProbeCycle[s.bbrProbeIndex]
-				 // cwndGain 维持 2.0（可按需收敛）
-			 }
-		 }
+             // —— 状态机（极简）
+             switch s.bbrState {
+             case .startup:
+                 let growthOK = (s.bbrBwUp_bps > 0 && s.bbrBwMax_bps > 0 && s.bbrBwUp_bps >= 0.9 * s.bbrBwMax_bps)
+                 if growthOK == false && bdpBytes > 0 {
+                     s.bbrState = .drain
+                     s.bbrPacingGain = 0.75
+                     s.bbrCwndGain = 1.0
+                     s.log("BBR->DRAIN bw=\(Int(bw))bps minRTT=\(String(format: "%.1f", rtt))ms")
+                 }
+             case .drain:
+                 if s.inflightBytes <= bdpBytes {
+                     s.bbrState = .probeBW
+                     s.bbrProbeIndex = 0
+                     s.bbrPacingGain = s.bbrProbeCycle[s.bbrProbeIndex]
+                     s.bbrCwndGain = 2.0
+                     s.log("BBR->PROBE_BW bw=\(Int(bw))bps minRTT=\(String(format: "%.1f", rtt))ms")
+                 }
+             case .probeBW:
+                 s.bbrProbeIndex = (s.bbrProbeIndex + 1) % s.bbrProbeCycle.count
+                 s.bbrPacingGain = s.bbrProbeCycle[s.bbrProbeIndex]
+                 // cwndGain 维持 2.0（可按需收敛）
+             }
+         }
 
-		 do {
-			let now = DispatchTime.now()
-			let dtNs = now.uptimeNanoseconds &- d_bbrSampleTs.uptimeNanoseconds
-			if dtNs > 0 {
-				let dt = Double(dtNs) / 1e9
-				let delta = max(0, downDeliveredBytes - d_bbrPrevDelivered)   // 本周期真正交付给 client 的字节
-				let bps = Double(delta) * 8.0 / max(dt, 1e-6)
-				d_bbrBw_bps = bps
-				d_bbrBwMax_bps = max(d_bbrBwMax_bps * 0.9, bps)               // 轻微衰减的 max filter
-			}
-			d_bbrPrevDelivered = downDeliveredBytes
-			d_bbrSampleTs = now
-		}
-		 bbrTimer = t
-		 t.resume()
-	 }
+         do {
+            let now = DispatchTime.now()
+            let dtNs = now.uptimeNanoseconds &- d_bbrSampleTs.uptimeNanoseconds
+            if dtNs > 0 {
+                let dt = Double(dtNs) / 1e9
+                let delta = max(0, downDeliveredBytes - d_bbrPrevDelivered)   // 本周期真正交付给 client 的字节
+                let bps = Double(delta) * 8.0 / max(dt, 1e-6)
+                d_bbrBw_bps = bps
+                d_bbrBwMax_bps = max(d_bbrBwMax_bps * 0.9, bps)               // 轻微衰减的 max filter
+            }
+            d_bbrPrevDelivered = downDeliveredBytes
+            d_bbrSampleTs = now
+        }
+         bbrTimer = t
+         t.resume()
+     }
 
-	 @inline(__always)
-	private func downInflightBudgetBytes() -> Int {
-		if d_bbrBwMax_bps <= 0 || d_bbrMinRtt_ms <= 0 {
-			return D_BBR_FALLBACK_BUDGET_BYTES
-		}
-		let bdp = Int((d_bbrBwMax_bps / 8.0) * (d_bbrMinRtt_ms / 1000.0)) // bytes
-		return min(max(bdp, D_BBR_MIN_BUDGET_BYTES), D_BBR_MAX_BUDGET_BYTES)
-	}
+     @inline(__always)
+    private func downInflightBudgetBytes() -> Int {
+        if d_bbrBwMax_bps <= 0 || d_bbrMinRtt_ms <= 0 {
+            return D_BBR_FALLBACK_BUDGET_BYTES
+        }
+        let bdp = Int((d_bbrBwMax_bps / 8.0) * (d_bbrMinRtt_ms / 1000.0)) // bytes
+        return min(max(bdp, D_BBR_MIN_BUDGET_BYTES), D_BBR_MAX_BUDGET_BYTES)
+    }
 
     // —— 全局预算：限制所有桥接实例合计的缓冲上限（比如 8MB）
     
@@ -464,8 +479,8 @@ public final class LayerMinusBridge {
             flushCUBuffer()
             // 新增：启动背压定时器
             scheduleBackpressureTimer()
-			// 如果是因为本连接缓冲触顶导致暂停，flush 后排个微延时检查是否可恢复
-			scheduleMaybeResumeCheck()
+            // 如果是因为本连接缓冲触顶导致暂停，flush 后排个微延时检查是否可恢复
+            scheduleMaybeResumeCheck()
             return
         }
 
@@ -478,13 +493,13 @@ public final class LayerMinusBridge {
             flushCUBuffer()
             // 新增：启动背压定时器
             scheduleBackpressureTimer()
-			scheduleMaybeResumeCheck()
+            scheduleMaybeResumeCheck()
             return
         }
     }
 
-	// 新增：flush 后 2ms 再查一次 in-flight，用于打破“回压后僵住”
-	private func scheduleMaybeResumeCheck() {
+    // 新增：flush 后 2ms 再查一次 in-flight，用于打破“回压后僵住”
+    private func scheduleMaybeResumeCheck() {
         // 先取消旧的
         resumeCheckTimer?.setEventHandler {}
         resumeCheckTimer?.cancel()
@@ -502,7 +517,7 @@ public final class LayerMinusBridge {
         }
         resumeCheckTimer = t
         t.resume()
-	}
+    }
 
     // —— Speedtest 上传微合并缓冲：4KB 或 4ms 触发，仅测速生效
     private var stBuffer = Data()
@@ -645,7 +660,7 @@ public final class LayerMinusBridge {
             
             // KPI: 记录会话起点，用于计算 hsRTT / TTFB / 总时长
             self.tStart = .now()
-			self.startBBRSampler()
+            self.startBBRSampler()
             
             #if DEBUG
             self.startMemSummary()
@@ -749,9 +764,9 @@ safeStopTimer(&memSummaryTimer)
             safeStopTimer(&resumeCheckTimer)
             safeStopTimer(&backpressureTimer)   // ← 新增：把背压定时器也停掉
 
-			safeStopTimer(&bbrTimer)
+            safeStopTimer(&bbrTimer)
 
-			
+            
 
             // —— 结清在途 & 缓冲、释放全局预算（保持你原有逻辑）
             if !cuBuffer.isEmpty { subGlobalBytes(cuBuffer.count) }
@@ -808,8 +823,8 @@ safeStopTimer(&memSummaryTimer)
 
             self.tStart = .now()
 
-			// 启动 BBR 采样器
-			self.startBBRSampler()
+            // 启动 BBR 采样器
+            self.startBBRSampler()
 
 #if DEBUG
 self.startMemSummary()
@@ -914,24 +929,24 @@ self.startMemSummary()
         var resFirstSent = false
         var pumpsStarted = false   // ← 新增：防止双泵重复启动
 
-		// 在最前面保存 res 首包，再判定 DIRECT
-		self.pendingResFirstBody = resFirstBody
-		let isDIRECT = (resFirstBody == nil || resFirstBody!.isEmpty)
+        // 在最前面保存 res 首包，再判定 DIRECT
+        self.pendingResFirstBody = resFirstBody
+        let isDIRECT = (resFirstBody == nil || resFirstBody!.isEmpty)
 
-		// 初始化连接：DIRECT 只建一条并复用；非 DIRECT 建两条
-		let up = NWConnection(host: NWEndpoint.Host(self.reqHost), port: reqNWPort, using: params)
-		self.upstream = up
-		if isDIRECT {
-			self.downstream = up            // 关键：DIRECT 复用同一条连接
-		} else {
-			let dn = NWConnection(host: NWEndpoint.Host(self.resHost), port: resNWPort, using: params)
-			self.downstream = dn
-		}
+        // 初始化连接：DIRECT 只建一条并复用；非 DIRECT 建两条
+        let up = NWConnection(host: NWEndpoint.Host(self.reqHost), port: reqNWPort, using: params)
+        self.upstream = up
+        if isDIRECT {
+            self.downstream = up            // 关键：DIRECT 复用同一条连接
+        } else {
+            let dn = NWConnection(host: NWEndpoint.Host(self.resHost), port: resNWPort, using: params)
+            self.downstream = dn
+        }
 
-		func maybeKickPumps() {
-			guard alive() else { return }
-			// 诊断：观察 gating 状态，确认是否会启动两条泵（DIRECT 下 up/down 同时 ready）
-			vlog("maybeKickPumps check: upReady=\(upReady) downReady=\(downReady) reqFirstSent=\(reqFirstSent) resFirstSent=\(resFirstSent) isDIRECT=\(isDIRECT)")
+        func maybeKickPumps() {
+            guard alive() else { return }
+            // 诊断：观察 gating 状态，确认是否会启动两条泵（DIRECT 下 up/down 同时 ready）
+            vlog("maybeKickPumps check: upReady=\(upReady) downReady=\(downReady) reqFirstSent=\(reqFirstSent) resFirstSent=\(resFirstSent) isDIRECT=\(isDIRECT)")
 
             // 上行：只负责发送（client->node）
             if upReady, !reqFirstSent {
@@ -946,22 +961,22 @@ self.startMemSummary()
             }
 
             // 下行：先把 RES 首包（若有）送到节点，随后只接收
-			if downReady, !resFirstSent {
-				if !isDIRECT, let rb = pendingResFirstBody, !rb.isEmpty {
-					log("RES-FIRST ready; sending \(rb.count)B to \(resHost):\(resPort)")
-					sendFirstBodyToDownstream(rb) { [weak self] in
-						guard let s = self, s.alive() else { return }
-						resFirstSent = true
-						s.pumpDownstreamToClient()
-						s.log("conn identity check: down === up ? \(s.downstream === s.upstream)")
-					}
-				} else {
-					vlog("RES-FIRST absent (nil/empty) or DIRECT; skip send")
-					resFirstSent = true
-					pumpDownstreamToClient()
-					log("conn identity check: down === up ? \(self.downstream === self.upstream)")
-				}
-			}
+            if downReady, !resFirstSent {
+                if !isDIRECT, let rb = pendingResFirstBody, !rb.isEmpty {
+                    log("RES-FIRST ready; sending \(rb.count)B to \(resHost):\(resPort)")
+                    sendFirstBodyToDownstream(rb) { [weak self] in
+                        guard let s = self, s.alive() else { return }
+                        resFirstSent = true
+                        s.pumpDownstreamToClient()
+                        s.log("conn identity check: down === up ? \(s.downstream === s.upstream)")
+                    }
+                } else {
+                    vlog("RES-FIRST absent (nil/empty) or DIRECT; skip send")
+                    resFirstSent = true
+                    pumpDownstreamToClient()
+                    log("conn identity check: down === up ? \(self.downstream === self.upstream)")
+                }
+            }
         }
 
         up.stateUpdateHandler = { [weak self] st in
@@ -972,8 +987,8 @@ self.startMemSummary()
                 s.tReady = .now()
                 upReady = true
                 if isDIRECT {
-                    // DIRECT：同一条连接既作 upstream 又作 downstream
-                    // 先就绪再触发 maybeKickPumps，确保下行泵能启动
+                   // 先就緒再觸發 maybeKickPumps；並補上 tDownReady 供 KPI 使用
+                    s.tDownReady = .now()
                     downReady = true
                 }
                 maybeKickPumps()
@@ -995,7 +1010,7 @@ self.startMemSummary()
                 switch st {
                 case .ready:
                     s.log("DOWN ready UUID:\(s.UUID ?? "") \(s.resHost):\(s.resPort)")
-					s.tDownReady = .now()
+                    s.tDownReady = .now()
                     downReady = true
                     maybeKickPumps()
                 case .waiting(let e):
@@ -1017,12 +1032,12 @@ self.startMemSummary()
         }
     }
 
-	// 来自 ServerConnection 的 handoff 瞬间标记
-	public func markHandoffNow() {
-		queue.async { [weak self] in
-			self?.tHandoff = .now()
-		}
-	}
+    // 来自 ServerConnection 的 handoff 瞬间标记
+    public func markHandoffNow() {
+        queue.async { [weak self] in
+            self?.tHandoff = .now()
+        }
+    }
     
     @inline(__always)
     private func maybeResumeAfterInflightDrained() {
@@ -1127,8 +1142,8 @@ self.startMemSummary()
                 
                 self.vlog("UUID:\(self.UUID ?? "") recv from client: \(d.count)B")
 
-                // —— 仅对测速流的 30–100B 小块“直发”，其余仍按微批策略处理
-                if self.isSpeedtestTarget && (1...300).contains(d.count) {
+                // 僅在疑似上傳測速時才走 ST 1ms 微合併；首頁/一般流量走一般微批
+                if self.isSpeedtestUploadMode && (1...300).contains(d.count) {
                     self.smallC2UEvents &+= 1
 
                     // 🔸 改为：测速上传微合并（首包已发出后才启动，避免影响握手）
@@ -1142,19 +1157,19 @@ self.startMemSummary()
                         Self.globalLock.unlock()
 
                         if self.pausedC2U && self.cuBuffer.count < Int(Double(self.currentBufferLimit) * 0.5) { // 设定一个阈值来解除背压
-							self.pausedC2U = false
-							self.adjustBufferLimit()
-							self.backpressureTimer?.cancel()
-							self.backpressureTimer = nil
-						}
-						
+                            self.pausedC2U = false
+                            self.adjustBufferLimit()
+                            self.backpressureTimer?.cancel()
+                            self.backpressureTimer = nil
+                        }
+                        
                         if overBudget || self.stBuffer.count >= self.currentBufferLimit {
 
-							if self.pausedC2U == false {
-								self.pausedC2U = true
-								self.adjustBufferLimit() // 动态调整
-								scheduleBackpressureTimer()
-							}
+                            if self.pausedC2U == false {
+                                self.pausedC2U = true
+                                self.adjustBufferLimit() // 动态调整
+                                scheduleBackpressureTimer()
+                            }
 
                         } else if self.stBuffer.count >= self.ST_FLUSH_BYTES {
                             self.flushSTBuffer()
@@ -1256,35 +1271,52 @@ self.startMemSummary()
         return tunnelErrStamps.count >= tunnelBurstThreshold
     }
     
-    private func pumpDownstreamToClient() {
+	// 追加：節流“READY TO LISTEN”的熱路徑日誌
+	private var didLogDownListenOnce = false
+	private var lastDownListenLog: DispatchTime?
+	private let DOWN_LISTEN_LOG_MIN_INTERVAL_MS: Double = 500
+
+	private func pumpDownstreamToClient() {
         if closed { return }
 
-		if pausedD2C { 
-			vlog("d->c receive paused inflight=\(downInflightBytes) read=\(downMaxRead)")
-			return
-		}
+        if pausedD2C {
+            vlog("d->c receive paused inflight=\(downInflightBytes) read=\(downMaxRead)")
+            return
+        }
         
-        // 诊断：明确看到启动监听，并打印当前背压/窗口参数
-        self.log("downstream READY TO LISTEN pausedD2C=\(self.pausedD2C ? 1 : 0) read=\(self.downMaxRead)B")
+		// 只在首次或距上次 >= 500ms 時打印，避免刷屏造成 CPU/IO 壓力
+		let now = DispatchTime.now()
+		var shouldLog = false
+		if !didLogDownListenOnce {
+			shouldLog = true
+		} else if let last = lastDownListenLog {
+			let elapsedMs = Double(now.uptimeNanoseconds - last.uptimeNanoseconds) / 1_000_000.0
+			if elapsedMs >= DOWN_LISTEN_LOG_MIN_INTERVAL_MS { shouldLog = true }
+		}
+		if shouldLog {
+			self.log("downstream READY TO LISTEN pausedD2C=\(self.pausedD2C ? 1 : 0) read=\(self.downMaxRead)B")
+			didLogDownListenOnce = true
+			lastDownListenLog = now
+		}
 
         downstream?.receive(minimumIncompleteLength: 1, maximumLength: downMaxRead) { [weak self] (data, _, isComplete, err) in
             guard let self = self, self.alive() else { return }
 
             if let err = err {
 
-				var mapped = "downstream recv err"
-				// 嘗試抓 POSIX code（若非 NWError.posix，保持原樣）
-				if case let .posix(code) = (err as? NWError) {
-					let raw = code.rawValue        // 96: ENODATA(常見於隧道/STREAM中斷)、54: ECONNRESET
-					if [96, 54, 50, 102].contains(raw) { // 50=ENETDOWN, 102=ENETRESET（不同平台值可能不同）
-						if Self.markAndBurstTunnelDown() {
-							log("KILL_CLASS=TUNNEL_DOWN note=burst \(raw) on downstream")
-						} else {
-							log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(raw)")
-						}
-					}
-				}
-				self.queue.async { self.cancel(reason: mapped) }
+                var mapped = "downstream recv err"
+                // 嘗試抓 POSIX code（若非 NWError.posix，保持原樣）
+                if case let .posix(code) = (err as? NWError) {
+                    let raw = code.rawValue        // 96: ENODATA(常見於隧道/STREAM中斷)、54: ECONNRESET
+                    if [96, 54, 50, 102].contains(raw) { // 50=ENETDOWN, 102=ENETRESET（不同平台值可能不同）
+                        if Self.markAndBurstTunnelDown() {
+                            log("KILL_CLASS=TUNNEL_DOWN note=burst \(raw) on downstream")
+                        } else {
+                            log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(raw)")
+                        }
+                    }
+                }
+                self.queue.async { self.cancel(reason: mapped) }
                 return
             }
 
@@ -1293,12 +1325,12 @@ self.startMemSummary()
                 
                 
                 if self.tFirstByte == nil {
-					self.tFirstByte = .now()
+                    self.tFirstByte = .now()
 
-					if let dr = self.tDownReady {
-						let ms = self.diffMs(start: dr, end: self.tFirstByte!)
-						self.log(String(format:"KPI downReady_to_firstRecv_ms=%.1f", ms))
-					}
+                    if let dr = self.tDownReady {
+                        let ms = self.diffMs(start: dr, end: self.tFirstByte!)
+                        self.log(String(format:"KPI downReady_to_firstRecv_ms=%.1f", ms))
+                    }
 
 
 
@@ -1336,7 +1368,7 @@ self.startMemSummary()
                     self.scheduleDrainCancel(hint: "client EOF (downstream->client activity)")
                 }
 
-				if !self.pausedD2C { self.pumpDownstreamToClient() }
+                if !self.pausedD2C { self.pumpDownstreamToClient() }
             }
 
             if isComplete {
@@ -1389,32 +1421,32 @@ self.startMemSummary()
             
             guard let self = self, self.alive() else { return }
 
-			// —— ★★ 无论如何，先做一次出账（只会在第一次回调时成功扣减）
-			let debited: Int = {
-				if let n = self.inflightSizes.removeValue(forKey: seq) {
-					self.inflightBytes &-= n
-					if self.inflightBytes < 0 { self.inflightBytes = 0 }
-					return n
-				}
-				return 0
-			}()
+            // —— ★★ 无论如何，先做一次出账（只会在第一次回调时成功扣减）
+            let debited: Int = {
+                if let n = self.inflightSizes.removeValue(forKey: seq) {
+                    self.inflightBytes &-= n
+                    if self.inflightBytes < 0 { self.inflightBytes = 0 }
+                    return n
+                }
+                return 0
+            }()
             
             // 去重：只处理一次完成回调
 
-			let firstCompletion = self.inflight.remove(seq) != nil
-			if !firstCompletion {
-				// 已经处理过：只补个日志并尝试恢复读
-				self.log("WARN dup completion for #\(seq), ignore (debited=\(debited))")
-				self.maybeResumeAfterInflightDrained()
-				return
-			}
+            let firstCompletion = self.inflight.remove(seq) != nil
+            if !firstCompletion {
+                // 已经处理过：只补个日志并尝试恢复读
+                self.log("WARN dup completion for #\(seq), ignore (debited=\(debited))")
+                self.maybeResumeAfterInflightDrained()
+                return
+            }
 
-			if let err = err {
-				self.log("upstream send err: \(err)")
-				self.queue.async { self.cancel(reason: "upstream send err") }
-				return
-			}
-			
+            if let err = err {
+                self.log("upstream send err: \(err)")
+                self.queue.async { self.cancel(reason: "upstream send err") }
+                return
+            }
+            
 
 
             // 发送成功日志 + 计数
@@ -1456,7 +1488,7 @@ self.startMemSummary()
             if remark == "firstBody" {
                 
                 let isHTTPS = (self.reqPort == 443)
-                if !self.isSpeedtestTarget {
+                if !self.isSpeedtestUploadMode {
                     let watchdogDelay: TimeInterval = isHTTPS ? 15.0 : 8.0
                     let wd = DispatchSource.makeTimerSource(queue: self.queue)
                     wd.schedule(deadline: .now() + watchdogDelay)
@@ -1468,7 +1500,7 @@ self.startMemSummary()
                     self.firstByteWatchdog = wd
                     wd.resume()
                 } else {
-                    self.vlog("speedtest target -> watchdog disabled")
+                    self.vlog("speedtest upload-mode: watchdog disabled")
                 }
             }
         }))
@@ -1488,58 +1520,58 @@ self.startMemSummary()
     
 
     private func sendToClient(_ data: Data, remark: String) {
-		guard alive() else { log("Cannot send to client: closed=\(closed)"); return }
+        guard alive() else { log("Cannot send to client: closed=\(closed)"); return }
 
-		// 下行 in-flight 入账
-		downInflightBytes &+= data.count
-		downInflightCount &+= 1
-		if downInflightBytes >= downInflightBudgetBytes() && !pausedD2C {
-			pausedD2C = true
-			vlog("pause d->c receive due to inflight: \(downInflightBytes)B")
-		}
+        // 下行 in-flight 入账
+        downInflightBytes &+= data.count
+        downInflightCount &+= 1
+        if downInflightBytes >= downInflightBudgetBytes() && !pausedD2C {
+            pausedD2C = true
+            vlog("pause d->c receive due to inflight: \(downInflightBytes)B")
+        }
 
-		let sendStart = DispatchTime.now()
-		client.send(content: data, completion: .contentProcessed({ [weak self] err in
-			guard let self = self, self.alive() else { return }
+        let sendStart = DispatchTime.now()
+        client.send(content: data, completion: .contentProcessed({ [weak self] err in
+            guard let self = self, self.alive() else { return }
 
-			// 下行 in-flight 出账（兜底）
-			self.downInflightBytes &-= data.count
-			if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
-			self.downInflightCount &-= 1
-			if self.downInflightCount < 0 { self.downInflightCount = 0 }
+            // 下行 in-flight 出账（兜底）
+            self.downInflightBytes &-= data.count
+            if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
+            self.downInflightCount &-= 1
+            if self.downInflightCount < 0 { self.downInflightCount = 0 }
 
-			if let err = err {
-				self.log("client send err: \(err)")
-				self.queue.async { self.cancel(reason: "client send err") }
-			} else {
-				self.vlog("sent \(remark) successfully")
-				// 下行 BBR：统计交付字节 + 单块“发送完成时延”作为 RTT 样本
-				self.downDeliveredBytes &+= data.count
-				let dtNs = DispatchTime.now().uptimeNanoseconds &- sendStart.uptimeNanoseconds
-				let ms = Double(dtNs) / 1e6
-				if ms > 0 {
-					let ageMs = self.diffMs(start: self.d_bbrMinRttStamp, end: DispatchTime.now())
-					if ms < self.d_bbrMinRtt_ms || ageMs > 10_000 {
-						self.d_bbrMinRtt_ms = ms
-						self.d_bbrMinRttStamp = DispatchTime.now()
-					}
-				}
-			}
+            if let err = err {
+                self.log("client send err: \(err)")
+                self.queue.async { self.cancel(reason: "client send err") }
+            } else {
+                self.vlog("sent \(remark) successfully")
+                // 下行 BBR：统计交付字节 + 单块“发送完成时延”作为 RTT 样本
+                self.downDeliveredBytes &+= data.count
+                let dtNs = DispatchTime.now().uptimeNanoseconds &- sendStart.uptimeNanoseconds
+                let ms = Double(dtNs) / 1e6
+                if ms > 0 {
+                    let ageMs = self.diffMs(start: self.d_bbrMinRttStamp, end: DispatchTime.now())
+                    if ms < self.d_bbrMinRtt_ms || ageMs > 10_000 {
+                        self.d_bbrMinRtt_ms = ms
+                        self.d_bbrMinRttStamp = DispatchTime.now()
+                    }
+                }
+            }
 
-			// in-flight 降到阈值以下时尝试恢复下行接收
-			self.maybeResumeDownAfterInflightDrained()
-		}))
+            // in-flight 降到阈值以下时尝试恢复下行接收
+            self.maybeResumeDownAfterInflightDrained()
+        }))
     }
 
-	@inline(__always)
-	private func maybeResumeDownAfterInflightDrained() {
-		let target = downInflightBudgetBytes()
-		if pausedD2C && downInflightBytes <= (target * 90) / 100 {
-			pausedD2C = false
-			vlog("resume d->c after inflight drained: \(downInflightBytes)B <= 0.9*target")
-			pumpDownstreamToClient()
-		}
-	}
+    @inline(__always)
+    private func maybeResumeDownAfterInflightDrained() {
+        let target = downInflightBudgetBytes()
+        if pausedD2C && downInflightBytes <= (target * 90) / 100 {
+            pausedD2C = false
+            vlog("resume d->c after inflight drained: \(downInflightBytes)B <= 0.9*target")
+            pumpDownstreamToClient()
+        }
+    }
     
     private func diffMs(start: DispatchTime, end: DispatchTime) -> Double {
         return Double(end.uptimeNanoseconds &- start.uptimeNanoseconds) / 1e6
