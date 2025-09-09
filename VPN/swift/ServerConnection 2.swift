@@ -6,11 +6,11 @@ import web3swift
 
 // 定义请求数据结构
 struct SocksRequestData: Codable {
-    let host: String
-    let cmd: String
-    let port: Int
-    let order: Int
-    let buffer: String
+    let host: String        //  上游服务器DNS或IP地址
+    let cmd: String         //  连接command
+    let port: Int           //  上游服务器端口
+    let order: Int          //  0 为 req，1为res
+    let buffer: String      //  order=0时，发往上游服务器的首包
 }
 
 // 定义完整的 Socks 请求结构
@@ -970,7 +970,7 @@ public final class ServerConnection {
                     }
 
                     self.log("KPI handoff -> LM host=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr):80 resEntry \(resEntryInfo.ip_addr):80 egress=\(egressNode.ip_addr)")
-                    let connectInfo = "origin=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr) egress=\(egressNode.ip_addr)"
+                    let connectInfo = "origin=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr) egress=\(egressNode.ip_addr) UUID: \(securityKey) "
 
                     let newBridge = LayerMinusBridge(
                         id: self.id,
@@ -989,7 +989,7 @@ public final class ServerConnection {
                     self.bridge = newBridge
                     self.onRoutingDecided?(self)
                     
-                    newBridge.start(reqFirstBodyBase64: reqB64, resFirstBodyBase64: resB64)
+                    newBridge.start(reqFirstBodyBase64: reqB64, resFirstBodyBase64: resB64, UUID: securityKey)
 
                 } catch {
                     self.log("LM sign error: \(error)")

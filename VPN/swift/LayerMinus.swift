@@ -299,7 +299,7 @@ class LayerMinus {
         ret += "Host: \(host)\r\n"
         ret += "Content-Length: \(data.count)\r\n\r\n"
         ret += data
-        ret += "\r\n"
+        ret += "\r\n\r\n"
         
         return ret
     }
