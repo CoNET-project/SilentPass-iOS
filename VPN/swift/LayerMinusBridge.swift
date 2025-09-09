@@ -892,6 +892,8 @@ self.startMemSummary()
 
 		func maybeKickPumps() {
 			guard alive() else { return }
+			// 诊断：观察 gating 状态，确认是否会启动两条泵（DIRECT 下 up/down 同时 ready）
+			vlog("maybeKickPumps check: upReady=\(upReady) downReady=\(downReady) reqFirstSent=\(reqFirstSent) resFirstSent=\(resFirstSent) isDIRECT=\(isDIRECT)")
 
             // 上行：只负责发送（client->node）
             if upReady, !reqFirstSent {
@@ -916,6 +918,7 @@ self.startMemSummary()
                 }
                 resFirstSent = true
                 pumpDownstreamToClient()
+				log("conn identity check: down === up ? \(self.downstream === self.upstream)")
             }
         }
 
@@ -926,11 +929,12 @@ self.startMemSummary()
                 s.log("UP ready UUID:\(s.UUID ?? "") \(s.reqHost):\(s.reqPort)")
                 s.tReady = .now()
                 upReady = true
-                maybeKickPumps()
                 if isDIRECT {
-                    // DIRECT：同一条连接既做 upstream 又做 downstream，统一在 up.ready 时推进
+                    // DIRECT：同一条连接既作 upstream 又作 downstream
+                    // 先就绪再触发 maybeKickPumps，确保下行泵能启动
                     downReady = true
                 }
+                maybeKickPumps()
             case .waiting(let e):
                 s.log("UP waiting: UUID:\(s.UUID ?? "") \(e)  UUID:\(s.UUID ?? "") ")
             case .failed(let e):
@@ -1200,7 +1204,9 @@ self.startMemSummary()
 			return
 		}
         
-        self.log("downstream READY TO LISTINGEN")
+        // 诊断：明确看到启动监听，并打印当前背压/窗口参数
+        self.log("downstream READY TO LISTEN pausedD2C=\(self.pausedD2C ? 1 : 0) read=\(self.downMaxRead)B")
+
         downstream?.receive(minimumIncompleteLength: 1, maximumLength: downMaxRead) { [weak self] (data, _, isComplete, err) in
             guard let self = self, self.alive() else { return }
 

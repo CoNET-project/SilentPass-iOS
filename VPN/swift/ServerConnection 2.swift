@@ -154,11 +154,11 @@ public final class ServerConnection {
     private func shouldDirect(host: String) -> Bool {
         // 1) 先按域名规则（保持现有语义）
 		if Allowlist.matches(host) { return true }
-		// 若你之前把 AdBlacklist 也当成直连，这里保留：
-		// if AdBlacklist.matches(host) { return true }
+
 
 		// 2) 未命中时，解析一次 IPv4 再跑 CIDR
 		if let ip = resolveFirstIPv4(host), Allowlist.matches(ip) {
+            log("ALLOWLIST CIDR hit: \(host) -> \(ip)")
 			return true
 		}
 		return false

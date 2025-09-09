@@ -329,7 +329,7 @@ struct Allowlist {
     ]
     
     static let ipv4CIDRsRaw: [String] = [
-        "23.0.0.0/8",
+        
         "143.224.0.0/12",
         "144.178.0.0/15",
         "199.47.192.0/19",
