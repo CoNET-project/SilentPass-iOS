@@ -130,7 +130,7 @@ public final class LayerMinusBridge {
         backpressureTimer?.cancel()
 
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(50))
+        t.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
         t.setEventHandler { [weak self] in
             guard let s = self, s.alive() else { return }
             
@@ -140,9 +140,12 @@ public final class LayerMinusBridge {
                 s.backpressureTimer = nil
                 return
             }
-            
-            s.adjustBufferLimit()
-            s.log("Backpressure timer triggered, new buffer limit: \(s.currentBufferLimit)B")
+
+            let oldLimit = s.currentBufferLimit     // ← 先捕获旧值
+            s.adjustBufferLimit()                   // ← 再调整
+            if oldLimit != s.currentBufferLimit {
+                s.log("Backpressure: \(oldLimit)->\(s.currentBufferLimit)B")
+            }
         }
         backpressureTimer = t
         t.resume()
@@ -209,7 +212,7 @@ public final class LayerMinusBridge {
 		let smoothStart: Bool = {
 			if let tfb = tFirstByte {
 				let ageMs = diffMs(start: tfb, end: .now())
-				return ageMs < 300 || downDeliveredBytes < 128 * 1024
+				return ageMs < 300 || downDeliveredBytes < 192 * 1024
 			}
 			return true // 还没拿到首字节，也认为在平滑期
 		}()
@@ -232,11 +235,7 @@ public final class LayerMinusBridge {
 			} else if downInflightBytes <= (targetDown * 40) / 100 {
 				downMaxRead = min(downMaxRead * 2, DOWN_MAX_READ)     // 压力小：翻倍
 			}
-			if pausedD2C || downInflightBytes >= (targetDown * 90) / 100 {
-				downMaxRead = max(downMaxRead / 2, DOWN_MIN_READ)     // 压力大：减半
-			} else if downInflightBytes <= (targetDown * 40) / 100 {
-				downMaxRead = min(downMaxRead * 2, DOWN_MAX_READ)     // 压力小：翻倍
-			}
+
 			if downMaxRead != oldRead {
 				log("Adjust down read: \(oldRead) -> \(downMaxRead)")
 			}
@@ -440,6 +439,11 @@ public final class LayerMinusBridge {
     private var tStart: DispatchTime = .now()
     private var tReady: DispatchTime?
     private var tFirstByte: DispatchTime?
+    private var tDownReady: DispatchTime?      // ← 新增：下行 ready 的时间戳
+
+
+
+
     private var bytesUp: Int = 0
     private var bytesDown: Int = 0
     private var drainTimer: DispatchSourceTimer?
@@ -987,6 +991,7 @@ self.startMemSummary()
                 switch st {
                 case .ready:
                     s.log("DOWN ready UUID:\(s.UUID ?? "") \(s.resHost):\(s.resPort)")
+					s.tDownReady = .now()
                     downReady = true
                     maybeKickPumps()
                 case .waiting(let e):
@@ -1255,7 +1260,15 @@ self.startMemSummary()
                 
                 
                 if self.tFirstByte == nil {
-                    self.tFirstByte = .now()
+					self.tFirstByte = .now()
+
+					if let dr = self.tDownReady {
+						let ms = self.diffMs(start: dr, end: self.tFirstByte!)
+						self.log(String(format:"KPI downReady_to_firstRecv_ms=%.1f", ms))
+					}
+
+
+
                     self.firstByteWatchdog?.setEventHandler {}
                     self.firstByteWatchdog?.cancel()
                     self.firstByteWatchdog = nil
