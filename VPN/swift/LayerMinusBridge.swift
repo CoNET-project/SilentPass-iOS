@@ -168,7 +168,7 @@ public final class LayerMinusBridge {
     // 预算夹紧/回退
     private let D_BBR_MIN_BUDGET_BYTES = 128 * 1024
     private let D_BBR_MAX_BUDGET_BYTES = 2 * 1024 * 1024
-    private let D_BBR_FALLBACK_BUDGET_BYTES = 512 * 1024
+    private let D_BBR_FALLBACK_BUDGET_BYTES = 1 * 1024 * 1024
 
 
 	private func adjustBufferLimit() {
@@ -204,25 +204,54 @@ public final class LayerMinusBridge {
 
 		// 根据占用调整读取粒度（抑峰/提吞吐）
 		let oldRead = downMaxRead
-		if pausedD2C || downInflightBytes >= (targetDown * 90) / 100 {
-			downMaxRead = max(downMaxRead / 2, DOWN_MIN_READ)     // 压力大：减半
-		} else if downInflightBytes <= (targetDown * 40) / 100 {
-			downMaxRead = min(downMaxRead * 2, DOWN_MAX_READ)     // 压力小：翻倍
-		}
-		if downMaxRead != oldRead {
-			log("Adjust down read: \(oldRead) -> \(downMaxRead)")
-		}
 
-		// 命中/脱离目标触发暂停/恢复
-		if downInflightBytes >= targetDown {
-			if !pausedD2C {
-				pausedD2C = true
-				vlog("pause d->c: inflight=\(downInflightBytes) >= target=\(targetDown), read=\(downMaxRead)")
+		// ★ 平滑起步：TTFB 后 300ms 内或交付 <128KB，不要节流，窗口拉满
+		let smoothStart: Bool = {
+			if let tfb = tFirstByte {
+				let ageMs = diffMs(start: tfb, end: .now())
+				return ageMs < 300 || downDeliveredBytes < 128 * 1024
 			}
-		} else if pausedD2C, downInflightBytes <= (targetDown * 90) / 100 {
-			pausedD2C = false
-			vlog("resume d->c: inflight=\(downInflightBytes) <= 0.9*target, read=\(downMaxRead)")
-			pumpDownstreamToClient()
+			return true // 还没拿到首字节，也认为在平滑期
+		}()
+
+
+
+		if smoothStart {
+			if downMaxRead != DOWN_MAX_READ {
+				downMaxRead = DOWN_MAX_READ
+				vlog("smooth-start: force read=\(downMaxRead)")
+			}
+			if pausedD2C {
+				pausedD2C = false
+				vlog("smooth-start: force resume d->c")
+				pumpDownstreamToClient()
+			}
+		} else {
+			if pausedD2C || downInflightBytes >= (targetDown * 90) / 100 {
+				downMaxRead = max(downMaxRead / 2, DOWN_MIN_READ)     // 压力大：减半
+			} else if downInflightBytes <= (targetDown * 40) / 100 {
+				downMaxRead = min(downMaxRead * 2, DOWN_MAX_READ)     // 压力小：翻倍
+			}
+			if pausedD2C || downInflightBytes >= (targetDown * 90) / 100 {
+				downMaxRead = max(downMaxRead / 2, DOWN_MIN_READ)     // 压力大：减半
+			} else if downInflightBytes <= (targetDown * 40) / 100 {
+				downMaxRead = min(downMaxRead * 2, DOWN_MAX_READ)     // 压力小：翻倍
+			}
+			if downMaxRead != oldRead {
+				log("Adjust down read: \(oldRead) -> \(downMaxRead)")
+			}
+
+			// 命中/脱离目标触发暂停/恢复
+			if downInflightBytes >= targetDown {
+				if !pausedD2C {
+					pausedD2C = true
+					vlog("pause d->c: inflight=\(downInflightBytes) >= target=\(targetDown), read=\(downMaxRead)")
+				}
+			} else if pausedD2C, downInflightBytes <= (targetDown * 90) / 100 {
+				pausedD2C = false
+				vlog("resume d->c: inflight=\(downInflightBytes) <= 0.9*target, read=\(downMaxRead)")
+				pumpDownstreamToClient()
+			}
 		}
 	}
 
@@ -830,7 +859,7 @@ self.startMemSummary()
     }
 
     @inline(__always)
-    private func sendFirstBodyToDownstream(_ data: Data) {
+    private func sendFirstBodyToDownstream(_ data: Data, onOK: (() -> Void)? = nil) {
         guard let dn = downstream, alive() else {
             log("RES-FIRST send aborted: downstream=\(downstream != nil), closed=\(closed)")
             return
@@ -844,6 +873,7 @@ self.startMemSummary()
                 self.queue.async { self.cancel(reason: "downstream send err (firstBody)") }
             } else {
                 self.log("RES-FIRST sent successfully")
+                onOK?()  // ★ 真正发出去后再开始“下行监听”
             }
         }))
     }
@@ -908,18 +938,22 @@ self.startMemSummary()
             }
 
             // 下行：先把 RES 首包（若有）送到节点，随后只接收
-            if downReady, !resFirstSent {
-                if !isDIRECT, let rb = pendingResFirstBody, !rb.isEmpty {
-                    log("RES-FIRST ready; sending \(rb.count)B to \(resHost):\(resPort)")
-                    sendFirstBodyToDownstream(rb)   // 这里传已解包的 Data
-                } else {
-                    // DIRECT 或无首包：不发送 RES-FIRST
-                    vlog("RES-FIRST absent (nil/empty) or DIRECT; skip send")
-                }
-                resFirstSent = true
-                pumpDownstreamToClient()
-				log("conn identity check: down === up ? \(self.downstream === self.upstream)")
-            }
+			if downReady, !resFirstSent {
+				if !isDIRECT, let rb = pendingResFirstBody, !rb.isEmpty {
+					log("RES-FIRST ready; sending \(rb.count)B to \(resHost):\(resPort)")
+					sendFirstBodyToDownstream(rb) { [weak self] in
+						guard let s = self, s.alive() else { return }
+						resFirstSent = true
+						s.pumpDownstreamToClient()
+						s.log("conn identity check: down === up ? \(s.downstream === s.upstream)")
+					}
+				} else {
+					vlog("RES-FIRST absent (nil/empty) or DIRECT; skip send")
+					resFirstSent = true
+					pumpDownstreamToClient()
+					log("conn identity check: down === up ? \(self.downstream === self.upstream)")
+				}
+			}
         }
 
         up.stateUpdateHandler = { [weak self] st in
