@@ -17,10 +17,21 @@ private extension LayerMinusBridge {
     static let ABSOLUTE_MAX_BUFFER = 512 * 1024  // 512KB 绝对上限
     static let MEMORY_PRESSURE_BUFFER = 64 * 1024  // 内存压力时缓冲区
     static let MEMORY_WARNING_THRESHOLD = 50 * 1024 * 1024  // 50MB 警告阈值
+
 }
 
 
 public final class LayerMinusBridge {
+    
+	// 添加这些新属性
+    private var hasStarted = false
+    private var startTime: DispatchTime?
+    private static let MIN_LIFETIME_MS: Double = 100.0
+    
+	 // 用于防止过早释放的引用池
+    private static var activeBridges = [UInt64: LayerMinusBridge]()
+    private static let bridgesLock = NSLock()
+	
 
 	private struct MemoryState {
         var isUnderPressure = false
@@ -121,6 +132,7 @@ public final class LayerMinusBridge {
 				}
           }))
     }
+
     
     private static let GLOBAL_BUFFER_BUDGET = 6 * 1024 * 1024
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
@@ -227,6 +239,7 @@ public final class LayerMinusBridge {
 	// === Flow primary detection & caps ===
 	private enum FlowPrimary { case upstream, downstream, balanced }
 	private var primaryRole: FlowPrimary = .balanced
+
 
 	// 最近窗口（每 300ms 累計）的上下行量
 	private var winUpBytes = 0
@@ -574,8 +587,10 @@ public final class LayerMinusBridge {
         let (B, _) = self.inflightBudget()
         if self.inflightBytes >= (B * 90) / 100 {
             // 1) 关闭旧定时器
-            stTimer?.setEventHandler {}
-            stTimer?.cancel()
+
+			safeStopTimer(&stTimer)
+
+           
 
             // 2) 1ms 后再试一次：优先继续“再合包”一轮（flushSTBuffer），
             //    若 stBuffer 尚未积累，则直接发送 payload
@@ -695,24 +710,34 @@ public final class LayerMinusBridge {
     #endif
     
     private func cleanupAllResources() {
-        // 1. 立即断开所有连接的引用
-        upstream?.stateUpdateHandler = nil
-        downstream?.stateUpdateHandler = nil
-        upstream = nil
-        downstream = nil
-        
-        // 2. 停止所有定时器（不等待回调）
-        stopAllTimersImmediate()
-        
-        // 3. 清理缓冲区
-        cuBuffer = Data()
-        stBuffer = Data()
-        
-        // 4. 从协调器中移除
-        BridgeCoordinator.shared.remove(self)
-        
-        // 5. 取消客户端连接
-        client.cancel()
+        // 立即断开所有handler
+		upstream?.stateUpdateHandler = nil
+		downstream?.stateUpdateHandler = nil
+		
+		// 停止所有定时器
+		stopAllTimersImmediate()
+		
+		// 清理缓冲区
+		if !cuBuffer.isEmpty {
+			subGlobalBytes(cuBuffer.count)
+			cuBuffer = Data()
+		}
+		if !stBuffer.isEmpty {
+			subGlobalBytes(stBuffer.count)
+			stBuffer = Data()
+		}
+		
+		// 从协调器移除
+		BridgeCoordinator.shared.remove(self)
+		
+		// 取消连接
+		upstream?.cancel()
+		downstream?.cancel()
+		client.cancel()
+		
+		// 清空引用
+		upstream = nil
+		downstream = nil
     }
 
 	private let MIN_LIFETIME_MS: Double = 100  // 至少存活100ms
@@ -759,6 +784,25 @@ public final class LayerMinusBridge {
         BridgeCoordinator.shared.ensure5sMemSummary()
         #endif
 
+		// 保持自身引用一段时间，防止立即销毁
+		let selfRef = self
+        
+        // 防止过早释放
+		Self.bridgesLock.lock()
+		Self.activeBridges[self.id] = self
+		Self.bridgesLock.unlock()
+        
+        // 同步注册
+        BridgeCoordinator.shared.add(self)
+        BridgeCoordinator.shared.ensure200ms()
+        
+        // 100ms 后释放临时引用
+        queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, id = self.id] in
+            Self.bridgesLock.lock()
+            Self.activeBridges.removeValue(forKey: id)
+            Self.bridgesLock.unlock()
+        }
+
         queue.async { [weak self] in
             guard let self = self else { return }
             guard self.alive() else { return }
@@ -791,6 +835,8 @@ public final class LayerMinusBridge {
                 let preview = firstBody.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
                 self.log("firstBody preview: \(preview)")
             }
+
+			
 
             // 修复：使用弱引用包装器
             let domain = self.etld1(of: self.resHost)
@@ -835,6 +881,17 @@ public final class LayerMinusBridge {
     
     private var isCancelling = false
     public func cancel(reason: String) {
+
+		log("CANCEL trigger id=\(id) reason=\(reason) ...")
+
+		if reason.contains("LayerMinus cutover") {
+			// 热切换：标为“交接收尾”，避免误判为 KILL
+			log("CLOSE_CLASS=HANDOFF note=cutover handoff")
+			// 直接进入 drain 路径：给对向 25s（你已设置 drainGrace=25s）
+			// 如果你已有任一侧 EOF，可改短到 3~5s
+			scheduleDrainCancel(hint: "handoff")
+			return
+		}
 
         // —— 保留并提前打印原有诊断日志（不动）
             log("CANCEL trigger id=\(id) reason=\(reason) inflightBytes=\(inflightBytes) inflightCount=\(inflight.count) cu=\(cuBuffer.count)B st=\(stBuffer.count)B global=\(Self.globalBufferedBytes)B pausedC2U=\(pausedC2U)")
@@ -1012,6 +1069,26 @@ public final class LayerMinusBridge {
 		#if DEBUG
 		BridgeCoordinator.shared.ensure5sMemSummary()
 		#endif
+
+		// 保持引用
+		let selfRef = self
+
+        
+		// 防止过早释放
+			Self.bridgesLock.lock()
+			Self.activeBridges[self.id] = self
+			Self.bridgesLock.unlock()
+        
+        // 同步注册
+        BridgeCoordinator.shared.add(self)
+        BridgeCoordinator.shared.ensure200ms()
+        
+        // 100ms 后释放临时引用
+        queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, id = self.id] in
+            Self.bridgesLock.lock()
+            Self.activeBridges.removeValue(forKey: id)
+            Self.bridgesLock.unlock()
+        }
 
         self.UUID = UUID
         queue.async { [weak self] in
@@ -1423,6 +1500,17 @@ public final class LayerMinusBridge {
 							if self.tFirstSend != nil {
 								self.stBuffer.append(d)
 								self.addGlobalBytes(d.count)
+
+								// ★ 本地硬限（与 appendToCUBuffer 一致）：
+								let localBuffered = self.cuBuffer.count + self.stBuffer.count + self.inflightBytes
+								if localBuffered >= self.LOCAL_BUFFER_HARD_CAP {
+									if !self.pausedC2U { self.pausedC2U = true }
+									self.flushSTBuffer()
+									self.flushCUBuffer()
+									self.scheduleBackpressureTimer()
+									self.vlog("local cap hit (st): paused, local=\(localBuffered)")
+									return
+								}
 
 								// 全局预算触发（与 cuBuffer 一致的防线）：立即 flush 并暂停读
 								Self.globalLock.lock()

@@ -110,11 +110,16 @@ func makeJSONData(_ inStr: String) -> String? {
 //      ServerConnection LayerMinusBridge
 public final class ServerConnection {
     
+    // 修正版本：使用字典存储活跃的 bridges
+    private static var activeBridges = [UInt64: LayerMinusBridge]()  // 用 id 作为 key
+    private static let bridgesLock = NSLock()
+    
     // 命中黑名单 → 立即废止（HTTP 返回 403；SOCKS5 返回 0x02），统一在 ServerConnection 的 queue 上执行
     @inline(__always)
     private func shouldBlock(host: String) -> Bool {
         return AdBlacklist.matches(host)
     }
+    
     private func blockHTTPForbiddenAndClose(_ reason: String) {
         let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         client.send(content: resp.data(using: .utf8), completion: .contentProcessed({ [weak self] _ in
@@ -258,6 +263,7 @@ public final class ServerConnection {
 
     public func close(reason: String) {
         guard !closed else { return }
+
         closed = true
         phase = .closed
         log("close: \(reason)")
@@ -877,9 +883,15 @@ public final class ServerConnection {
                   self.onRoutingDecided?(self)
                   self.log("KPI handoff -> DIRECT \(host):\(port)")
                   newBridge.markHandoffNow()
+
+				  
+					
+					// 标记 handoff 时间
+					bridge?.markHandoffNow()
+					
                   newBridge.start(withFirstBody: firstBody.base64EncodedString())
-            return
-        }
+                return
+            }
         
         
         
@@ -984,16 +996,19 @@ public final class ServerConnection {
                         }
                     )
 
+					
+
                     self.isLayerMinusRouted = true
                     self.bridge = newBridge
                     self.onRoutingDecided?(self)
 
-					// 添加最小存活时间保护
-					DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) { [weak bridge] in
-						// 这个空闭包确保 bridge 至少存活 100ms
-						_ = bridge
-					}
-                    
+					// 关键：持有引用
+					self.bridge = bridge
+					
+					// 标记 handoff 时间
+					bridge?.markHandoffNow()
+
+
                     newBridge.start(reqFirstBodyBase64: reqB64, resFirstBodyBase64: resB64, UUID: securityKey)
 
                 } catch {
@@ -1085,3 +1100,4 @@ public final class ServerConnection {
         }))
     }
 }
+
