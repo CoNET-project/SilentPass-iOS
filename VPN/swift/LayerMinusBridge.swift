@@ -886,7 +886,7 @@ public final class LayerMinusBridge {
 
 		if reason.contains("LayerMinus cutover") {
 			// 热切换：标为“交接收尾”，避免误判为 KILL
-			log("CLOSE_CLASS=HANDOFF note=cutover handoff")
+			log("🔴CLOSE_CLASS=HANDOFF note=cutover handoff🔴")
 			// 直接进入 drain 路径：给对向 25s（你已设置 drainGrace=25s）
 			// 如果你已有任一侧 EOF，可改短到 3~5s
 			scheduleDrainCancel(hint: "handoff")
@@ -926,8 +926,6 @@ public final class LayerMinusBridge {
         pausedC2U = true
         pausedD2C = true
         
-        // 先移除自己，防止新的回调
-        BridgeCoordinator.shared.remove(self)
         
         // 在当前队列执行清理，确保同步
         queue.async { [weak self] in
@@ -947,6 +945,9 @@ public final class LayerMinusBridge {
                 if let cb = self.onClosed {
                     cb(self.id)
                 }
+
+				// 从协调器移除
+    			BridgeCoordinator.shared.remove(self)
                 
                 // 释放域名锁
                 DomainGate.shared.release(domain: self.etld1(of: self.resHost))
