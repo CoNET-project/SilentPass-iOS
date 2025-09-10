@@ -32,6 +32,55 @@ public final class LayerMinusBridge {
     private static var activeBridges = [UInt64: LayerMinusBridge]()
     private static let bridgesLock = NSLock()
 	
+	// [DYNAMIC-ROLE] role election
+	private var roleFinalized = false          // 是否已决定上下行
+	private var electionStarted = false        // 是否已启动竞速监听
+	private var connReq: NWConnection?         // 固定指向 reqHost:reqPort 那条连接
+	private var connRes: NWConnection?         // 固定指向 resHost:resPort 那条连接
+
+	@inline(__always)
+	private func swapUpDown() {
+		guard let up = upstream, let dn = downstream, up !== dn else { return }
+		let oldUp = up
+		upstream = dn
+		downstream = oldUp
+		log("dynamic-role: swapped roles (up<->down)")
+	}
+
+	// [DYNAMIC-ROLE] 首次下行数据快速路径（用于竞速监听的胜者首包）
+	@inline(__always)
+	private func handleFirstDownstreamBytes(_ d: Data, source: String) {
+		// KPI 首字节
+		if tFirstByte == nil {
+			tFirstByte = .now()
+			if let dr = tDownReady {
+				let ms = diffMs(start: dr, end: tFirstByte!)
+				log(String(format:"KPI downReady_to_firstRecv_ms=%.1f", ms))
+			}
+			firstByteWatchdog?.setEventHandler {}
+			firstByteWatchdog?.cancel()
+			firstByteWatchdog = nil
+
+			let ttfbMs = Double(tFirstByte!.uptimeNanoseconds &- tStart.uptimeNanoseconds) / 1e6
+			log(String(format: "KPI immediate TTFB_ms=%.1f (via %@)", ttfbMs, source))
+			if let ts = tFirstSend {
+				let segMs = Double(tFirstByte!.uptimeNanoseconds &- ts.uptimeNanoseconds) / 1e6
+				log(String(format: "KPI firstSend_to_firstRecv_ms=%.1f", segMs))
+			}
+		}
+
+		// 100-Continue 观察（与正常下行一致）
+		if !saw100Continue {
+			if let s = String(data: d.prefix(16), encoding: .ascii),
+			s.hasPrefix("HTTP/1.1 100") || s.hasPrefix("HTTP/1.0 100") {
+				saw100Continue = true
+				log("observed downstream HTTP 100-Continue (race-first)")
+			}
+		}
+
+		bytesDown &+= d.count
+		sendToClient(d, remark: "down->client(race-first)")
+	}
 
 	private struct MemoryState {
         var isUnderPressure = false
@@ -777,7 +826,7 @@ public final class LayerMinusBridge {
         return " [\(s)]"
     }
     
-    public func start(withFirstBody firstBodyBase64: String) {
+    public func start(withFirstBody firstBody: Data) {
 		BridgeCoordinator.shared.add(self)
         BridgeCoordinator.shared.ensure200ms()
         #if DEBUG
@@ -791,10 +840,6 @@ public final class LayerMinusBridge {
 		Self.bridgesLock.lock()
 		Self.activeBridges[self.id] = self
 		Self.bridgesLock.unlock()
-        
-        // 同步注册
-        BridgeCoordinator.shared.add(self)
-        BridgeCoordinator.shared.ensure200ms()
         
         // 100ms 后释放临时引用
         queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, id = self.id] in
@@ -810,35 +855,18 @@ public final class LayerMinusBridge {
             // KPI: 记录会话起点，用于计算 hsRTT / TTFB / 总时长
             self.tStart = .now()
             self.startBBRSampler()
-            
-            self.log("start -> \(self.reqHost):\(self.reqPort) <-- \(self.resHost):\(self.resPort), firstBody(Base64) len=\(firstBodyBase64.count)")
-            
-            
-            
+            self.log("✅ start -> \(self.reqHost):\(self.reqPort) <-- \(self.resHost):\(self.resPort), firstBody bytes=\(firstBody.count)")
+
             // KPI: handoff -> start（应用层排队/解析耗时）
             if let th = self.tHandoff {
                 let ms = Double(self.tStart.uptimeNanoseconds &- th.uptimeNanoseconds) / 1e6
                 self.log(String(format: "KPI handoff_to_start_ms=%.1f", ms))
             }
             
-            guard let firstBody = Data(base64Encoded: firstBodyBase64) else {
-                
-                self.log("firstBody base64 decode failed")
-                self.queue.async { self.cancel(reason: "Invalid Base64") }
-                return
-            }
             
-            self.log("firstBody decoded bytes=\(firstBody.count)")
-            
-            // 打印前几个字节用于调试
-            if firstBody.count > 0 {
-                let preview = firstBody.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
-                self.log("firstBody preview: \(preview)")
-            }
+        	self.log("firstBody bytes=\(firstBody.count)")
 
-			
-
-            // 修复：使用弱引用包装器
+			// 修复：使用弱引用包装器
             let domain = self.etld1(of: self.resHost)
             let weakSelf = Weak(self)
             
@@ -1060,15 +1088,15 @@ public final class LayerMinusBridge {
     }
     
     public func start(
-        reqFirstBodyBase64: String,
-        resFirstBodyBase64: String,
+        reqFirstBody: String,
+        resFirstBody: String,
         UUID: String
     ) {
 
 		BridgeCoordinator.shared.add(self)
 		BridgeCoordinator.shared.ensure200ms()
 		#if DEBUG
-		BridgeCoordinator.shared.ensure5sMemSummary()
+			BridgeCoordinator.shared.ensure5sMemSummary()
 		#endif
 
 		// 保持引用
@@ -1079,10 +1107,6 @@ public final class LayerMinusBridge {
 			Self.bridgesLock.lock()
 			Self.activeBridges[self.id] = self
 			Self.bridgesLock.unlock()
-        
-        // 同步注册
-        BridgeCoordinator.shared.add(self)
-        BridgeCoordinator.shared.ensure200ms()
         
         // 100ms 后释放临时引用
         queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, id = self.id] in
@@ -1099,20 +1123,14 @@ public final class LayerMinusBridge {
 
             // 启动 BBR 采样器
             self.startBBRSampler()
-            self.log("start (dual-first-body) -> req=\(self.reqHost):\(self.reqPort)  res=\(self.resHost):\(self.resPort)  reqLen=\(reqFirstBodyBase64.count)  resLen=\(resFirstBodyBase64.count)")
 
-            guard let reqFirst = Data(base64Encoded: reqFirstBodyBase64), !reqFirst.isEmpty else {
-                self.log("REQ-FIRST base64 decode failed or empty")
-                self.cancel(reason: "Invalid Base64 (req)")
-                return
-            }
-            guard let resFirst = Data(base64Encoded: resFirstBodyBase64), !resFirst.isEmpty else {
-                self.log("RES-FIRST base64 decode failed or empty")
-                self.cancel(reason: "Invalid Base64 (res)")
-                return
-            }
+            self.log("start (dual-first-body) -> req=\(self.reqHost):\(self.reqPort)  res=\(self.resHost):\(self.resPort)  reqLen=\(reqFirstBody.count)  resLen=\(resFirstBody.count)")
+
+            let reqFirst = Data(reqFirstBody.utf8)
+        	let resFirst = Data(resFirstBody.utf8)
             
-            self.log("start -> req.len=\(reqFirst.count) res.len=\(resFirst.count) req=\(self.reqHost):\(self.reqPort) res=\(self.resHost):\(self.resPort)")
+            self.log("start -> req.bytes=\(reqFirst.count) res.bytes=\(resFirst.count) req=\(self.reqHost):\(self.reqPort) res=\(self.resHost):\(self.resPort)")
+
 
 
             // 開始連線上游並轉發資料（以 eTLD+1 做併發閘門）
@@ -1163,6 +1181,89 @@ public final class LayerMinusBridge {
 			}
         }))
     }
+
+	// [DYNAMIC-ROLE] 两条连接各收一次，谁先到就定为下行；另一条为上行
+	private func beginDynamicRoleElectionIfNeeded() {
+		guard !electionStarted, !roleFinalized, let a = connReq, let b = connRes else { return }
+		// DIRECT 由 maybeKickPumps 已处理
+		if a === b { return }
+
+		electionStarted = true
+		log("dynamic-role: begin race listening on both connections")
+
+		// 封装一次性监听
+		func arm(_ conn: NWConnection, tag: String) {
+			conn.receive(minimumIncompleteLength: 1, maximumLength: raceMaxRead) { [weak self] (data, _, isComplete, err) in
+				autoreleasepool {
+					guard let s = self, s.alive() else { return }
+
+					// 如果这时角色已确定：上行侧直接丢弃，不重臂 => 等价于释放监听
+					if s.roleFinalized {
+						if conn === s.upstream {
+							s.vlog("dynamic-role: upstream recv after finalize -> drop, no re-arm")
+							return // 不再 re-arm
+						}
+						// 少见并发情形：下行侧又来了字节，直接转给客户端
+						if let d = data, !d.isEmpty {
+							s.sendToClient(d, remark: "down->client(race-late)")
+						}
+						return
+					}
+
+					if let err = err {
+						s.log("dynamic-role: \(tag) race recv err: \(err) -> recheck in 50ms")
+						// 二次确认：给另一条连接 50ms 的机会赢下竞速，避免偶发抖动误杀
+						if !s.roleFinalized {
+							s.queue.asyncAfter(deadline: .now() + .milliseconds(50)) {
+								if !s.roleFinalized { s.cancel(reason: "\(tag) race recv err (rechecked)") }
+							}
+						}
+						return
+					}
+
+					if let d = data, !d.isEmpty {
+						if !s.roleFinalized {
+							s.roleFinalized = true
+							// 当前 down/up 预设：downstream == connRes
+							let winnerIsUp = (conn === s.upstream)
+							if winnerIsUp {
+								s.log("dynamic-role: winner=\(tag) (pre-set upstream) -> swap roles")
+								s.swapUpDown()
+							} else {
+								s.log("dynamic-role: winner=\(tag) (pre-set downstream)")
+							}
+							s.handleFirstDownstreamBytes(d, source: "race:\(tag)")
+							s.pumpDownstreamToClient()
+						} else {
+							// 已定角色，若是上行侧收到了数据，直接忽略（按设计它不应有下行数据）
+							if conn === s.upstream {
+								s.vlog("dynamic-role: ignore late bytes on upstream after finalize")
+							} else {
+								// 极少数同时到达的情况，再次喂给 client
+								s.sendToClient(d, remark: "down->client(race-late)")
+							}
+						}
+						return
+					}
+
+					if isComplete {
+						// 竞速中的 EOF：若另一侧稍后有数据，会被选定；否则走空闲收尾
+						s.vlog("dynamic-role: \(tag) race EOF")
+						if !s.roleFinalized {
+							s.scheduleDrainCancel(hint: "race EOF on \(tag)")
+						}
+					}
+				}
+			}
+		}
+
+		arm(a, tag: "UP")
+		arm(b, tag: "DOWN")
+	}
+
+	// 竞速读取尽量少：避免在失败者上吃多余数据
+	private let raceMaxRead = 32  // 或 16/32
+
 
     @inline(__always)
     private func sendFirstBodyToDownstream(_ data: Data, onOK: (() -> Void)? = nil) {
@@ -1216,54 +1317,72 @@ public final class LayerMinusBridge {
 
         // 在最前面保存 res 首包，再判定 DIRECT
         self.pendingResFirstBody = resFirstBody
-        let isDIRECT = (resFirstBody == nil || resFirstBody!.isEmpty)
+        let isDIRECT = (resFirstBody == nil)
+
+		// 双首包模式（非 DIRECT）要求两边都有实际首包，否则节点等不到
+		if !isDIRECT, let rb = resFirstBody, rb.isEmpty {
+			log("FATAL: dual-conn requires non-empty resFirstBody, but got EMPTY")
+			cancel(reason: "empty resFirstBody in dual-conn workflow")
+			return
+		}
 
         // 初始化连接：DIRECT 只建一条并复用；非 DIRECT 建两条
         let up = NWConnection(host: NWEndpoint.Host(self.reqHost), port: reqNWPort, using: params)
-        self.upstream = up
-        if isDIRECT {
-            self.downstream = up            // 关键：DIRECT 复用同一条连接
-        } else {
-            let dn = NWConnection(host: NWEndpoint.Host(self.resHost), port: resNWPort, using: params)
-            self.downstream = dn
-        }
+		self.upstream = up
+		self.connReq = up
+
+		if isDIRECT {
+			self.downstream = up
+			self.connRes = up
+		} else {
+			let dn = NWConnection(host: NWEndpoint.Host(self.resHost), port: resNWPort, using: params)
+			self.downstream = dn
+			self.connRes = dn
+		}
 
         func maybeKickPumps() {
-            guard alive() else { return }
-            // 诊断：观察 gating 状态，确认是否会启动两条泵（DIRECT 下 up/down 同时 ready）
-            vlog("maybeKickPumps check: upReady=\(upReady) downReady=\(downReady) reqFirstSent=\(reqFirstSent) resFirstSent=\(resFirstSent) isDIRECT=\(isDIRECT)")
+			guard alive() else { return }
+				vlog("maybeKickPumps check: upReady=\(upReady) downReady=\(downReady) reqFirstSent=\(reqFirstSent) resFirstSent=\(resFirstSent) isDIRECT=\(isDIRECT)")
 
-            // 上行：只负责发送（client->node）
-            if upReady, !reqFirstSent {
-                reqFirstSent = true
-                if !reqFirstBody.isEmpty {
-                    log("REQ-FIRST ready; sending \(reqFirstBody.count)B to \(reqHost):\(reqPort)")
-                    sendFirstBodyToUpstream(reqFirstBody)
-                } else {
-                    log("REQ-FIRST is empty; skip")
-                }
-                pumpClientToUpstream()
-            }
+				// 上行（client->node）可先启动，后续如需会因角色翻转自动生效
+				if upReady, !reqFirstSent {
+					reqFirstSent = true
+					if !reqFirstBody.isEmpty {
+						log("REQ-FIRST ready; sending \(reqFirstBody.count)B to \(reqHost):\(reqPort)")
+						sendFirstBodyToUpstream(reqFirstBody)
+					} else {
+						vlog("REQ-FIRST is empty; skip")
+					}
+					pumpClientToUpstream()
+				}
 
-            // 下行：先把 RES 首包（若有）送到节点，随后只接收
-            if downReady, !resFirstSent {
-                if !isDIRECT, let rb = pendingResFirstBody, !rb.isEmpty {
-                    log("RES-FIRST ready; sending \(rb.count)B to \(resHost):\(resPort)")
-                    sendFirstBodyToDownstream(rb) { [weak self] in
-                        guard let s = self, s.alive() else { return }
-                        resFirstSent = true
-                        s.pumpDownstreamToClient()
-                        s.log("conn identity check: down === up ? \(s.downstream === s.upstream)")
-                    }
-                } else {
-                    vlog("RES-FIRST absent (nil/empty) or DIRECT; skip send")
-                    resFirstSent = true
-                    pumpDownstreamToClient()
-                    log("conn identity check: down === up ? \(self.downstream === self.upstream)")
-                }
+				// 下行首包（若有）只需在下行连接 ready 后发，DIRECT 没有 resFirst
+				if downReady, !resFirstSent {
+					if !isDIRECT, let rb = pendingResFirstBody, !rb.isEmpty {
+						log("RES-FIRST ready; sending \(rb.count)B to \(resHost):\(resPort)")
+						sendFirstBodyToDownstream(rb) { [weak self] in
+							guard let s = self, s.alive() else { return }
+							resFirstSent = true
+							// 不立刻 pumpDownstreamToClient —— 交给竞速决定
+							s.beginDynamicRoleElectionIfNeeded()
+						}
+						return
+					} else {
+						resFirstSent = true
+						// 直接进入竞速（DIRECT / 无 res-first）
+						beginDynamicRoleElectionIfNeeded()
+					}
+				}
 
-            }
-        }
+				// 如果 DIRECT：两端等同，只要 up ready 就可以认为 role 已定
+				if isDIRECT, upReady, !electionStarted {
+					roleFinalized = true
+					electionStarted = true
+					vlog("DIRECT mode: role finalized implicitly (single conn)")
+					pumpDownstreamToClient()
+				}
+			}
+        // 监听状态变化
 
         up.stateUpdateHandler = { [weak self] st in
 			autoreleasepool {

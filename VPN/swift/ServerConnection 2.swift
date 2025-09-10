@@ -867,6 +867,8 @@ public final class ServerConnection {
             let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
             // 创建并启动 LayerMinusBridge，保存引用
                   
+				
+
                   let newBridge = LayerMinusBridge(
                       id: self.id,
                       client: self.client,
@@ -889,7 +891,7 @@ public final class ServerConnection {
 					// 标记 handoff 时间
 					bridge?.markHandoffNow()
 					
-                  newBridge.start(withFirstBody: firstBody.base64EncodedString())
+                  newBridge.start(withFirstBody: firstBody)
                 return
             }
         
@@ -907,7 +909,7 @@ public final class ServerConnection {
         
         
 
-        if let jsonRequestReq = makeSocksRequest(
+        if let jsonRequest = makeSocksRequest(
             host: host,
             port: port,
             buffer: b64,
@@ -915,41 +917,28 @@ public final class ServerConnection {
             Securitykey: securityKey,
             order: 0,
             cmd: "CONNECT"
-        ), let jsonRequestRes = makeSocksRequest(
-            host: host,
-            port: port,
-            buffer: "",
-            walletAddress: self.layerMinus.walletAddress,
-            Securitykey: securityKey,
-            order: 1,
-            cmd: "CONNECT"
         ) {
             
             Task {
                 do {
                     // 1) 原始 JSON -> Data
                     guard
-                        let reqData = jsonRequestReq.data(using: .utf8),
-                        let resData = jsonRequestRes.data(using: .utf8)
+                        let reData = jsonRequest.data(using: .utf8)
                     else {
                         self.log("makeSocksRequest UTF8 encode failed")
                         return
                     }
 
-                    // 2) 分别签名
+                    // 2) 签名
                     let signReqMessage = try await self.layerMinus.web3.personal.signPersonalMessage(
-                        message: reqData, from: account, password: ""
+                        message: reData, from: account, password: ""
                     )
-                    let signResMessage = try await self.layerMinus.web3.personal.signPersonalMessage(
-                        message: resData, from: account, password: ""
-                    )
+                    
 
                     // 3) 生成带签名的 JSON 字符串
                     guard
-                        let reqSignJson = jsonSignMessage(message: jsonRequestReq,
-                                                          signMessage: "0x\(signReqMessage.toHexString())"),
-                        let resSignJson = jsonSignMessage(message: jsonRequestRes,
-                                                          signMessage: "0x\(signResMessage.toHexString())")
+                        let reqSignJson = jsonSignMessage(message: jsonRequest,
+                                                          signMessage: "0x\(signReqMessage.toHexString())")
                     else {
                         self.log("jsonSignMessage failed")
                         return
@@ -957,28 +946,17 @@ public final class ServerConnection {
                     
                     
                     guard
-                        let reqPre = makeJSONData(self.layerMinus.createValidatorData(node: egressNode, responseData: reqSignJson)),
-                        let resPre = makeJSONData(self.layerMinus.createValidatorData(node: egressNode, responseData: resSignJson))
+                        let rePre = makeJSONData(self.layerMinus.createValidatorData(node: egressNode, responseData: reqSignJson))
                     else {
                         self.log("makeJSONData failed")
                         return
                     }
                     
-                    
-                    
-                    let _reqData = self.layerMinus.makeRequest(host: reqEntryInfo.ip_addr, data: reqPre)
-                    let _resData = self.layerMinus.makeRequest(host: resEntryInfo.ip_addr, data: resPre )
-                    
-                    
+                    let _reqData = self.layerMinus.makeRequest(host: reqEntryInfo.ip_addr, data: rePre)
+                    let _resData = self.layerMinus.makeRequest(host: resEntryInfo.ip_addr, data: rePre)
 
-                    // 4) JSON 字符串 -> Data? -> Base64（注意这里要用 ?. 而不是直接 .）
-                    guard
-                        let reqB64 = _reqData.data(using: .utf8)?.base64EncodedString(),
-                        let resB64 = _resData.data(using: .utf8)?.base64EncodedString()
-                    else {
-                        self.log("UTF8 encode (signed JSON) failed")
-                        return
-                    }
+
+                    
 
                     self.log("KPI handoff -> LM host=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr):80 resEntry \(resEntryInfo.ip_addr):80 egress=\(egressNode.ip_addr)")
                     let connectInfo = "origin=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr) egress=\(egressNode.ip_addr) UUID: \(securityKey) "
@@ -1009,7 +987,7 @@ public final class ServerConnection {
 					bridge?.markHandoffNow()
 
 
-                    newBridge.start(reqFirstBodyBase64: reqB64, resFirstBodyBase64: resB64, UUID: securityKey)
+                    newBridge.start(reqFirstBody: _reqData, resFirstBody: _resData, UUID: securityKey)
 
                 } catch {
                     self.log("LM sign error: \(error)")

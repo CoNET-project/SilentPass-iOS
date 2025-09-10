@@ -182,9 +182,9 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 do {
                     try self.socksServer?.start()
                     self.socksServer?.layerMinusInit(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
-                    NSLog("PacketTunnelProvider SOCKS server started.")
+                    NSLog("PacketTunnelProvider SOCKS server started with entryNodes \(entryNodes.count) egressNodes \(egressNodes.count).")
                 } catch {
-                    NSLog("Failed to start SOCKS server: \(error)")
+                    NSLog("Failed to start SOCKS server: \(error) entryNodes \(entryNodes.count) egressNodes \(egressNodes.count)")
                 }
                 
                 // 最后，调用 completionHandler 通知系统

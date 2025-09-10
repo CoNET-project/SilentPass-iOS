@@ -1,0 +1,66 @@
+Sep 10 19:48:27 ubuntu conet-si[9100]: worker : 1  [19:48:27:786] getAllNodes success! Guardian_Nodes = 0
+Sep 10 19:48:27 ubuntu conet-si[9100]: (node:9100) ExperimentalWarning: The Ed25519 Web Crypto API algorithm is an experimental feature and might change at any time
+Sep 10 19:48:27 ubuntu conet-si[9100]: (Use `node --trace-warnings ...` to show where the warning was created)
+Sep 10 19:48:27 ubuntu conet-si[9100]: (node:9100) ExperimentalWarning: The X25519 Web Crypto API algorithm is an experimental feature and might change at any time
+Sep 10 19:48:27 ubuntu conet-si[9100]: worker : 1  [19:48:27:856] getFaucet for 0x90a5bF9A75cCea40Af8E5171916a6b1b3d244521
+Sep 10 19:48:28 ubuntu conet-si[9100]: worker : 1  [19:48:28:926] startEPOCH_EventListeningForMining START
+Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] cancun Result(4) [ 6720n, 1757603399n, 1n, false ]
+Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] Result(4) [ 6720n, 1757603399n, 1n, false ]
+Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] Result(4) [ 0n, 0n, 0n, false ]
+Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] cancun Result(4) [ 6720n, 1757603399n, 1n, false ]
+Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] Result(4) [ 6720n, 1757603399n, 1n, false ]
+Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] Result(4) [ 0n, 0n, 0n, false ]
+Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:546] SaaS_Sock5_v2 ==========> can not found peer with Securitykey {
+Sep 10 19:48:31 ubuntu conet-si[9100]:   Securitykey: '620144D25E0644F68F0A078E0834B1DD',
+Sep 10 19:48:31 ubuntu conet-si[9100]:   socket: '216.225.198.118'
+Sep 10 19:48:31 ubuntu conet-si[9100]: } add to peerPool and wait another connection
+Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:546] SaaS_Sock5_v2 ==========> found peer with Securitykey 620144D25E0644F68F0A078E0834B1DD ! start resConnect
+Sep 10 19:48:32 ubuntu conet-si[9100]: worker : 1  [19:48:32:962] startEPOCH_EventListeningForMining on Block 3039617 START!
+Sep 10 19:48:32 ubuntu conet-si[9100]: worker : 1  [19:48:32:962]
+Sep 10 19:48:32 ubuntu conet-si[9100]: 
+Sep 10 19:48:35 ubuntu conet-si[9100]: worker : 1  [19:48:35:605] SaaS_Sock5_v2 ==========> can not found peer with Securitykey {
+Sep 10 19:48:35 ubuntu conet-si[9100]:   Securitykey: 'A9DE4043AC7D4869BC5D45FDA2E3B292',
+Sep 10 19:48:35 ubuntu conet-si[9100]:   socket: '216.225.198.118'
+Sep 10 19:48:35 ubuntu conet-si[9100]: } add to peerPool and wait another connection
+Sep 10 19:48:35 ubuntu conet-si[9100]: worker : 1  [19:48:35:632] SaaS_Sock5_v2 ==========> found peer with Securitykey A9DE4043AC7D4869BC5D45FDA2E3B292 ! start resConnect
+Sep 10 19:48:36 ubuntu conet-si[9100]: worker : 1  [19:48:36:999] startEPOCH_EventListeningForMining on Block 3039618 START!
+Sep 10 19:48:36 ubuntu conet-si[9100]: worker : 1  [19:48:36:999]
+Sep 10 19:48:36 ubuntu conet-si[9100]: 
+Sep 10 19:48:37 ubuntu conet-si[9100]: worker : 1  [19:48:36:999] moveData doing 3039618 validatorPool.get (5)
+Sep 10 19:48:37 ubuntu conet-si[9100]: worker : 1  [19:48:37:0] gossipStart sendEpoch 3039618 totalMiners 5 total Users 0
+Sep 10 19:48:37 ubuntu conet-si[9100]: worker : 1  [19:48:37:0] stratliveness EPOCH 3039618 starting! 0x90a5bF9A75cCea40Af8E5171916a6b1b3d244521 Pool length = [11]
+Sep 10 19:48:39 ubuntu conet-si[9100]: Client disconnected.
+Sep 10 19:48:39 ubuntu conet-si[9100]: Client disconnected.
+Sep 10 19:48:43 ubuntu conet-si[9100]: worker : 1  [19:48:43:466] SaaS_Sock5_v2 ==========> can not found peer with Securitykey {
+Sep 10 19:48:43 ubuntu conet-si[9100]:   Securitykey: 'F993A006F3FF434CAB1BDF1AD052B85C',
+Sep 10 19:48:43 ubuntu conet-si[9100]:   socket: '216.225.198.118'
+Sep 10 19:48:43 ubuntu conet-si[9100]: } add to peerPool and wait another connection
+Sep 10 19:48:43 ubuntu conet-si[9100]: worker : 1  [19:48:43:493] SaaS_Sock5_v2 ==========> found peer with Securitykey F993A006F3FF434CAB1BDF1AD052B85C ! start resConnect
+Sep 10 19:48:43 ubuntu conet-si[9100]: Client disconnected.
+Sep 10 19:48:43 ubuntu conet-si[9100]: Client disconnected.
+Sep 10 19:48:45 ubuntu conet-si[9100]: worker : 1  [19:48:45:75] startEPOCH_EventListeningForMining on Block 3039619 START!
+Sep 10 19:48:45 ubuntu conet-si[9100]: worker : 1  [19:48:45:75]
+Sep 10 19:48:45 ubuntu conet-si[9100]: 
+Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:109] startEPOCH_EventListeningForMining on Block 3039620 START!
+Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:109]
+Sep 10 19:48:49 ubuntu conet-si[9100]: 
+Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:110] moveData doing 3039620 validatorPool.get (7)
+Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:110] gossipStart sendEpoch 3039620 totalMiners 7 total Users 0
+Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:110] stratliveness EPOCH 3039620 starting! 0x90a5bF9A75cCea40Af8E5171916a6b1b3d244521 Pool length = [11]
+Sep 10 19:48:51 ubuntu conet-si[9100]: Client disconnected.
+Sep 10 19:48:51 ubuntu conet-si[9100]: Client disconnected.
+Sep 10 19:48:55 ubuntu conet-si[9100]: worker : 1  [19:48:55:412] SaaS_Sock5_v2 ==========> can not found peer with Securitykey {
+Sep 10 19:48:55 ubuntu conet-si[9100]:   Securitykey: 'E962D125BB604771985031EB0F3EE147',
+Sep 10 19:48:55 ubuntu conet-si[9100]:   socket: '74.208.184.207'
+Sep 10 19:48:55 ubuntu conet-si[9100]: } add to peerPool and wait another connection
+Sep 10 19:48:55 ubuntu conet-si[9100]: worker : 1  [19:48:55:419] SaaS_Sock5_v2 ==========> found peer with Securitykey E962D125BB604771985031EB0F3EE147 ! start resConnect
+Sep 10 19:48:57 ubuntu conet-si[9100]: worker : 1  [19:48:57:186] startEPOCH_EventListeningForMining on Block 3039621 START!
+Sep 10 19:48:57 ubuntu conet-si[9100]: worker : 1  [19:48:57:186]
+Sep 10 19:48:57 ubuntu conet-si[9100]: 
+Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:219] startEPOCH_EventListeningForMining on Block 3039622 START!
+Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:219]
+Sep 10 19:49:01 ubuntu conet-si[9100]: 
+Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:220] moveData doing 3039622 validatorPool.get (7)
+Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:220] gossipStart sendEpoch 3039622 totalMiners 7 total Users 0
+Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:220] stratliveness EPOCH 3039622 starting! 0x90a5bF9A75cCea40Af8E5171916a6b1b3d244521 Pool length = [11]
+Sep 10 19:49:03 ubuntu conet-si[9100]: Clie
