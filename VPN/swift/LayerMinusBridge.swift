@@ -192,7 +192,7 @@ public final class LayerMinusBridge {
     private var memSummaryTimer: DispatchSourceTimer?
     #endif
     
-    #if DEBUG
+
     @inline(__always)
     public func processResidentSizeMB() -> Double? {
         var info = mach_task_basic_info()
@@ -208,7 +208,7 @@ public final class LayerMinusBridge {
         return nil
     }
     
-    #endif
+
     
 
     private var currentBufferLimit: Int = 4 * 1024 // 初始大小 4KB
