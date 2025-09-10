@@ -856,8 +856,8 @@ public final class ServerConnection {
         phase = .bridged
         
         
-        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(), let reqEntryInfo = self.layerMinus.getRandomEntryNodes(), let resEntryInfo = self.layerMinus.getRandomEntryNodes(),
-              !egressNode.isEmpty, !reqEntryInfo.isEmpty, !resEntryInfo.isEmpty  else {
+        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(), let reqEntryInfo = self.layerMinus.getRandomEntryNodes(),
+              !egressNode.isEmpty, !reqEntryInfo.isEmpty,  let resEntryInfo = self.layerMinus.getRandomEntryNodes(reqEntryInfo), !resEntryInfo.isEmpty  else {
             let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
             // 创建并启动 LayerMinusBridge，保存引用
                   
@@ -945,7 +945,6 @@ public final class ServerConnection {
                     
                     
                     guard
-                    
                         let reqPre = makeJSONData(self.layerMinus.createValidatorData(node: egressNode, responseData: reqSignJson)),
                         let resPre = makeJSONData(self.layerMinus.createValidatorData(node: egressNode, responseData: resSignJson))
                     else {
@@ -955,8 +954,8 @@ public final class ServerConnection {
                     
                     
                     
-                    let _reqData = self.layerMinus.makeRequest(host: egressNode.ip_addr, data: reqPre)
-                    let _resData = self.layerMinus.makeRequest(host: egressNode.ip_addr, data: resPre )
+                    let _reqData = self.layerMinus.makeRequest(host: reqEntryInfo.ip_addr, data: reqPre)
+                    let _resData = self.layerMinus.makeRequest(host: resEntryInfo.ip_addr, data: resPre )
                     
                     
 
@@ -975,8 +974,8 @@ public final class ServerConnection {
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,
-                        reqHost: egressNode.ip_addr, reqPort: 80,
-                        resHost: egressNode.ip_addr, resPort: 80,
+                        reqHost: reqEntryInfo.ip_addr, reqPort: 80,
+                        resHost: resEntryInfo.ip_addr, resPort: 80,
                         verbose: self.verbose,
                         connectInfo: connectInfo,
                         onClosed: { [weak self] bridgeId in

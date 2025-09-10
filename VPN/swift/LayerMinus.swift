@@ -304,11 +304,22 @@ class LayerMinus {
         return ret
     }
     
-    func getRandomEntryNodes () -> Node? {
-        guard !self.entryNodes.isEmpty else { return nil }
-        let randomIndex = Int.random(in: 0..<self.entryNodes.count)
-        return self.entryNodes[randomIndex]
-    }
+    func getRandomEntryNodes(_ node: Node? = nil) -> Node? {
+		guard !self.entryNodes.isEmpty else { return nil }
+		
+		// 如果有传入 node，就先过滤掉它
+		let candidates: [Node]
+		if let node = node {
+			candidates = self.entryNodes.filter { $0.ip_addr != node.ip_addr }
+		} else {
+			candidates = self.entryNodes
+		}
+		
+		guard !candidates.isEmpty else { return nil }
+		
+		let randomIndex = Int.random(in: 0..<candidates.count)
+		return candidates[randomIndex]
+	}
     
     func getRandomEgressNodes() -> Node? {
         guard !self.egressNodes.isEmpty else { return nil }
