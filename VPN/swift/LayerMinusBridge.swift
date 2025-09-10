@@ -378,7 +378,7 @@ public final class LayerMinusBridge {
     private var bytesDown: Int = 0
     private var drainTimer: DispatchSourceTimer?
     // 半关闭后的“空闲超时”窗口：只要仍有对向数据活动就续期，空闲 >= 25s 才收尾
-    private let drainGrace: TimeInterval = 60.0
+    private let drainGrace: TimeInterval = 25.0
     // 记录哪一侧先 EOF，用于判断是否处于 half-close
     private var eofUpstream = false
     private var eofClient = false
@@ -702,12 +702,6 @@ public final class LayerMinusBridge {
 		isCancelling = true
 		stateLock.unlock()
 		
-		// 等待pending操作完成
-		var waitCount = 0
-		while pendingOperations.get() > 0 && waitCount < 100 {
-			Thread.sleep(forTimeInterval: 0.01)
-			waitCount += 1
-		}
 		
 		pausedC2U = true
 		
@@ -753,11 +747,9 @@ public final class LayerMinusBridge {
 		gracefulCloseConnection(&downstream, label: "DOWN")
 		gracefulCloseImmutableConnection(client, label: "CLIENT")
 		
-		// 回调
-		if let cb = onClosed {
-			let bid = id
-			queue.async { cb(bid) }
-		}
+		// 等 pending 清零后做最终回收（回调 + 域释放 + 清 isCancelling）
+		self.finalizeCancelWhenIdle()
+		return
 		
 		DomainGate.shared.release(domain: etld1(of: self.resHost))
 		isCancelling = false
@@ -1390,7 +1382,7 @@ public final class LayerMinusBridge {
 	// 追加：節流“READY TO LISTEN”的熱路徑日誌
 	private var didLogDownListenOnce = false
 	private var lastDownListenLog: DispatchTime?
-	private let DOWN_LISTEN_LOG_MIN_INTERVAL_MS: Double = 500
+	private let DOWN_LISTEN_LOG_MIN_INTERVAL_MS: Double = 1000
 
 	@inline(__always)
 	private func etld1(of host: String) -> String {
@@ -1428,20 +1420,63 @@ public final class LayerMinusBridge {
 
 				if let err = err {
 
-					var mapped = "downstream recv err"
-					// 嘗試抓 POSIX code（若非 NWError.posix，保持原樣）
-					if case let .posix(code) = (err as? NWError) {
-						let raw = code.rawValue        // 96: ENODATA(常見於隧道/STREAM中斷)、54: ECONNRESET
-						if [96, 54, 50, 102].contains(raw) { // 50=ENETDOWN, 102=ENETRESET（不同平台值可能不同）
+					if case let .posix(code) = (err as? NWError), code.rawValue == 96 {
+						// ENODATA：按“对端写完”的语义做软收尾（等价 downstream EOF），不要立刻 cancel
+						self.log("downstream POSIX=96 -> treat as EOF (soft close)")
+						self.eofUpstream = true
+						self.client.send(content: nil, completion: .contentProcessed({ _ in }))
+						self.scheduleDrainCancel(hint: "downstream ENODATA EOF")
+						return
+					} else {
+						// ENODATA -> 软 EOF（不立刻 cancel）
+						if case let .posix(code) = (err as? NWError), code.rawValue == 96 {
+								self.log("CLOSE_CLASS=SOFT note=downstream POSIX=96 -> EOF")
+								self.eofUpstream = true
+								self.client.send(content: nil, completion: .contentProcessed({ _ in }))
+							self.scheduleDrainCancel(hint: "downstream ENODATA EOF")
+							return
+						}
+						// ★ 已收到过下行数据/首字节时，54/50/102 也走软收尾
+						if case let .posix(c) = (err as? NWError),
+							[54, 50, 102].contains(c.rawValue),
+							(self.tFirstByte != nil || self.bytesDown > 0) {
+							self.log("CLOSE_CLASS=SOFT note=downstream POSIX=\(c.rawValue) after data")
+							self.eofUpstream = true
+							self.client.send(content: nil, completion: .contentProcessed({ _ in }))
+							self.scheduleDrainCancel(hint: "downstream soft EOF posix \(c.rawValue)")
+							return
+						}
+						// 其他错误才走硬取消（保留原有 TUNNEL_DOWN 标记逻辑）
+					// 1) ENODATA -> 软 EOF（不立刻 cancel）
+						if case let .posix(code) = (err as? NWError), code.rawValue == 96 {
+							self.log("CLOSE_CLASS=SOFT note=downstream POSIX=96 -> EOF")
+							self.eofUpstream = true
+							self.client.send(content: nil, completion: .contentProcessed({ _ in }))
+							self.scheduleDrainCancel(hint: "downstream ENODATA EOF")
+							return
+						}
+						// 2) 已有下行数据/首字节时，54/50/102 也走软 EOF
+						if case let .posix(c) = (err as? NWError),
+							[54, 50, 102].contains(c.rawValue),
+							(self.tFirstByte != nil || self.bytesDown > 0) {
+							self.log("CLOSE_CLASS=SOFT note=downstream POSIX=\(c.rawValue) after data")
+							self.eofUpstream = true
+							self.client.send(content: nil, completion: .contentProcessed({ _ in }))
+							self.scheduleDrainCancel(hint: "downstream soft EOF posix \(c.rawValue)")
+							return
+						}
+						// 3) 其他错误才走硬取消（可选：维持 TUNNEL_DOWN 标记）
+						var mapped = "downstream recv err"
+						if case let .posix(c) = (err as? NWError), [54, 50, 102].contains(c.rawValue) {
 							if Self.markAndBurstTunnelDown() {
-                                self.log("KILL_CLASS=TUNNEL_DOWN note=burst \(raw) on downstream")
+								self.log("KILL_CLASS=TUNNEL_DOWN note=burst \(c.rawValue) on downstream")
 							} else {
-                                self.log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(raw)")
+								self.log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(c.rawValue)")
 							}
 						}
+						self.queue.async { self.cancel(reason: mapped) }
+						return
 					}
-					self.queue.async { self.cancel(reason: mapped) }
-					return
 				}
 
 				if let d = data, !d.isEmpty {
@@ -1517,6 +1552,19 @@ public final class LayerMinusBridge {
 			}
         }
     }
+
+	// 非阻塞地等待 pendingOperations 清零后做最终回收
+	private func finalizeCancelWhenIdle(_ retries: Int = 0) {
+		if self.pendingOperations.get() == 0 || retries >= 200 {
+			if let cb = self.onClosed { let bid = self.id; self.queue.async { cb(bid) } }
+			DomainGate.shared.release(domain: etld1(of: self.resHost))
+			self.isCancelling = false
+			return
+		}
+		self.queue.asyncAfter(deadline: .now() + .milliseconds(5)) {
+			self.finalizeCancelWhenIdle(retries + 1)
+		}
+	}
 
 	private func applyPressureCapsIfNeeded() {
 		Self.globalLock.lock()
