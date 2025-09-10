@@ -988,6 +988,12 @@ public final class ServerConnection {
                     self.isLayerMinusRouted = true
                     self.bridge = newBridge
                     self.onRoutingDecided?(self)
+
+					// 添加最小存活时间保护
+					DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) { [weak bridge] in
+						// 这个空闭包确保 bridge 至少存活 100ms
+						_ = bridge
+					}
                     
                     newBridge.start(reqFirstBodyBase64: reqB64, resFirstBodyBase64: resB64, UUID: securityKey)
 

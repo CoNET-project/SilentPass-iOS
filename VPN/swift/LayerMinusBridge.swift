@@ -22,6 +22,85 @@ private extension LayerMinusBridge {
 
 public final class LayerMinusBridge {
 
+	private struct MemoryState {
+        var isUnderPressure = false
+        var lastCheckTime = DispatchTime.now()
+        var consecutivePressureCount = 0
+    }
+
+	private var memoryState = MemoryState()
+
+	private func checkAndHandleMemoryPressure() -> Bool {
+        // 限制检查频率
+        let now = DispatchTime.now()
+        let elapsed = diffMs(start: memoryState.lastCheckTime, end: now)
+        guard elapsed >= 1000 else { // 最多每秒检查一次
+            return memoryState.isUnderPressure
+        }
+        memoryState.lastCheckTime = now
+        
+        // 获取内存信息
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: info) / MemoryLayout<natural_t>.size)
+        
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        
+        guard result == KERN_SUCCESS else { return false }
+        
+        let residentMB = Double(info.resident_size) / (1024.0 * 1024.0)
+        let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
+        let ratio = residentMB / physicalMB
+        
+        // 动态阈值：根据设备内存调整
+        let threshold: Double = physicalMB > 4096 ? 0.05 : 0.03  // 4GB以上设备5%，否则3%
+        
+        if ratio > threshold || residentMB > 100 {  // 超过阈值或绝对值超过100MB
+            memoryState.consecutivePressureCount += 1
+            
+            if memoryState.consecutivePressureCount >= 2 && !memoryState.isUnderPressure {
+                log("Memory pressure ON: \(Int(residentMB))MB (\(Int(ratio*100))%)")
+                memoryState.isUnderPressure = true
+                handleMemoryPressure()
+            }
+            return true
+        } else {
+            if memoryState.isUnderPressure && ratio < threshold * 0.8 {
+                log("Memory pressure OFF: \(Int(residentMB))MB")
+                memoryState.isUnderPressure = false
+            }
+            memoryState.consecutivePressureCount = 0
+            return false
+        }
+    }
+    
+    private func handleMemoryPressure() {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            
+            autoreleasepool {
+                // 立即清理缓冲区
+                if !self.cuBuffer.isEmpty {
+                    self.flushCUBuffer()
+                }
+                if !self.stBuffer.isEmpty {
+                    self.flushSTBuffer()
+                }
+                
+                // 降低缓冲区限制
+                self.currentBufferLimit = min(self.currentBufferLimit, Self.MEMORY_PRESSURE_BUFFER)
+                self.downMaxRead = min(self.downMaxRead, 16 * 1024)
+                
+                // 暂停非关键定时器
+                self.safeStopTimer(&self.roleTimer)
+                self.safeStopTimer(&self.backpressureTimer)
+            }
+        }
+    }
+
 	private static let qKey = DispatchSpecificKey<UInt8>()
 
     @inline(__always)
@@ -84,6 +163,7 @@ public final class LayerMinusBridge {
     private func safeStopTimer(_ t: inout DispatchSourceTimer?) {
 		 guard let timer = t else { return }
 			t = nil
+			
 			timer.setEventHandler {}  // 断电，避免尾随触发
 			// 同队列：不等待，直接 cancel，防止死锁
 			if DispatchQueue.getSpecific(key: Self.qKey) != nil {
@@ -410,42 +490,31 @@ public final class LayerMinusBridge {
             log("Emergency flush: buffer would exceed absolute max")
             flushCUBuffer()
         }
-		
-		// ★ 本地硬限：cu+st+inflight 达到阈值即止血
-		let localBuffered = cuBuffer.count + stBuffer.count + inflightBytes
-		if localBuffered >= LOCAL_BUFFER_HARD_CAP {
-			if !pausedC2U { pausedC2U = true }
-			flushSTBuffer()
-			flushCUBuffer()
-			scheduleBackpressureTimer()
-			vlog("local cap hit: paused c->u, local=\(localBuffered)")
-			return
-		}
-		
-        cuBuffer.append(d)
-        addGlobalBytes(d.count)
-
-        if cuBuffer.count >= currentBufferLimit {
-            pausedC2U = true
-            flushCUBuffer()
-            // 新增：启动背压定时器
-            scheduleBackpressureTimer()
-            // 如果是因为本连接缓冲触顶导致暂停，flush 后排个微延时检查是否可恢复
-            scheduleMaybeResumeCheck()
-            return
-        }
-
-        // ★ 全局预算触发：超出就立即flush并暂停读
-        Self.globalLock.lock()
-        let overBudget = Self.globalBufferedBytes > Self.GLOBAL_BUFFER_BUDGET
-        Self.globalLock.unlock()
-        if overBudget {
-            pausedC2U = true
-            flushCUBuffer()
-            // 新增：启动背压定时器
-            scheduleBackpressureTimer()
-            scheduleMaybeResumeCheck()
-            return
+		// 使用 autoreleasepool 包装
+        autoreleasepool {
+            cuBuffer.append(d)
+            addGlobalBytes(d.count)
+            
+            // 检查缓冲区限制
+            if cuBuffer.count >= currentBufferLimit {
+                pausedC2U = true
+                flushCUBuffer()
+                scheduleBackpressureTimer()
+                scheduleMaybeResumeCheck()
+                return
+            }
+            
+            // 全局预算检查
+            Self.globalLock.lock()
+            let overBudget = Self.globalBufferedBytes > Self.GLOBAL_BUFFER_BUDGET
+            Self.globalLock.unlock()
+            
+            if overBudget {
+                pausedC2U = true
+                flushCUBuffer()
+                scheduleBackpressureTimer()
+                scheduleMaybeResumeCheck()
+            }
         }
     }
 
@@ -529,7 +598,15 @@ public final class LayerMinusBridge {
         }
         if pausedC2U { scheduleMaybeResumeCheck() }
     }
-    
+
+    private func setupMemoryMonitoring() {
+		// 每5秒检查一次内存
+		queue.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+			guard let self = self, self.alive() else { return }
+			self.checkAndHandleMemoryPressure()
+			self.setupMemoryMonitoring() // 递归调用
+		}
+	}
     
     
     private let onClosed: ((UInt64) -> Void)?
@@ -581,41 +658,30 @@ public final class LayerMinusBridge {
         self.queue.setSpecific(key: Self.qKey, value: 1)
         // 简单的生命周期日志
         NSLog("🟢 CREATED LayerMinusBridge #\(id) for reqHost \(reqHost):\(reqPort) resHost \(resHost):\(resPort) \(infoTag())")
-
+		setupMemoryMonitoring()
 		
     }
     
     deinit {
-        log("🔴 DESTROYED LayerMinusBridge #\(id)")
-		if !closed {
-			log("⚠️ WARNING: LayerMinusBridge #\(id) destroyed without proper closing!")
+        let lifetime = diffMs(start: tStart, end: .now())
+		if lifetime < MIN_LIFETIME_MS {
+			log("⚠️ WARNING: Bridge #\(id) destroyed too quickly: \(lifetime)ms")
+		}
 			
-			// 强制同步清理
+			// 先标记为已关闭，防止任何新操作
 			stateLock.lock()
+			let wasAlreadyClosed = closed
 			closed = true
 			stateLock.unlock()
 			
-			// 清理所有定时器(不等待回调)
-			safeStopTimer(&firstByteWatchdog)
-			safeStopTimer(&drainTimer)
-			safeStopTimer(&uploadStuckTimer)
-			safeStopTimer(&cuFlushTimer)
-			safeStopTimer(&stTimer)
-			safeStopTimer(&resumeCheckTimer)
-			safeStopTimer(&backpressureTimer)
-			safeStopTimer(&bbrTimer)
-			safeStopTimer(&roleTimer)
-			#if DEBUG
-				safeStopTimer(&memSummaryTimer)
-			#endif
+			if !wasAlreadyClosed {
+				log("⚠️ WARNING: LayerMinusBridge #\(id) destroyed without proper closing!")
+				cleanupAllResources()
+				
+			}
 
-			BridgeCoordinator.shared.remove(self)
-			
-			// 强制关闭连接
-			upstream?.cancel()
-			downstream?.cancel()
-			client.cancel()
-		}
+		log("🔴 DESTROYED LayerMinusBridge #\(id)")
+		
     }
     
     #if DEBUG
@@ -628,7 +694,54 @@ public final class LayerMinusBridge {
         private func log(_ msg: @autoclosure () -> String) { }
     #endif
     
-    
+    private func cleanupAllResources() {
+        // 1. 立即断开所有连接的引用
+        upstream?.stateUpdateHandler = nil
+        downstream?.stateUpdateHandler = nil
+        upstream = nil
+        downstream = nil
+        
+        // 2. 停止所有定时器（不等待回调）
+        stopAllTimersImmediate()
+        
+        // 3. 清理缓冲区
+        cuBuffer = Data()
+        stBuffer = Data()
+        
+        // 4. 从协调器中移除
+        BridgeCoordinator.shared.remove(self)
+        
+        // 5. 取消客户端连接
+        client.cancel()
+    }
+
+	private let MIN_LIFETIME_MS: Double = 100  // 至少存活100ms
+
+	private func stopAllTimersImmediate() {
+        // 辅助函数来停止单个定时器
+		func stopTimer(_ timer: inout DispatchSourceTimer?) {
+			if let t = timer {
+				t.setEventHandler {}
+				t.cancel()
+				timer = nil
+			}
+		}
+		
+		// 停止所有定时器
+		stopTimer(&firstByteWatchdog)
+		stopTimer(&drainTimer)
+		stopTimer(&uploadStuckTimer)
+		stopTimer(&cuFlushTimer)
+		stopTimer(&stTimer)
+		stopTimer(&resumeCheckTimer)
+		stopTimer(&backpressureTimer)
+		stopTimer(&bbrTimer)
+		stopTimer(&roleTimer)
+		
+		#if DEBUG
+		stopTimer(&memSummaryTimer)
+		#endif
+    }
     
     // --- 追加KPI ---
     private var tHandoff: DispatchTime?
@@ -641,14 +754,13 @@ public final class LayerMinusBridge {
     
     public func start(withFirstBody firstBodyBase64: String) {
 		BridgeCoordinator.shared.add(self)
-		BridgeCoordinator.shared.ensure200ms()
-		#if DEBUG
-		BridgeCoordinator.shared.ensure5sMemSummary()
-		#endif
+        BridgeCoordinator.shared.ensure200ms()
+        #if DEBUG
+        BridgeCoordinator.shared.ensure5sMemSummary()
+        #endif
 
         queue.async { [weak self] in
             guard let self = self else { return }
-            
             guard self.alive() else { return }
             
             // KPI: 记录会话起点，用于计算 hsRTT / TTFB / 总时长
@@ -679,22 +791,24 @@ public final class LayerMinusBridge {
                 let preview = firstBody.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
                 self.log("firstBody preview: \(preview)")
             }
+
+            // 修复：使用弱引用包装器
+            let domain = self.etld1(of: self.resHost)
+            let weakSelf = Weak(self)
             
-            // 开始连接上游并转发数据
-            let domain = etld1(of: self.resHost)
-            DomainGate.shared.acquire(domain: etld1(of: self.resHost)) { [weak self] in
-                guard let s = self, s.alive() else { return }
-				s.queue.async { [weak s] in
-					guard let s = s, s.alive() else { return }
-                	s.connectUpstreamAndRun(reqFirstBody: firstBody, resFirstBody: nil)
-				}
+            DomainGate.shared.acquire(domain: domain) {
+                guard let strongSelf = weakSelf.value, strongSelf.alive() else { return }
+				strongSelf.connectUpstreamAndRun(reqFirstBody: firstBody, resFirstBody: nil)
             }
             
             
         }
     }
     
-    
+    private final class Weak<T: AnyObject> {
+		weak var value: T?
+		init(_ value: T) { self.value = value }
+	}
 
 
     @inline(__always)
@@ -737,62 +851,85 @@ public final class LayerMinusBridge {
                 log("KILL_CLASS=MISC note=\(reason)")
             }
     
-		// 防重入检查
-		stateLock.lock()
-		if closed || isCancelling { stateLock.unlock(); return }
-		closed = true
-		isCancelling = true
-		stateLock.unlock()
+        // 使用更强的同步机制
+        var shouldProceed = false
+        stateLock.lock()
+        if !closed && !isCancelling {
+            closed = true
+            isCancelling = true
+            shouldProceed = true
+        }
+        stateLock.unlock()
+        
+        guard shouldProceed else { return }
+        
+        log("CANCEL: \(reason)")
+        
+        // 立即停止所有活动
+        pausedC2U = true
+        pausedD2C = true
+        
+        // 先移除自己，防止新的回调
+        BridgeCoordinator.shared.remove(self)
+        
+        // 在当前队列执行清理，确保同步
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            
+            autoreleasepool {
+                // 停止所有定时器
+                self.stopAllTimersImmediate()
+                
+                // 清理缓冲区
+                self.cleanupBuffers()
+                
+                // 断开连接
+                self.closeConnectionsImmediate()
+                
+                // 最后的回调
+                if let cb = self.onClosed {
+                    cb(self.id)
+                }
+                
+                // 释放域名锁
+                DomainGate.shared.release(domain: self.etld1(of: self.resHost))
+                
+                self.stateLock.lock()
+                self.isCancelling = false
+                self.stateLock.unlock()
+            }
+        }
 		
-		
-		pausedC2U = true
-		
-        // 先停 DEBUG 的
-        #if DEBUG
-        safeStopTimer(&memSummaryTimer)
-        #endif
-
-        // 再停业务定时器
-		BridgeCoordinator.shared.remove(self)
-
-        safeStopTimer(&firstByteWatchdog)
-        safeStopTimer(&drainTimer)
-        safeStopTimer(&uploadStuckTimer)
-        safeStopTimer(&cuFlushTimer)
-        safeStopTimer(&stTimer)
-        safeStopTimer(&resumeCheckTimer)
-        safeStopTimer(&backpressureTimer)
-        safeStopTimer(&bbrTimer)
-        safeStopTimer(&roleTimer)
-		
-		// 清理缓冲区并释放内存
-		autoreleasepool {
-			if !cuBuffer.isEmpty { 
-				subGlobalBytes(cuBuffer.count)
-				cuBuffer = Data()  // 使用新实例替代 removeAll
-			}
-			if !stBuffer.isEmpty { 
-				subGlobalBytes(stBuffer.count)
-				stBuffer = Data()  // 使用新实例替代 removeAll
-			}
-			
-			inflightBytes = 0
-			inflight.removeAll()
-		}
-		
-		// KPI日志
-		kpiLog(reason: reason)
-		log("cancel: \(reason)")
-		
-		// 软关闭连接
-		gracefulCloseConnection(&upstream, label: "UP")
-		gracefulCloseConnection(&downstream, label: "DOWN")
-		gracefulCloseImmutableConnection(client, label: "CLIENT")
-		
-		// 等 pending 清零后做最终回收（回调 + 域释放 + 清 isCancelling）
-		self.finalizeCancelWhenIdle()
-		return
-		
+    }
+    
+    private func closeConnectionsImmediate() {
+        // 立即清除所有 handler 并断开连接
+        if let up = upstream {
+            up.stateUpdateHandler = nil
+            up.cancel()
+            upstream = nil
+        }
+        
+        if let down = downstream {
+            down.stateUpdateHandler = nil
+            down.cancel()
+            downstream = nil
+        }
+        
+        client.cancel()
+    }
+    
+    private func cleanupBuffers() {
+        if !cuBuffer.isEmpty {
+            subGlobalBytes(cuBuffer.count)
+            cuBuffer = Data()
+        }
+        if !stBuffer.isEmpty {
+            subGlobalBytes(stBuffer.count)
+            stBuffer = Data()
+        }
+        inflightBytes = 0
+        inflight.removeAll()
     }
 
 	// 每 200ms 被 Coordinator 派发一次，跑在“本连接的 queue”上
@@ -902,12 +1039,9 @@ public final class LayerMinusBridge {
 
             // 開始連線上游並轉發資料（以 eTLD+1 做併發閘門）
             let domain = etld1(of: self.resHost)
-            DomainGate.shared.acquire(domain: etld1(of: self.resHost)) { [weak self] in
-				guard let s = self, s.alive() else { return }
-				s.queue.async { [weak s] in
-					guard let s = s, s.alive() else { return }
-					s.connectUpstreamAndRun(reqFirstBody: reqFirst, resFirstBody: resFirst)
-				}
+            DomainGate.shared.acquire(domain: domain) { [weak self] in
+				guard let self = self, self.alive() else { return }
+				self.connectUpstreamAndRun(reqFirstBody: reqFirst, resFirstBody: resFirst)
 			}
 
             
@@ -1568,14 +1702,20 @@ public final class LayerMinusBridge {
 
 	// 非阻塞地等待 pendingOperations 清零后做最终回收
 	private func finalizeCancelWhenIdle(_ retries: Int = 0) {
-		if self.pendingOperations.get() == 0 || retries >= 200 {
-			if let cb = self.onClosed { let bid = self.id; self.queue.async { cb(bid) } }
+		if self.pendingOperations.get() == 0 || retries >= 10 {
+			// 执行最终清理
+			if let cb = self.onClosed { 
+				let bid = self.id
+				// 使用全局队列而不是自己的队列，避免循环引用
+				DispatchQueue.global(qos: .utility).async { cb(bid) }
+			}
 			DomainGate.shared.release(domain: etld1(of: self.resHost))
 			self.isCancelling = false
 			return
 		}
-		self.queue.asyncAfter(deadline: .now() + .milliseconds(5)) {
-			self.finalizeCancelWhenIdle(retries + 1)
+
+		DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(5)) { [weak self] in
+			self?.finalizeCancelWhenIdle(retries + 1)
 		}
 	}
 
@@ -1883,58 +2023,57 @@ public final class LayerMinusBridge {
 
 final class DomainGate {
     static let shared = DomainGate(limitPerDomain: 16, globalLimit: 64)
-    private let q = DispatchQueue(label: "domain.gate")
-    private let perLimit: Int
-    private let globalLimit: Int
-    private var per: [String:Int] = [:]
-    private var global = 0
-    private var pend: [String:[() -> Void]] = [:]
-    init(limitPerDomain: Int, globalLimit: Int) { self.perLimit = limitPerDomain; self.globalLimit = globalLimit }
-    func acquire(domain: String, run: @escaping () -> Void) {
-        q.async {
-            if self.global >= self.globalLimit || (self.per[domain] ?? 0) >= self.perLimit {
-                self.pend[domain, default: []].append(run)
-            } else {
-                self.global += 1
-                self.per[domain, default: 0] += 1
-                run()
+        private let q = DispatchQueue(label: "domain.gate", qos: .userInitiated)
+        private let perLimit: Int
+        private let globalLimit: Int
+        private var per: [String:Int] = [:]
+        private var global = 0
+        private var pend: [String:[() -> Void]] = [:]
+        
+        init(limitPerDomain: Int, globalLimit: Int) {
+            self.perLimit = limitPerDomain
+            self.globalLimit = globalLimit
+        }
+        
+        func acquire(domain: String, run: @escaping () -> Void) {
+            q.async { [weak self] in
+                guard let self = self else { return }
+                
+                if self.global >= self.globalLimit || (self.per[domain] ?? 0) >= self.perLimit {
+                    // 存储闭包时使用 autoreleasepool
+                    autoreleasepool {
+                        self.pend[domain, default: []].append(run)
+                    }
+                } else {
+                    self.global += 1
+                    self.per[domain, default: 0] += 1
+                    // 在新的队列中执行，避免阻塞 gate 队列
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        autoreleasepool { run() }
+                    }
+                }
             }
         }
-    }
-
-	private var _lastTune = DispatchTime.now()
-//	private func maybeRetuneGate() {
-//		let now = DispatchTime.now()
-//		let ms = Double(now.uptimeNanoseconds - _lastTune.uptimeNanoseconds) / 1_000_000.0
-//		guard ms >= 1000 else { return }
-//		_lastTune = now
-//
-//		// 觀察目前活躍的 bridge 數（你若有集中管理，可替換；沒有就用估計值）
-//		let active = LayerMinusBridge.liveCount // 若你沒有，改成你現有的活躍計數
-//		// 粗略策略：少於 16 → 放到 12/48；多於 32 → 退到 8/36；超過 40 → 退到 6/24
-//		if active < 16 {
-//			DomainGate.shared.setDynamicLimits(per: 12, global: 48)
-//		} else if active < 32 {
-//			DomainGate.shared.setDynamicLimits(per: 10, global: 40)
-//		} else if active < 40 {
-//			DomainGate.shared.setDynamicLimits(per: 8, global: 36)
-//		} else {
-//			DomainGate.shared.setDynamicLimits(per: 6, global: 24)
-//		}
-//	}
-    func release(domain: String) {
-        q.async {
-            if self.global > 0 { self.global -= 1 }
-            if let c = self.per[domain], c > 0 { self.per[domain] = c - 1 }
-            if var queue = self.pend[domain], !queue.isEmpty {
-                let next = queue.removeFirst()
-                self.pend[domain] = queue
-                self.global += 1
-                self.per[domain, default: 0] += 1
-                next()
+        
+        func release(domain: String) {
+            q.async { [weak self] in
+                guard let self = self else { return }
+                
+                if self.global > 0 { self.global -= 1 }
+                if let c = self.per[domain], c > 0 { self.per[domain] = c - 1 }
+                
+                if var queue = self.pend[domain], !queue.isEmpty {
+                    let next = queue.removeFirst()
+                    self.pend[domain] = queue.isEmpty ? nil : queue  // 清理空数组
+                    self.global += 1
+                    self.per[domain, default: 0] += 1
+                    // 在新队列执行
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        autoreleasepool { next() }
+                    }
+                }
             }
         }
-    }
 }
 
 // 放在同文件底部或新文件中
