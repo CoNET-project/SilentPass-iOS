@@ -12,7 +12,18 @@ enum L {
     static func sc(_ s: @autoclosure () -> String) { print("[ServerConnection] \(s())") }
 }
 
+private extension LayerMinusBridge {
+    // 内存管理常量
+    static let ABSOLUTE_MAX_BUFFER = 512 * 1024  // 512KB 绝对上限
+    static let MEMORY_PRESSURE_BUFFER = 64 * 1024  // 内存压力时缓冲区
+    static let MEMORY_WARNING_THRESHOLD = 50 * 1024 * 1024  // 50MB 警告阈值
+}
+
+
 public final class LayerMinusBridge {
+
+	private static let qKey = DispatchSpecificKey<UInt8>()
+
     @inline(__always)
     private func sendToDownstream(_ data: Data, remark: String) {
         guard let dn = downstream, alive() else {
@@ -71,10 +82,15 @@ public final class LayerMinusBridge {
     
     @inline(__always)
     private func safeStopTimer(_ t: inout DispatchSourceTimer?) {
-		guard let timer = t else { return }
-			t = nil // 先置空，防止重入
+		 guard let timer = t else { return }
+			t = nil
+			timer.setEventHandler {}  // 断电，避免尾随触发
+			// 同队列：不等待，直接 cancel，防止死锁
+			if DispatchQueue.getSpecific(key: Self.qKey) != nil {
+				timer.cancel()
+				return
+			}
 			let sem = DispatchSemaphore(value: 0)
-			timer.setEventHandler {}              // 断电，避免尾随触发
 			timer.setCancelHandler { sem.signal() }
 			timer.cancel()
 			_ = sem.wait(timeout: .now() + .milliseconds(50))
@@ -147,6 +163,8 @@ public final class LayerMinusBridge {
 	private var downReadHardCap: Int? = nil           // 次要方向為下行時：4KB
 	private var cuFlushBytesOverride: Int? = nil      // 次要方向為上行時：4KB
 	private var cuFlushMsOverride: Int? = nil         // 次要方向為上行時：4ms
+
+	private let LOCAL_BUFFER_HARD_CAP = 1_500_000 // ~1.5MB，可按需调
 
     
     // ==== 下行(d->c)背压/BBR ====
@@ -386,6 +404,24 @@ public final class LayerMinusBridge {
     
     @inline(__always)
     private func appendToCUBuffer(_ d: Data) {
+
+		// 添加紧急内存检查
+        if cuBuffer.count + d.count > Self.ABSOLUTE_MAX_BUFFER {
+            log("Emergency flush: buffer would exceed absolute max")
+            flushCUBuffer()
+        }
+		
+		// ★ 本地硬限：cu+st+inflight 达到阈值即止血
+		let localBuffered = cuBuffer.count + stBuffer.count + inflightBytes
+		if localBuffered >= LOCAL_BUFFER_HARD_CAP {
+			if !pausedC2U { pausedC2U = true }
+			flushSTBuffer()
+			flushCUBuffer()
+			scheduleBackpressureTimer()
+			vlog("local cap hit: paused c->u, local=\(localBuffered)")
+			return
+		}
+		
         cuBuffer.append(d)
         addGlobalBytes(d.count)
 
@@ -542,8 +578,11 @@ public final class LayerMinusBridge {
         self.onClosed = onClosed
         self.connectInfo = connectInfo
         self.queue = DispatchQueue(label: "LayerMinusBridge.\(id)", qos: .userInitiated)
+        self.queue.setSpecific(key: Self.qKey, value: 1)
         // 简单的生命周期日志
         NSLog("🟢 CREATED LayerMinusBridge #\(id) for reqHost \(reqHost):\(reqPort) resHost \(resHost):\(resPort) \(infoTag())")
+
+		
     }
     
     deinit {
@@ -643,9 +682,12 @@ public final class LayerMinusBridge {
             
             // 开始连接上游并转发数据
             let domain = etld1(of: self.resHost)
-            DomainGate.shared.acquire(domain: domain) { [weak self] in
+            DomainGate.shared.acquire(domain: etld1(of: self.resHost)) { [weak self] in
                 guard let s = self, s.alive() else { return }
-                s.connectUpstreamAndRun(reqFirstBody: firstBody, resFirstBody: nil)
+				s.queue.async { [weak s] in
+					guard let s = s, s.alive() else { return }
+                	s.connectUpstreamAndRun(reqFirstBody: firstBody, resFirstBody: nil)
+				}
             }
             
             
@@ -750,9 +792,6 @@ public final class LayerMinusBridge {
 		// 等 pending 清零后做最终回收（回调 + 域释放 + 清 isCancelling）
 		self.finalizeCancelWhenIdle()
 		return
-		
-		DomainGate.shared.release(domain: etld1(of: self.resHost))
-		isCancelling = false
 		
     }
 
@@ -864,9 +903,12 @@ public final class LayerMinusBridge {
             // 開始連線上游並轉發資料（以 eTLD+1 做併發閘門）
             let domain = etld1(of: self.resHost)
             DomainGate.shared.acquire(domain: etld1(of: self.resHost)) { [weak self] in
-                guard let s = self, s.alive() else { return }
-                s.connectUpstreamAndRun(reqFirstBody: reqFirst, resFirstBody: resFirst)
-            }
+				guard let s = self, s.alive() else { return }
+				s.queue.async { [weak s] in
+					guard let s = s, s.alive() else { return }
+					s.connectUpstreamAndRun(reqFirstBody: reqFirst, resFirstBody: resFirst)
+				}
+			}
 
             
         }
@@ -1419,64 +1461,35 @@ public final class LayerMinusBridge {
 				guard let self = self, self.alive() else { return }
 
 				if let err = err {
-
+					// 1) ENODATA -> 软 EOF（不立刻 cancel）
 					if case let .posix(code) = (err as? NWError), code.rawValue == 96 {
-						// ENODATA：按“对端写完”的语义做软收尾（等价 downstream EOF），不要立刻 cancel
-						self.log("downstream POSIX=96 -> treat as EOF (soft close)")
+						self.log("CLOSE_CLASS=SOFT note=downstream POSIX=96 -> EOF")
 						self.eofUpstream = true
 						self.client.send(content: nil, completion: .contentProcessed({ _ in }))
 						self.scheduleDrainCancel(hint: "downstream ENODATA EOF")
 						return
-					} else {
-						// ENODATA -> 软 EOF（不立刻 cancel）
-						if case let .posix(code) = (err as? NWError), code.rawValue == 96 {
-								self.log("CLOSE_CLASS=SOFT note=downstream POSIX=96 -> EOF")
-								self.eofUpstream = true
-								self.client.send(content: nil, completion: .contentProcessed({ _ in }))
-							self.scheduleDrainCancel(hint: "downstream ENODATA EOF")
-							return
-						}
-						// ★ 已收到过下行数据/首字节时，54/50/102 也走软收尾
-						if case let .posix(c) = (err as? NWError),
-							[54, 50, 102].contains(c.rawValue),
-							(self.tFirstByte != nil || self.bytesDown > 0) {
-							self.log("CLOSE_CLASS=SOFT note=downstream POSIX=\(c.rawValue) after data")
-							self.eofUpstream = true
-							self.client.send(content: nil, completion: .contentProcessed({ _ in }))
-							self.scheduleDrainCancel(hint: "downstream soft EOF posix \(c.rawValue)")
-							return
-						}
-						// 其他错误才走硬取消（保留原有 TUNNEL_DOWN 标记逻辑）
-					// 1) ENODATA -> 软 EOF（不立刻 cancel）
-						if case let .posix(code) = (err as? NWError), code.rawValue == 96 {
-							self.log("CLOSE_CLASS=SOFT note=downstream POSIX=96 -> EOF")
-							self.eofUpstream = true
-							self.client.send(content: nil, completion: .contentProcessed({ _ in }))
-							self.scheduleDrainCancel(hint: "downstream ENODATA EOF")
-							return
-						}
-						// 2) 已有下行数据/首字节时，54/50/102 也走软 EOF
-						if case let .posix(c) = (err as? NWError),
-							[54, 50, 102].contains(c.rawValue),
-							(self.tFirstByte != nil || self.bytesDown > 0) {
-							self.log("CLOSE_CLASS=SOFT note=downstream POSIX=\(c.rawValue) after data")
-							self.eofUpstream = true
-							self.client.send(content: nil, completion: .contentProcessed({ _ in }))
-							self.scheduleDrainCancel(hint: "downstream soft EOF posix \(c.rawValue)")
-							return
-						}
-						// 3) 其他错误才走硬取消（可选：维持 TUNNEL_DOWN 标记）
-						var mapped = "downstream recv err"
-						if case let .posix(c) = (err as? NWError), [54, 50, 102].contains(c.rawValue) {
-							if Self.markAndBurstTunnelDown() {
-								self.log("KILL_CLASS=TUNNEL_DOWN note=burst \(c.rawValue) on downstream")
-							} else {
-								self.log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(c.rawValue)")
-							}
-						}
-						self.queue.async { self.cancel(reason: mapped) }
+					}
+					// 2) 已有下行数据/首字节时，54/50/102 也走软 EOF
+					if case let .posix(c) = (err as? NWError),
+					[54, 50, 102].contains(c.rawValue),
+					(self.tFirstByte != nil || self.bytesDown > 0) {
+						self.log("CLOSE_CLASS=SOFT note=downstream POSIX=\(c.rawValue) after data")
+						self.eofUpstream = true
+						self.client.send(content: nil, completion: .contentProcessed({ _ in }))
+						self.scheduleDrainCancel(hint: "downstream soft EOF posix \(c.rawValue)")
 						return
 					}
+					// 3) 其他错误才走硬取消（保留隧道突发判断）
+					var mapped = "downstream recv err"
+					if case let .posix(c) = (err as? NWError), [54, 50, 102].contains(c.rawValue) {
+						if Self.markAndBurstTunnelDown() {
+							self.log("KILL_CLASS=TUNNEL_DOWN note=burst \(c.rawValue) on downstream")
+						} else {
+							self.log("KILL_CLASS=NETWORK_ERR note=downstream POSIX=\(c.rawValue)")
+						}
+					}
+					self.queue.async { self.cancel(reason: mapped) }
+					return
 				}
 
 				if let d = data, !d.isEmpty {
