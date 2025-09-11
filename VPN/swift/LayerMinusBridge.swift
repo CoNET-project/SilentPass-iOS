@@ -105,7 +105,8 @@ public final class LayerMinusBridge {
 			}
 		}
 
-		bytesDown &+= d.count
+			bytesDown &+= d.count
+		winDownBytes &+= d.count
 		sendToClient(d, remark: "down->client(race-first)")
 	}
 
@@ -164,6 +165,10 @@ public final class LayerMinusBridge {
             if memoryState.isUnderPressure && ratio < threshold * 0.8 {
                 log("Memory pressure OFF: \(Int(residentMB))MB")
                 memoryState.isUnderPressure = false
+
+				// 压力解除后强制恢复 pump，打破僵持
+				if pausedC2U { pausedC2U = false; pumpClientToUpstream() }
+				if pausedD2C { pausedD2C = false; pumpDownstreamToClient() }
             }
             memoryState.consecutivePressureCount = 0
             return false
@@ -178,8 +183,9 @@ public final class LayerMinusBridge {
 				self.flushAllBuffers()                     // 你已有
 				self.currentBufferLimit = min(self.currentBufferLimit, Self.MEMORY_PRESSURE_BUFFER)
 				self.downMaxRead = max(self.DOWN_MIN_READ, min(self.downMaxRead, 16 * 1024))
-				self.pausedC2U = true
-				self.pausedD2C = true
+
+				// 不再直接暂停上下行，避免“卡死在高位”
+				self.vlog("memory pressure: shrink windows only (no hard pause)")
 
 				self.safeStopTimer(&self.roleTimer)
 				self.safeStopTimer(&self.backpressureTimer)
@@ -201,6 +207,10 @@ public final class LayerMinusBridge {
             log("Cannot send to downstream: downstream=\(downstream != nil), closed=\(closed)")
             return
           }
+
+		 	// 记账：下行在途 + 全局水位
+          downInflightBytes &+= data.count
+          addGlobalBytes(data.count)
           dn.send(content: data, completion: .contentProcessed({ [weak self] err in
 				autoreleasepool {
 					guard let self = self, self.alive() else { return }
@@ -208,7 +218,11 @@ public final class LayerMinusBridge {
 						self.log("downstream send err: \(err)")
 						self.queue.async { self.cancel(reason: "downstream send err") }
 					} else {
+						// 完成：扣回水位与在途
+						self.downInflightBytes &-= data.count
+						self.subGlobalBytes(data.count)
 						self.vlog("sent \(remark) \(data.count)B -> downstream ok")
+						_ = self.checkAndHandleMemoryPressure()
 					}
 				}
           }))
