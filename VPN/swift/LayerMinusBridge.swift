@@ -20,11 +20,6 @@ enum L {
 
 
 
-enum L {
-    static func lm(_ s: @autoclosure () -> String) { print("[LayerMinusBridge] \(s())") }
-    static func sc(_ s: @autoclosure () -> String) { print("[ServerConnection] \(s())") }
-}
-
 private extension LayerMinusBridge {
     // 内存管理常量
     static let ABSOLUTE_MAX_BUFFER = 512 * 1024  // 512KB 绝对上限
@@ -196,7 +191,12 @@ public final class LayerMinusBridge {
     }
 
     
-    private static let GLOBAL_BUFFER_BUDGET = 6 * 1024 * 1024
+	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
+	private static var GLOBAL_BUFFER_BUDGET: Int = {
+		let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
+		return (physicalMB > 4096 ? 10 : 6) * 1024 * 1024
+	}()
+
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0
@@ -366,7 +366,7 @@ public final class LayerMinusBridge {
             }
             // else: 不具备扩张条件，维持现状，避免峰值继续放大
         } else {
-            currentBufferLimit = max(currentBufferLimit / 4, 4 * 1024)            // 快速收敛
+            currentBufferLimit = max(currentBufferLimit / 3, 4 * 1024)             // 快速收敛
         }
 
         if currentBufferLimit != oldUploadLimit {
