@@ -228,7 +228,7 @@ public final class LayerMinusBridge {
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 16 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -2331,10 +2331,13 @@ private func handleAppToUpstream(_ data: Data) {
     private func sendToClient(_ data: Data, remark: String) {
         guard alive() else { log("Cannot send to client: closed=\(closed)"); return }
 
-        // 下行 in-flight 入账
+  
+        // 下行 in-flight 入账 + 全局水位记账
         downInflightBytes &+= data.count
-		addGlobalBytes(data.count)                          // NEW
+        addGlobalBytes(data.count)
         downInflightCount &+= 1
+
+
         if downInflightBytes >= downInflightBudgetBytes() && !pausedD2C {
             pausedD2C = true
             vlog("pause d->c receive due to inflight: \(downInflightBytes)B")
@@ -2349,6 +2352,8 @@ private func handleAppToUpstream(_ data: Data) {
 				// 下行 in-flight 出账（兜底）
 				self.downInflightBytes &-= data.count
                 self.subGlobalBytes(data.count)
+
+
 				if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
 				self.downInflightCount &-= 1
 				if self.downInflightCount < 0 { self.downInflightCount = 0 }
@@ -2371,8 +2376,9 @@ private func handleAppToUpstream(_ data: Data) {
 					}
 				}
 
-				// in-flight 降到阈值以下时尝试恢复下行接收
+				// in-flight 降到阈值以下时尝试恢复下行接收，并做一次内存检查
 				self.maybeResumeDownAfterInflightDrained()
+				_ = self.checkAndHandleMemoryPressure()
 			}
         }))
     }
