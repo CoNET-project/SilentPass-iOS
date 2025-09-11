@@ -383,7 +383,7 @@ public final class LayerMinusBridge {
         let smoothStart: Bool = {
             if let tfb = tFirstByte {
                 let ageMs = diffMs(start: tfb, end: .now())
-                return ageMs < 300 || downDeliveredBytes < 192 * 1024
+                return ageMs < 300 || downDeliveredBytes < 128 * 1024
             }
             return true // 还没拿到首字节，也认为在平滑期
         }()
@@ -740,13 +740,25 @@ public final class LayerMinusBridge {
         setupMemoryMonitoring()
 
     }
+
+	private var bridge: LayerMinusBridge?  // 持有引用
+
     
     deinit {
         let lifetime = diffMs(start: tStart, end: .now())
 		if lifetime < MIN_LIFETIME_MS {
 			log("⚠️ WARNING: Bridge #\(id) destroyed too quickly: \(lifetime)ms")
 		}
-			
+		// 检测过早销毁
+		if !hasStarted {
+			log("🔴CRITICAL: Bridge #\(id) destroyed before start!🔴")
+			// 强制延长生命周期
+			DispatchQueue.main.async { [self] in
+				_ = self  // 强制持有
+			}
+			return
+		}
+		
 			// 先标记为已关闭，防止任何新操作
 			stateLock.lock()
 			let wasAlreadyClosed = closed
@@ -1555,6 +1567,12 @@ private func handleAppToUpstream(_ data: Data) {
 	private func writeUpstreamImmediately(_ data: Data) {
 		guard let _ = self.upstream, alive() else { return }
 
+		// 上游未就绪：不可丢，先入队
+		if self.upstream == nil {
+			if !data.isEmpty { self.c2uQueue.append(data) }
+			self._maybePauseReadFromApp()
+			return
+		}
 		// 竞速期保护：角色未定且非测速上传 => 仅直送 4KB 头，其余先排队
 		if !self.roleFinalized && !self.isSpeedtestUploadMode {
 			let head = min(data.count, 4 * 1024)
