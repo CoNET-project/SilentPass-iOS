@@ -24,12 +24,31 @@ private extension LayerMinusBridge {
     // 内存管理常量
     static let ABSOLUTE_MAX_BUFFER = 512 * 1024  // 512KB 绝对上限
     static let MEMORY_PRESSURE_BUFFER = 64 * 1024  // 内存压力时缓冲区
-    static let MEMORY_WARNING_THRESHOLD = 45 * 1024 * 1024  // 50MB 警告阈值
+    static let MEMORY_WARNING_THRESHOLD = 48 * 1024 * 1024  // 50MB 警告阈值
 
 }
 
 
 public final class LayerMinusBridge {
+
+	// ===== 1) 新增属性 =====
+	private var selfRetain: LayerMinusBridge?  // 强引用保活令牌
+
+	@inline(__always)
+	private func retainWhileActive() {
+		Self.bridgesLock.lock()
+		Self.activeBridges[self.id] = self
+		Self.bridgesLock.unlock()
+		selfRetain = self
+	}
+
+	@inline(__always)
+	private func releaseRetainWhenFullyClosed() {
+		Self.bridgesLock.lock()
+		Self.activeBridges.removeValue(forKey: self.id)
+		Self.bridgesLock.unlock()
+		selfRetain = nil
+	}
     
 	// 添加这些新属性
     private var hasStarted = false
@@ -100,27 +119,33 @@ public final class LayerMinusBridge {
 
 	private func checkAndHandleMemoryPressure() -> Bool {
         // 限制检查频率
+
+        // 先拿当前常驻内存（MB）
+        let residentMB: Double = processResidentSizeMB() ?? 0
+
+        // 50MB 硬红线优先
+        if (residentMB * 1024 * 1024) >= Double(Self.MEMORY_WARNING_THRESHOLD) {
+			memoryState.consecutivePressureCount += 1
+			if !memoryState.isUnderPressure {
+				log("Memory pressure ON (hard): \(Int(residentMB))MB")
+				memoryState.isUnderPressure = true
+				handleMemoryPressure()
+			}
+			return true
+		}
+
+		 // 频率限制（节流）
         let now = DispatchTime.now()
+
         let elapsed = diffMs(start: memoryState.lastCheckTime, end: now)
         guard elapsed >= 500 else { // 最多每秒检查一次
             return memoryState.isUnderPressure
         }
         memoryState.lastCheckTime = now
-        
-        // 获取内存信息
-        var info = mach_task_basic_info()
-        var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: info) / MemoryLayout<natural_t>.size)
-        
-        let result = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
-            }
-        }
-        
-        guard result == KERN_SUCCESS else { return false }
-        
-        let residentMB = Double(info.resident_size) / (1024.0 * 1024.0)
+
+        // 辅助：比例阈值/100MB 作为次级保护（复用上面的 residentMB）
         let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
+
         let ratio = residentMB / physicalMB
         
         // 动态阈值：根据设备内存调整
@@ -147,21 +172,25 @@ public final class LayerMinusBridge {
     
     private func handleMemoryPressure() {
         queue.async { [weak self] in
-            guard let self = self else { return }
-            
-            autoreleasepool {
-                // 立即清理缓冲区
-                self.flushAllBuffers()
-                
-                // 降低缓冲区限制
-                self.currentBufferLimit = min(self.currentBufferLimit, Self.MEMORY_PRESSURE_BUFFER)
-                self.downMaxRead = min(self.downMaxRead, 16 * 1024)
-                
-                // 暂停非关键定时器
-                self.safeStopTimer(&self.roleTimer)
-                self.safeStopTimer(&self.backpressureTimer)
-            }
-        }
+			guard let self = self, self.alive() else { return }
+			autoreleasepool {
+				// 1) 立刻止血（本桥）
+				self.flushAllBuffers()                     // 你已有
+				self.currentBufferLimit = min(self.currentBufferLimit, Self.MEMORY_PRESSURE_BUFFER)
+				self.downMaxRead = max(self.DOWN_MIN_READ, min(self.downMaxRead, 16 * 1024))
+				self.pausedC2U = true
+				self.pausedD2C = true
+
+				self.safeStopTimer(&self.roleTimer)
+				self.safeStopTimer(&self.backpressureTimer)
+
+				// 2) 若硬红线已连续命中 2+ 次 -> 温和卸载本桥（避免全局雪崩）
+				if self.memoryState.consecutivePressureCount >= 2 {
+					self.log("Memory pressure shed: cancel this bridge to free memory")
+					self.cancel(reason: "memory pressure shed")
+				}
+			}
+		}
     }
 
 	private static let qKey = DispatchSpecificKey<UInt8>()
@@ -185,7 +214,7 @@ public final class LayerMinusBridge {
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 3 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -675,7 +704,7 @@ public final class LayerMinusBridge {
 
     private func setupMemoryMonitoring() {
 		// 每5秒检查一次内存
-		queue.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+		queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
 			guard let self = self, self.alive() else { return }
 			self.checkAndHandleMemoryPressure()
 			self.setupMemoryMonitoring() // 递归调用
@@ -740,15 +769,15 @@ public final class LayerMinusBridge {
     
     deinit {
         let lifetime = diffMs(start: tStart, end: .now())
-		
+
 		if lifetime < MIN_LIFETIME_MS {
 			log("⚠️ WARNING: Bridge #\(id) destroyed too quickly: \(lifetime)ms")
 		}
 			
 			// 先标记为已关闭，防止任何新操作
 			stateLock.lock()
-			let wasAlreadyClosed = closed
-			closed = true
+				let wasAlreadyClosed = closed
+				closed = true
 			stateLock.unlock()
 			
 			if !wasAlreadyClosed {
@@ -840,26 +869,14 @@ public final class LayerMinusBridge {
     }
     
     public func start(withFirstBody firstBody: Data) {
+
+		retainWhileActive()
+
 		BridgeCoordinator.shared.add(self)
         BridgeCoordinator.shared.ensure200ms()
         #if DEBUG
         BridgeCoordinator.shared.ensure5sMemSummary()
         #endif
-
-		// 保持自身引用一段时间，防止立即销毁
-		let selfRef = self
-        
-        // 防止过早释放
-		Self.bridgesLock.lock()
-		Self.activeBridges[self.id] = self
-		Self.bridgesLock.unlock()
-        
-        // 100ms 后释放临时引用
-        queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, id = self.id] in
-            Self.bridgesLock.lock()
-            Self.activeBridges.removeValue(forKey: id)
-            Self.bridgesLock.unlock()
-        }
 
         queue.async { [weak self] in
             guard let self = self else { return }
@@ -993,9 +1010,21 @@ public final class LayerMinusBridge {
                 // 释放域名锁
                 DomainGate.shared.release(domain: self.etld1(of: self.resHost))
                 
-                self.stateLock.lock()
-                self.isCancelling = false
-                self.stateLock.unlock()
+                // 等待 pendingOperations 清零（最多 ~300ms）
+
+
+				let deadline = DispatchTime.now() + .milliseconds(300)
+				while self.pendingOperations.get() > 0 && DispatchTime.now() < deadline {
+					Thread.sleep(forTimeInterval: 0.005)
+				}
+
+				// ✅ 同步释放，不再 asyncAfter
+				self.releaseRetainWhenFullyClosed()
+
+				self.stateLock.lock()
+				self.isCancelling = false
+				self.stateLock.unlock()
+
             }
         }
 		
@@ -1034,6 +1063,8 @@ public final class LayerMinusBridge {
 	// 每 200ms 被 Coordinator 派发一次，跑在“本连接的 queue”上
 	func onTick200() {
 		guard alive() else { return }
+
+		_ = checkAndHandleMemoryPressure()
 
 		// (a) 原 startBBRSampler() 里的采样/状态机逻辑，整体搬到这里
 		bbrOnTick()
@@ -1106,27 +1137,14 @@ public final class LayerMinusBridge {
         UUID: String
     ) {
 
+		retainWhileActive()
+
 		BridgeCoordinator.shared.add(self)
 		BridgeCoordinator.shared.ensure200ms()
 		#if DEBUG
 			BridgeCoordinator.shared.ensure5sMemSummary()
 		#endif
-
-		// 保持引用
-		let selfRef = self
-
         
-		// 防止过早释放
-			Self.bridgesLock.lock()
-			Self.activeBridges[self.id] = self
-			Self.bridgesLock.unlock()
-        
-        // 100ms 后释放临时引用
-        queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, id = self.id] in
-            Self.bridgesLock.lock()
-            Self.activeBridges.removeValue(forKey: id)
-            Self.bridgesLock.unlock()
-        }
 
         self.UUID = UUID
         queue.async { [weak self] in
@@ -1610,6 +1628,7 @@ private func handleAppToUpstream(_ data: Data) {
 	private func drainC2UQueueIfPossible() {
 		guard alive(), !upstreamPausedByBackpressure, !c2uQueue.isEmpty else { return }
 		let next = c2uQueue.removeFirst()
+		self.subGlobalBytes(next.count)  
 		_writeUpstreamSingleChunk(next, remark: "c->u(drain)")
 	}
 
@@ -1621,11 +1640,14 @@ private func handleAppToUpstream(_ data: Data) {
 		// 背压护栏：在途过大则入队 & 暂停读 APP
 		if self.inFlightC2U >= self.maxInFlightC2U || self.upstreamPausedByBackpressure {
 			self.c2uQueue.append(data)
+			self.addGlobalBytes(data.count)  
 			self._maybePauseReadFromApp()
 			return
 		}
 
 		self.inFlightC2U &+= data.count
+		self.addGlobalBytes(data.count)                      // NEW
+
 		up.send(content: data, completion: .contentProcessed { [weak self] err in
 			guard let s = self, s.alive() else { return }
 			if let err = err {
@@ -1633,7 +1655,12 @@ private func handleAppToUpstream(_ data: Data) {
 				s.cancel(reason: "C2U write failed")
 				return
 			}
+
+			
+
 			s.inFlightC2U &-= data.count
+
+			s.subGlobalBytes(data.count)                     // NEW
 
 			// 队列顺序排空；若为空则恢复读取
 			if !s.c2uQueue.isEmpty {
@@ -1644,6 +1671,8 @@ private func handleAppToUpstream(_ data: Data) {
 				s.upstreamPausedByBackpressure = false
 				s._resumeReadFromAppIfPaused()
 			}
+
+            _ = s.checkAndHandleMemoryPressure()
 		})
 	}
     
@@ -2045,6 +2074,8 @@ private func handleAppToUpstream(_ data: Data) {
 
 					self.bytesDown &+= d.count
 					self.sendToClient(d, remark: "down->client")
+
+                    _ = self.checkAndHandleMemoryPressure()
 					
 					// 如果“上游寫端 half-close”已發送，但下行仍在流動，也刷新
 					if self.eofUpstream {
@@ -2288,6 +2319,7 @@ private func handleAppToUpstream(_ data: Data) {
 
         // 下行 in-flight 入账
         downInflightBytes &+= data.count
+		addGlobalBytes(data.count)                          // NEW
         downInflightCount &+= 1
         if downInflightBytes >= downInflightBudgetBytes() && !pausedD2C {
             pausedD2C = true
@@ -2302,6 +2334,7 @@ private func handleAppToUpstream(_ data: Data) {
 
 				// 下行 in-flight 出账（兜底）
 				self.downInflightBytes &-= data.count
+                self.subGlobalBytes(data.count)
 				if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
 				self.downInflightCount &-= 1
 				if self.downInflightCount < 0 { self.downInflightCount = 0 }
