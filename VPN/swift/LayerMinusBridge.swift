@@ -1675,8 +1675,14 @@ public final class LayerMinusBridge {
 			let head = min(data.count, 4 * 1024) // 直送小头 4KB，降低交互时延
 			if head > 0 {
 				let first = data.prefix(head)
-				self._writeUpstreamSingleChunk(first, remark: "c->u(pre-race small)")
+				if let _ = self.upstream {
+					self._writeUpstreamSingleChunk(first, remark: "c->u(pre-race small)")
+				} else {
+					// 上游未就绪：不要丢，入队等待 ready 后发送
+					self.c2uQueue.append(Data(first))
+				}
 			}
+
 			if data.count > head {
 				// 余量入队，等角色确定或上游可写后顺序发送（由 _writeUpstreamSingleChunk/队列负责）
 				self.c2uQueue.append(data.suffix(from: head))
@@ -1685,15 +1691,23 @@ public final class LayerMinusBridge {
 			return
 		}
 
-		// —— 1) 小包（<1KB）直接发送，跳过缓冲
+		// —— 1) 小包（<1KB）直接发送，跳过缓冲（若上游未就绪则入队）
 		if data.count < 1024 {
-			self._writeUpstreamSingleChunk(data, remark: "c->u(small-direct)")
+			if let _ = self.upstream {
+				self._writeUpstreamSingleChunk(data, remark: "c->u(small-direct)")
+			} else {
+				self.c2uQueue.append(data)
+			}
 			return
 		}
 
 		// —— 2) 交互式流量（SSH/Telnet/RDP/VNC 等）直接发送
 		if isInteractiveTraffic(data) {
-			self._writeUpstreamSingleChunk(data, remark: "c->u(interactive)")
+			if let _ = self.upstream {
+				self._writeUpstreamSingleChunk(data, remark: "c->u(interactive)")
+			} else {
+				self.c2uQueue.append(data)
+			}
 			return
 		}
 
