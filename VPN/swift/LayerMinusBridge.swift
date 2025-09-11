@@ -190,7 +190,7 @@ public final class LayerMinusBridge {
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 6 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 5 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -1533,8 +1533,8 @@ public final class LayerMinusBridge {
     private func maybeResumeAfterInflightDrained() {
         let (B, C) = self.inflightBudget()
         if self.pausedC2U &&
-           self.inflightBytes <= (B * 95) / 100 &&      // 原来 75%
-           self.inflight.count <= (C * 95) / 100 {
+           self.inflightBytes <= (B * 90) / 100 &&      // 原来 75%
+           self.inflight.count <= (C * 90) / 100 {
             self.pausedC2U = false
             self.vlog("resume c->u after inflight drained: bytes=\(self.inflightBytes) count=\(self.inflight.count)")
             self.pumpClientToUpstream()
