@@ -509,7 +509,7 @@ public final class LayerMinusBridge {
     private var sendSeq: UInt64 = 0
     private var inflight = Set<UInt64>()
     
-    // --- 上行(c->u)微批：64KB 或 5ms 触发 ---
+    // --- 上行(c->u)微批：默认 32KB 或 8ms（可被 override 为 4KB/4ms） ---
     private var cuBuffer = Data()
     private var cuFlushTimer: DispatchSourceTimer?
     private let CU_FLUSH_BYTES = 32 * 1024
@@ -607,9 +607,10 @@ public final class LayerMinusBridge {
         
             cuBuffer.append(d)
             addGlobalBytes(d.count)
-            
-            // 检查缓冲区限制
-            if cuBuffer.count >= currentBufferLimit {
+
+            // 检查缓冲区限制（读取 role 覆盖的 4KB 上限）
+            let softLimit = min(currentBufferLimit, cuFlushBytesOverride ?? currentBufferLimit)
+            if cuBuffer.count >= softLimit {
                 pausedC2U = true
                 flushCUBuffer()
                 scheduleBackpressureTimer()
@@ -676,7 +677,7 @@ public final class LayerMinusBridge {
 		// stTimer = t
 		// t.resume()
 
-		scheduleCUFlush(afterMs: max(ST_FLUSH_MS, CU_FLUSH_MS))
+		scheduleCUFlush(afterMs: max(ST_FLUSH_MS, CU_FLUSH_MS))		// 复用统一调度（已支持 afterMs）
     }
 
     @inline(__always)
@@ -1651,6 +1652,9 @@ private func handleAppToUpstream(_ data: Data) {
 	private func _writeUpstreamSingleChunk(_ data: Data, remark: String) {
 		guard let up = self.upstream, alive() else { return }
 
+		// 计入上行窗口统计，驱动角色判定
+		winUpBytes &+= data.count
+
 		// 背压护栏：在途过大则入队 & 暂停读 APP
 		if self.inFlightC2U >= self.maxInFlightC2U || self.upstreamPausedByBackpressure {
 			self.c2uQueue.append(data)
@@ -1689,21 +1693,25 @@ private func handleAppToUpstream(_ data: Data) {
             _ = s.checkAndHandleMemoryPressure()
 		})
 	}
-    
-    private func scheduleCUFlush(allowExtend: Bool = true) {
-        cuFlushTimer?.setEventHandler {}   // 新增：先清 handler
-        cuFlushTimer?.cancel()
-        
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + .milliseconds(CU_FLUSH_MS))
-        
-        t.setEventHandler { [weak self] in
+
+	// 新：统一的 CU flush 调度，支持可选 afterMs，并读取 role 覆盖参数
+	private func scheduleCUFlush(afterMs: Int? = nil, allowExtend: Bool = true) {
+		cuFlushTimer?.setEventHandler {}   // 新增：先清 handler
+		cuFlushTimer?.cancel()
+
+		let t = DispatchSource.makeTimerSource(queue: queue)
+		// 取 4ms 覆盖或默认
+		let ms = afterMs ?? (cuFlushMsOverride ?? CU_FLUSH_MS)
+		t.schedule(deadline: .now() + .milliseconds(ms))
+
+		t.setEventHandler { [weak self] in
 
 			autoreleasepool {
 				guard let s = self, s.alive() else { return }
 				
 				// 若到点仍很小且允许再延一次，则小幅延时后再冲刷
-				if !s.closed, allowExtend, s.cuBuffer.count > 0, s.cuBuffer.count < s.CU_MIN_FLUSH_BYTES {
+				let minBytes = s.cuFlushBytesOverride ?? s.CU_MIN_FLUSH_BYTES
+				if !s.closed, allowExtend, s.cuBuffer.count > 0, s.cuBuffer.count < minBytes {
 					s.cuFlushTimer?.cancel()
 					let t2 = DispatchSource.makeTimerSource(queue: s.queue)
 					t2.schedule(deadline: .now() + .milliseconds(s.CU_EXTRA_MS))
