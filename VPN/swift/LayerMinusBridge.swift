@@ -102,7 +102,7 @@ public final class LayerMinusBridge {
         // 限制检查频率
         let now = DispatchTime.now()
         let elapsed = diffMs(start: memoryState.lastCheckTime, end: now)
-        guard elapsed >= 1000 else { // 最多每秒检查一次
+        guard elapsed >= 500 else { // 最多每秒检查一次
             return memoryState.isUnderPressure
         }
         memoryState.lastCheckTime = now
@@ -190,7 +190,7 @@ public final class LayerMinusBridge {
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 5 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 4 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -340,7 +340,7 @@ public final class LayerMinusBridge {
     private var downDeliveredBytes = 0
 
     // 预算夹紧/回退
-    private let D_BBR_MIN_BUDGET_BYTES = 128 * 1024
+    private let D_BBR_MIN_BUDGET_BYTES = 192 * 1024
     private let D_BBR_MAX_BUDGET_BYTES = 2 * 1024 * 1024
     private let D_BBR_FALLBACK_BUDGET_BYTES = 1 * 1024 * 1024
 
@@ -620,7 +620,7 @@ public final class LayerMinusBridge {
     private var stBuffer = Data()
     private var stTimer: DispatchSourceTimer?
     private let ST_FLUSH_BYTES = 64 * 1024
-    private let ST_FLUSH_MS = 1
+    private let ST_FLUSH_MS = 10
     
     @inline(__always)
     private func scheduleSTFlush() {
