@@ -24,7 +24,7 @@ private extension LayerMinusBridge {
     // 内存管理常量
     static let ABSOLUTE_MAX_BUFFER = 512 * 1024  // 512KB 绝对上限
     static let MEMORY_PRESSURE_BUFFER = 64 * 1024  // 内存压力时缓冲区
-    static let MEMORY_WARNING_THRESHOLD = 50 * 1024 * 1024  // 50MB 警告阈值
+    static let MEMORY_WARNING_THRESHOLD = 45 * 1024 * 1024  // 50MB 警告阈值
 
 }
 
@@ -185,7 +185,7 @@ public final class LayerMinusBridge {
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 4 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 3 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -740,6 +740,7 @@ public final class LayerMinusBridge {
     
     deinit {
         let lifetime = diffMs(start: tStart, end: .now())
+		
 		if lifetime < MIN_LIFETIME_MS {
 			log("⚠️ WARNING: Bridge #\(id) destroyed too quickly: \(lifetime)ms")
 		}
