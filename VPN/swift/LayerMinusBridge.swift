@@ -37,7 +37,7 @@ public final class LayerMinusBridge {
     private static let MIN_LIFETIME_MS: Double = 100.0
     
 	 // 用于防止过早释放的引用池
-    private static var activeBridges = [UInt64: LayerMinusBridge]()
+    private static var activeBridges = NSMapTable<NSNumber, LayerMinusBridge>.weakToWeakObjects()
     private static let bridgesLock = NSLock()
 	
 	// [DYNAMIC-ROLE] role election
@@ -185,7 +185,7 @@ public final class LayerMinusBridge {
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 4 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 3 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -233,16 +233,22 @@ public final class LayerMinusBridge {
 		 guard let timer = t else { return }
 			t = nil
 			
-			timer.setEventHandler {}  // 断电，避免尾随触发
+			//timer.setEventHandler {}  // 断电，避免尾随触发
+			// 清空handler
+			timer.setEventHandler(handler: nil)
+			timer.setCancelHandler(handler: nil)
 			// 同队列：不等待，直接 cancel，防止死锁
 			if DispatchQueue.getSpecific(key: Self.qKey) != nil {
+				DispatchQueue.global().async {
+					timer.cancel()
+				}
+			} else {
+				let sem = DispatchSemaphore(value: 0)
+				timer.setCancelHandler { sem.signal() }
 				timer.cancel()
-				return
+				_ = sem.wait(timeout: .now() + .milliseconds(50))
 			}
-			let sem = DispatchSemaphore(value: 0)
-			timer.setCancelHandler { sem.signal() }
-			timer.cancel()
-			_ = sem.wait(timeout: .now() + .milliseconds(50))
+			
     }
     
     #if DEBUG
@@ -564,7 +570,10 @@ public final class LayerMinusBridge {
         
             cuBuffer.append(d)
             addGlobalBytes(d.count)
-            
+
+			// ① 预留容量，减少重分配/拷贝
+            cuBuffer.reserveCapacity(cuBuffer.count + d.count)
+
             // 检查缓冲区限制
             if cuBuffer.count >= currentBufferLimit {
                 pausedC2U = true
@@ -585,7 +594,12 @@ public final class LayerMinusBridge {
                 scheduleBackpressureTimer()
                 scheduleMaybeResumeCheck()
             }
-        
+
+		// ② 未触发阈值/预算时，马上挂一个冲刷定时器，避免“小包一直攒不到阈值”
+		if cuFlushTimer == nil && !pausedC2U && !cuBuffer.isEmpty {
+			scheduleCUFlush(allowExtend: true)
+		}
+
     }
 
     // 新增：flush 后 2ms 再查一次 in-flight，用于打破“回压后僵住”
@@ -850,13 +864,13 @@ public final class LayerMinusBridge {
         
         // 防止过早释放
 		Self.bridgesLock.lock()
-		Self.activeBridges[self.id] = self
+        Self.activeBridges.setObject(self, forKey: NSNumber(value: self.id))
 		Self.bridgesLock.unlock()
         
         // 100ms 后释放临时引用
         queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, id = self.id] in
             Self.bridgesLock.lock()
-            Self.activeBridges.removeValue(forKey: id)
+            Self.activeBridges.removeObject(forKey: NSNumber(value: id))
             Self.bridgesLock.unlock()
         }
 
@@ -1117,13 +1131,13 @@ public final class LayerMinusBridge {
         
 		// 防止过早释放
 			Self.bridgesLock.lock()
-			Self.activeBridges[self.id] = self
+            Self.activeBridges.setObject(self, forKey: NSNumber(value: self.id))
 			Self.bridgesLock.unlock()
         
         // 100ms 后释放临时引用
         queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, id = self.id] in
             Self.bridgesLock.lock()
-            Self.activeBridges.removeValue(forKey: id)
+            Self.activeBridges.removeObject(forKey: NSNumber(value: id))
             Self.bridgesLock.unlock()
         }
 
@@ -2147,10 +2161,13 @@ private func handleAppToUpstream(_ data: Data) {
     
     private func sendToUpstream(_ data: Data, remark: String) {
         
-        guard let up = upstream, alive() else {
-            log("Cannot send to upstream: upstream=\(upstream != nil), closed=\(closed)")
-            return
-        }
+ 		guard let up = upstream, alive() else {
+			// ③ 上游未就绪：绝不丢，入队等待 .ready 后统一发送
+			if !data.isEmpty { c2uQueue.append(data) }
+			_maybePauseReadFromApp()
+			vlog("enqueue-before-ready \(data.count)B (\(remark))")
+			return
+		}
         
         let seq = { sendSeq &+= 1; return sendSeq }()
         inflight.insert(seq)
