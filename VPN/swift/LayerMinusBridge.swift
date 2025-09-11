@@ -151,12 +151,7 @@ public final class LayerMinusBridge {
             
             autoreleasepool {
                 // 立即清理缓冲区
-                if !self.cuBuffer.isEmpty {
-                    self.flushCUBuffer()
-                }
-                if !self.stBuffer.isEmpty {
-                    self.flushSTBuffer()
-                }
+                self.flushAllBuffers()
                 
                 // 降低缓冲区限制
                 self.currentBufferLimit = min(self.currentBufferLimit, Self.MEMORY_PRESSURE_BUFFER)
@@ -566,7 +561,7 @@ public final class LayerMinusBridge {
             flushCUBuffer()
         }
 		// 使用 autoreleasepool 包装
-        autoreleasepool {
+        
             cuBuffer.append(d)
             addGlobalBytes(d.count)
             
@@ -590,7 +585,7 @@ public final class LayerMinusBridge {
                 scheduleBackpressureTimer()
                 scheduleMaybeResumeCheck()
             }
-        }
+        
     }
 
     // 新增：flush 后 2ms 再查一次 in-flight，用于打破“回压后僵住”
@@ -625,18 +620,20 @@ public final class LayerMinusBridge {
     @inline(__always)
     private func scheduleSTFlush() {
         
-        // 先停止旧定时器
-		safeStopTimer(&stTimer)
+        // // 先停止旧定时器
+		// safeStopTimer(&stTimer)
 		
-		let t = DispatchSource.makeTimerSource(queue: queue)
-		t.schedule(deadline: .now() + .milliseconds(ST_FLUSH_MS))
-		t.setEventHandler { [weak self] in  // 使用 weak self
-			autoreleasepool {
-				self?.flushSTBuffer()
-			}
-		}
-		stTimer = t
-		t.resume()
+		// let t = DispatchSource.makeTimerSource(queue: queue)
+		// t.schedule(deadline: .now() + .milliseconds(ST_FLUSH_MS))
+		// t.setEventHandler { [weak self] in  // 使用 weak self
+		// 	autoreleasepool {
+		// 		self?.flushSTBuffer()
+		// 	}
+		// }
+		// stTimer = t
+		// t.resume()
+
+		scheduleCUFlush(afterMs: max(ST_FLUSH_MS, CU_FLUSH_MS))
     }
 
     @inline(__always)
@@ -1220,6 +1217,7 @@ public final class LayerMinusBridge {
 						}
 						// 少见并发情形：下行侧又来了字节，直接转给客户端
 						if let d = data, !d.isEmpty {
+							
 							s.sendToClient(d, remark: "down->client(race-late)")
 						}
 						return
@@ -1719,6 +1717,19 @@ private func handleAppToUpstream(_ data: Data) {
         }
     }
 
+	// 添加一个统一的flush函数（约第1100行附近）
+	private func flushAllBuffers() {
+		if !stBuffer.isEmpty {
+			let data = stBuffer
+			stBuffer.removeAll(keepingCapacity: false)
+			subGlobalBytes(data.count)
+			sendToUpstream(data, remark: "c->u(st-flush)")
+		}
+		if !cuBuffer.isEmpty {
+			flushCUBuffer()
+		}
+	}
+
 	private func ensureRoleTimer() { /* shared tick via BridgeCoordinator; no-op */ }
     
     private func pumpClientToUpstream() {
@@ -1741,6 +1752,17 @@ private func handleAppToUpstream(_ data: Data) {
 					}
 					
 					if let d = data, !d.isEmpty {
+
+						// 简化：小包（<4KB）直接发送，跳过所有缓冲逻辑
+						if d.count < 4096 && self.upstream != nil && self.roleFinalized {
+							self._writeUpstreamSingleChunk(d, remark: "c->u(direct-small)")
+							
+							// 继续接收
+							if !self.pausedC2U {
+								self.pumpClientToUpstream()
+							}
+							return  // 直接返回，跳过后续复杂逻辑
+						}
 
 						self.winUpBytes &+= d.count
 						
