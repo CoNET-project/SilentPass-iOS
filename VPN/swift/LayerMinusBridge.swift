@@ -6,6 +6,19 @@ import os
 import Darwin.Mach // for task_info / mach_task_basic_info
 #endif
 
+#if DEBUG
+enum L {
+    static func lm(_ s: @autoclosure () -> String) { print("[LayerMinusBridge] \(s())") }
+    static func sc(_ s: @autoclosure () -> String) { print("[ServerConnection] \(s())") }
+}
+#else
+enum L {
+    @inline(__always) static func lm(_ s: @autoclosure () -> String) { /* no-op in Release */ }
+    @inline(__always) static func sc(_ s: @autoclosure () -> String) { /* no-op in Release */ }
+}
+#endif
+
+
 
 enum L {
     static func lm(_ s: @autoclosure () -> String) { print("[LayerMinusBridge] \(s())") }
@@ -720,10 +733,12 @@ public final class LayerMinusBridge {
         self.connectInfo = connectInfo
         self.queue = DispatchQueue(label: "LayerMinusBridge.\(id)", qos: .userInitiated)
         self.queue.setSpecific(key: Self.qKey, value: 1)
-        // 简单的生命周期日志
-        NSLog("🟢 CREATED LayerMinusBridge #\(id) for reqHost \(reqHost):\(reqPort) resHost \(resHost):\(resPort) \(infoTag())")
-		setupMemoryMonitoring()
-		
+        // 简单的生命周期日志（仅 DEBUG）
+        #if DEBUG
+        	NSLog("🟢 CREATED LayerMinusBridge #\(id) for reqHost \(reqHost):\(reqPort) resHost \(resHost):\(resPort) \(infoTag())")
+        #endif
+        setupMemoryMonitoring()
+
     }
     
     deinit {
@@ -1292,6 +1307,16 @@ public final class LayerMinusBridge {
     
     // 类属性（私有）
     private var pendingResFirstBody: Data?
+
+	// MARK: - C2U 直送总开关 & 背压护栏
+	private let immediateUpload = true                // 默认开启“零阈值直送”
+	private let maxInFlightC2U = 1 << 20              // 1MB 在途上限（可按机型微调）
+
+	// 运行时状态
+	private var inFlightC2U: Int = 0                  // 当前在途上行字节
+	private var c2uQueue: [Data] = []                 // 背压/竞速排队数据（保持顺序）
+	private var upstreamPausedByBackpressure = false  // 已暂停从 APP 读取
+
     
     private func connectUpstreamAndRun(reqFirstBody: Data, resFirstBody: Data?) {
         // 端口合法性
@@ -1398,6 +1423,8 @@ public final class LayerMinusBridge {
 						downReady = true
 					}
 					maybeKickPumps()
+					// ★ 新增：就绪后尝试排空直送队列（弱网/短暂阻塞后的恢复）
+					s.drainC2UQueueIfPossible()
 				case .waiting(let e):
 					s.log("UP waiting: UUID:\(s.UUID ?? "") \(e)")
 				case .failed(let e):
@@ -1513,6 +1540,93 @@ public final class LayerMinusBridge {
             self.pumpClientToUpstream()
         }
     }
+
+	@inline(__always)
+private func handleAppToUpstream(_ data: Data) {
+	guard !data.isEmpty, alive() else { return }
+	if immediateUpload {
+		writeUpstreamImmediately(data)
+	} else {
+		appendToCUBuffer(data) // 兼容旧路径
+	}
+}
+
+	// MARK: - 直送核心（含竞速保护）
+	private func writeUpstreamImmediately(_ data: Data) {
+		guard let _ = self.upstream, alive() else { return }
+
+		// 竞速期保护：角色未定且非测速上传 => 仅直送 4KB 头，其余先排队
+		if !self.roleFinalized && !self.isSpeedtestUploadMode {
+			let head = min(data.count, 4 * 1024)
+			if head > 0 {
+				let first = data.prefix(head)
+				self._writeUpstreamSingleChunk(first, remark: "c->u(pre-race small)")
+			}
+			if data.count > head {
+				self.c2uQueue.append(data.suffix(from: head))
+				self._maybePauseReadFromApp()
+			}
+			return
+		}
+
+		// 角色已定/测速上传：零阈值直送整块
+		self._writeUpstreamSingleChunk(data, remark: "c->u(immediate)")
+	}
+
+	@inline(__always)
+	private func _maybePauseReadFromApp() {
+		guard !upstreamPausedByBackpressure else { return }
+		upstreamPausedByBackpressure = true
+		// TODO: 若你已有暂停读取的 API，请替换这里（例如在 receive 回调用标志直接 return）
+	}
+
+	@inline(__always)
+	private func _resumeReadFromAppIfPaused() {
+		guard upstreamPausedByBackpressure else { return }
+		upstreamPausedByBackpressure = false
+		// TODO: 若你已有恢复读取的 API，请替换这里（例如重新调用 pumpClientToUpstream()）
+	}
+
+	@inline(__always)
+	private func drainC2UQueueIfPossible() {
+		guard alive(), !upstreamPausedByBackpressure, !c2uQueue.isEmpty else { return }
+		let next = c2uQueue.removeFirst()
+		_writeUpstreamSingleChunk(next, remark: "c->u(drain)")
+	}
+
+
+	@inline(__always)
+	private func _writeUpstreamSingleChunk(_ data: Data, remark: String) {
+		guard let up = self.upstream, alive() else { return }
+
+		// 背压护栏：在途过大则入队 & 暂停读 APP
+		if self.inFlightC2U >= self.maxInFlightC2U || self.upstreamPausedByBackpressure {
+			self.c2uQueue.append(data)
+			self._maybePauseReadFromApp()
+			return
+		}
+
+		self.inFlightC2U &+= data.count
+		up.send(content: data, completion: .contentProcessed { [weak self] err in
+			guard let s = self, s.alive() else { return }
+			if let err = err {
+				s.log("C2U write error (\(remark)): \(err)")
+				s.cancel(reason: "C2U write failed")
+				return
+			}
+			s.inFlightC2U &-= data.count
+
+			// 队列顺序排空；若为空则恢复读取
+			if !s.c2uQueue.isEmpty {
+				let next = s.c2uQueue.removeFirst()
+				s.upstreamPausedByBackpressure = false
+				s._writeUpstreamSingleChunk(next, remark: "c->u(queued)")
+			} else {
+				s.upstreamPausedByBackpressure = false
+				s._resumeReadFromAppIfPaused()
+			}
+		})
+	}
     
     private func scheduleCUFlush(allowExtend: Bool = true) {
         cuFlushTimer?.setEventHandler {}   // 新增：先清 handler
@@ -1663,7 +1777,7 @@ public final class LayerMinusBridge {
 							}
 						} else {
 							// 其它：累积到缓冲，达到阈值立即冲刷，否则启动短定时器
-							self.appendToCUBuffer(d)
+							self.handleAppToUpstream(d)
 						}
 
 
