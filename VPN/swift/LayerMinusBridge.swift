@@ -383,7 +383,7 @@ public final class LayerMinusBridge {
         let smoothStart: Bool = {
             if let tfb = tFirstByte {
                 let ageMs = diffMs(start: tfb, end: .now())
-                return ageMs < 300 || downDeliveredBytes < 192 * 1024
+                return ageMs < 300 || downDeliveredBytes < 128 * 1024
             }
             return true // 还没拿到首字节，也认为在平滑期
         }()
@@ -1425,6 +1425,20 @@ public final class LayerMinusBridge {
 					maybeKickPumps()
 					// ★ 新增：就绪后尝试排空直送队列（弱网/短暂阻塞后的恢复）
 					s.drainC2UQueueIfPossible()
+
+					// ★ 新增：可达/更优路径回调里也做一次排空，避免换路后卡半包
+					if #available(iOS 13.0, *) {
+						up.viabilityUpdateHandler = { [weak s] viable in
+							guard let s = s, s.alive(), viable else { return }
+							s.drainC2UQueueIfPossible()
+						}
+						up.betterPathUpdateHandler = { [weak s] _ in
+							guard let s = s, s.alive() else { return }
+							s.drainC2UQueueIfPossible()
+						}
+					}
+
+
 				case .waiting(let e):
 					s.log("UP waiting: UUID:\(s.UUID ?? "") \(e)")
 				case .failed(let e):
@@ -1555,6 +1569,12 @@ private func handleAppToUpstream(_ data: Data) {
 	private func writeUpstreamImmediately(_ data: Data) {
 		guard let _ = self.upstream, alive() else { return }
 
+		// 上游未就绪：不可丢，整块入队，待 .ready 后首发
+		if self.upstream == nil {
+			if !data.isEmpty { self.c2uQueue.append(data) }
+			self._maybePauseReadFromApp()
+			return
+		}
 		// 竞速期保护：角色未定且非测速上传 => 仅直送 4KB 头，其余先排队
 		if !self.roleFinalized && !self.isSpeedtestUploadMode {
 			let head = min(data.count, 4 * 1024)
