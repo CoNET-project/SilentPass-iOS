@@ -19,12 +19,6 @@ enum L {
 #endif
 
 
-
-enum L {
-    static func lm(_ s: @autoclosure () -> String) { print("[LayerMinusBridge] \(s())") }
-    static func sc(_ s: @autoclosure () -> String) { print("[ServerConnection] \(s())") }
-}
-
 private extension LayerMinusBridge {
     // 内存管理常量
     static let ABSOLUTE_MAX_BUFFER = 512 * 1024  // 512KB 绝对上限
@@ -35,7 +29,18 @@ private extension LayerMinusBridge {
 
 
 public final class LayerMinusBridge {
-    
+
+	// MARK: - RTT 自适应调参状态（新增）
+	private enum RttBand { case low, mid, high }
+	private var rttBand: RttBand = .mid
+	private var lastTuneAt: CFAbsoluteTime = 0
+	private let tuneCooldownMs: Int = 2000   // 2s 冷却，避免抖动
+	private let lowEnterMs = 20              // 进入低 RTT 阈值
+	private let lowExitMs  = 30              // 退出低 RTT 的滞回
+	private let highEnterMs = 100            // 进入高 RTT 阈值
+	private let highExitMs  = 80             // 退出高 RTT 的滞回
+
+
 	// 添加这些新属性
     private var hasStarted = false
     private var startTime: DispatchTime?
@@ -63,6 +68,18 @@ public final class LayerMinusBridge {
 	// [DYNAMIC-ROLE] 首次下行数据快速路径（用于竞速监听的胜者首包）
 	@inline(__always)
 	private func handleFirstDownstreamBytes(_ d: Data, source: String) {
+		var data = d
+		// 先扣掉我们自己发出的 RES-FIRST 回显，避免误计入 TTFB/KPI
+		if downIgnoreBytes > 0 {
+			let drop = min(downIgnoreBytes, data.count)
+			downIgnoreBytes -= drop
+			if drop == data.count {
+				return // 本批全是回显字节，直接丢弃，不触发任何 KPI
+			} else {
+				data.removeFirst(drop)
+			}
+		}
+
 		// KPI 首字节
 		if tFirstByte == nil {
 			tFirstByte = .now()
@@ -91,8 +108,8 @@ public final class LayerMinusBridge {
 			}
 		}
 
-		bytesDown &+= d.count
-		sendToClient(d, remark: "down->client(race-first)")
+		bytesDown &+= data.count
+		sendToClient(data, remark: "down->client(race-first)")
 	}
 
 	private struct MemoryState {
@@ -195,8 +212,13 @@ public final class LayerMinusBridge {
           }))
     }
 
-    
-    private static let GLOBAL_BUFFER_BUDGET = 6 * 1024 * 1024
+
+    // 动态全局缓冲水位：≥4GB 设备放宽到 12MiB，否则维持 8MiB
+    private static var GLOBAL_BUFFER_BUDGET: Int = {
+        let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
+        return (physicalMB > 4096 ? 12 : 8) * 1024 * 1024
+    }()
+
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
     private var bodyBytesAfter100: Int = 0
@@ -366,7 +388,7 @@ public final class LayerMinusBridge {
             }
             // else: 不具备扩张条件，维持现状，避免峰值继续放大
         } else {
-            currentBufferLimit = max(currentBufferLimit / 4, 4 * 1024)            // 快速收敛
+            currentBufferLimit = max(currentBufferLimit / 3, 4 * 1024)            // 快速收敛
         }
 
         if currentBufferLimit != oldUploadLimit {
@@ -383,7 +405,7 @@ public final class LayerMinusBridge {
         let smoothStart: Bool = {
             if let tfb = tFirstByte {
                 let ageMs = diffMs(start: tfb, end: .now())
-                return ageMs < 300 || downDeliveredBytes < 192 * 1024
+                return ageMs < 300 || downDeliveredBytes < 128 * 1024
             }
             return true // 还没拿到首字节，也认为在平滑期
         }()
@@ -772,6 +794,44 @@ public final class LayerMinusBridge {
         @inline(__always)
         private func log(_ msg: @autoclosure () -> String) { }
     #endif
+
+	// MARK: - Interactive traffic detection (轻量启发式)
+	private var lastInteractiveMark: TimeInterval = 0
+	private let interactiveStickMs: Int = 1500   // 1.5s 粘性直送，避免抖动
+
+	@inline(__always)
+	private func isInteractiveTraffic(_ data: Data) -> Bool {
+		// 1) 端口启发：SSH/Telnet/RDP/VNC 常见端口
+		if reqPort == 22   || reqPort == 23   || reqPort == 3389 ||
+		reqPort == 5900 || reqPort == 5901 || reqPort == 5902 {
+			lastInteractiveMark = CFAbsoluteTimeGetCurrent()
+			return true
+		}
+		// 2) 内容启发：极轻前缀匹配（不做重解析）
+		if data.count >= 4 {
+			// SSH banner: "SSH-"
+			if data.starts(with: [0x53, 0x53, 0x48, 0x2D]) { // "SSH-"
+				lastInteractiveMark = CFAbsoluteTimeGetCurrent()
+				return true
+			}
+			// Telnet IAC: 0xFF 开头
+			if data[0] == 0xFF {
+				lastInteractiveMark = CFAbsoluteTimeGetCurrent()
+				return true
+			}
+			// RDP(TPKT) 常见前导: 0x03 0x00 ...
+			if data[0] == 0x03 && data[1] == 0x00 {
+				lastInteractiveMark = CFAbsoluteTimeGetCurrent()
+				return true
+			}
+		}
+		// 3) 粘性窗口：最近 1.5s 判过交互 → 继续直送
+		let now = CFAbsoluteTimeGetCurrent()
+		if (now - lastInteractiveMark) * 1000.0 < Double(interactiveStickMs) {
+			return true
+		}
+		return false
+	}
     
     private func cleanupAllResources() {
         // 立即断开所有handler
@@ -1044,12 +1104,67 @@ public final class LayerMinusBridge {
 		// 以 200ms tick 代替 300ms，效果更实时
 		recomputePrimaryRole()
 		applyPressureCapsIfNeeded()
-
+		adaptiveBufferTuning()
 		// (c) 替代 scheduleBackpressureTimer() 的循环：仅在 pausedC2U 时调整
 		if pausedC2U {
 			let old = currentBufferLimit
 			adjustBufferLimit()
 			if old != currentBufferLimit { log("Backpressure: \(old)->\(currentBufferLimit)B") }
+		}
+	}
+
+	// MARK: - 根据 RTT 动态调整缓冲参数（新增）
+	/// 使用 BBR/路径测得的最小 RTT（毫秒）来做轻量自适应：
+	/// - 低 RTT（<20ms）：更短刷新、更小批量（降低交互延迟）
+	/// - 高 RTT（>100ms）：更长刷新、更大批量（提高吞吐/包效率）
+	/// 中间区间恢复默认（取消 override）
+	private func adaptiveBufferTuning() {
+		// 使用 Double 进行统一比较
+		let rtt: Double = self.bbrMinRtt_ms
+
+		// 若没有可用 RTT，或仍处于“竞速未定/测速上传模式”，则不调整
+		if rtt <= 0.0 || (!self.roleFinalized && !self.isSpeedtestUploadMode) {
+			return
+		}
+
+		// 冷却：避免 200ms tick 频繁改动
+		let now = CFAbsoluteTimeGetCurrent()
+		if (now - lastTuneAt) * 1000.0 < Double(tuneCooldownMs) {
+			return
+		}
+
+		var newBand: RttBand = rttBand
+		switch rttBand {
+		case .mid:
+			if rtt < Double(lowEnterMs) { newBand = .low }
+			else if rtt > Double(highEnterMs) { newBand = .high }
+		case .low:
+			if rtt > Double(lowExitMs) { newBand = .mid }
+		case .high:
+			if rtt < Double(highExitMs) { newBand = .mid }
+		}
+
+		guard newBand != rttBand else { return }
+		rttBand = newBand
+		lastTuneAt = now
+
+		// 应用覆盖值（不直接改默认常量）
+		switch newBand {
+		case .low:
+			// 低延迟网络：更短刷新、更小批量（极致跟手）
+			self.cuFlushMsOverride = 2
+			self.cuFlushBytesOverride = 16 * 1024
+			log("RTT tune => LOW (\(rtt)ms) flush=\(self.cuFlushMsOverride!)ms/\(self.cuFlushBytesOverride!)B")
+		case .high:
+			// 高延迟网络：更长刷新、更大批量（更稳吞吐）
+			self.cuFlushMsOverride = 10
+			self.cuFlushBytesOverride = 64 * 1024
+			log("RTT tune => HIGH (\(rtt)ms) flush=\(self.cuFlushMsOverride!)ms/\(self.cuFlushBytesOverride!)B")
+		case .mid:
+			// 恢复默认：取消 override，让原有逻辑接管
+			self.cuFlushMsOverride = nil
+			self.cuFlushBytesOverride = nil
+			log("RTT tune => MID (\(rtt)ms) flush=default")
 		}
 	}
 
@@ -1542,35 +1657,48 @@ public final class LayerMinusBridge {
     }
 
 	@inline(__always)
-private func handleAppToUpstream(_ data: Data) {
-	guard !data.isEmpty, alive() else { return }
-	if immediateUpload {
-		writeUpstreamImmediately(data)
-	} else {
-		appendToCUBuffer(data) // 兼容旧路径
+	private func handleAppToUpstream(_ data: Data) {
+		guard !data.isEmpty, alive() else { return }
+		if immediateUpload {
+			writeUpstreamImmediately(data)
+		} else {
+			appendToCUBuffer(data) // 兼容旧路径
+		}
 	}
-}
 
 	// MARK: - 直送核心（含竞速保护）
 	private func writeUpstreamImmediately(_ data: Data) {
-		guard let _ = self.upstream, alive() else { return }
+		guard alive() else { return }
 
-		// 竞速期保护：角色未定且非测速上传 => 仅直送 4KB 头，其余先排队
+		// —— 连接初期“角色未定”保护：避免把可能成为下行的线路被大流量占满
 		if !self.roleFinalized && !self.isSpeedtestUploadMode {
-			let head = min(data.count, 4 * 1024)
+			let head = min(data.count, 4 * 1024) // 直送小头 4KB，降低交互时延
 			if head > 0 {
 				let first = data.prefix(head)
 				self._writeUpstreamSingleChunk(first, remark: "c->u(pre-race small)")
 			}
 			if data.count > head {
+				// 余量入队，等角色确定或上游可写后顺序发送（由 _writeUpstreamSingleChunk/队列负责）
 				self.c2uQueue.append(data.suffix(from: head))
-				self._maybePauseReadFromApp()
+				self._maybePauseReadFromApp() // 你已有或占位的方法，避免内存膨胀
 			}
 			return
 		}
 
-		// 角色已定/测速上传：零阈值直送整块
-		self._writeUpstreamSingleChunk(data, remark: "c->u(immediate)")
+		// —— 1) 小包（<1KB）直接发送，跳过缓冲
+		if data.count < 1024 {
+			self._writeUpstreamSingleChunk(data, remark: "c->u(small-direct)")
+			return
+		}
+
+		// —— 2) 交互式流量（SSH/Telnet/RDP/VNC 等）直接发送
+		if isInteractiveTraffic(data) {
+			self._writeUpstreamSingleChunk(data, remark: "c->u(interactive)")
+			return
+		}
+
+		// —— 3) 其他走原有逻辑（含微批/BBR），更利于大流稳定性
+		appendToCUBuffer(data)
 	}
 
 	@inline(__always)
