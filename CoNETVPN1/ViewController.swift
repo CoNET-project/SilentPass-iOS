@@ -225,32 +225,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
                 object: nil
             )
         
-        NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(handleServerStarted1(_:)),
-                name: Notification.Name("LocalServerStarted1"),
-                object: nil
-            )
         
-
-
-
-
-
-        monitor.pathUpdateHandler = { path in
-            if path.status == .satisfied {
-                print("输出✅ 网络可用")
-              
-                // 启动本地服务器是一个异步任务，所以在一个 Task 中执行
-                Task {
-                    await self.webServer.prepareAndStart()
-                }
-                
-                
-            } else {
-                print("输出❌ 网络不可用")
-            }
-        }
         
         
         
@@ -352,11 +327,11 @@ class ViewController: UIViewController, WKNavigationDelegate {
         }
     }
     
-    @objc func handleServerStarted1(_ notification: Notification)   {
+    // @objc func handleServerStarted1(_ notification: Notification)   {
         
-        self.webServer.server.stop()
+    //     self.webServer.server.stop()
         
-    }
+    // }
     @objc func handleServerStarted(_ notification: Notification)   {
         
         getVPNConfigurationStatus()
@@ -410,7 +385,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
             DispatchQueue.main.async {
                 
 //                guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
-                guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
+                guard let url_cache = URL(string: "http://127.0.0.1:3001/") else { return }
                     self.webView.load(URLRequest(url: url_cache))
             }
                
@@ -443,7 +418,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
         if currentPath.status == .satisfied {
             DispatchQueue.main.async {
                 monitor.cancel()
-                guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
+                guard let url_cache = URL(string: "http://127.0.0.1:3001") else { return }
 //                guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
                 
                 
@@ -456,7 +431,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
                 if path.status == .satisfied {
                     DispatchQueue.main.async {
                         monitor.cancel()
-                        guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
+                        guard let url_cache = URL(string: "http://localhost:3001") else { return }
                         
 //                        guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
                         

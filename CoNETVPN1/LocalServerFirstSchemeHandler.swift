@@ -21,6 +21,8 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         components.scheme = "http" // Or "https" if your local server uses it
+		components.host = "127.0.0.1"
+		if (components.path.isEmpty) { components.path = "/" } 
 
         guard let finalURL = components.url else {
             urlSchemeTask.didFailWithError(URLError(.badURL))
@@ -34,7 +36,7 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
             if isOnline {
                 // SERVER IS ONLINE: Fetch from server and update cache
                 print("🟢 Server is Online. Fetching from localhost...")
-                self.fetchFromServer(url: finalURL, for: urlSchemeTask)
+                self.fetchFromServer(url: finalURL, originalURL: requestURL, for: urlSchemeTask)
             } else {
                 // SERVER IS OFFLINE: Serve from cache
                 print("🔴 Server is Offline. Attempting to serve from cache...")
@@ -67,26 +69,39 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     /// 2. Fetches from the server, serves the data, and caches it for later.
-    private func fetchFromServer(url: URL, for urlSchemeTask: WKURLSchemeTask) {
-        let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
-            if let error = error {
-                urlSchemeTask.didFailWithError(error)
-                return
-            }
-            guard let response = response, let data = data else {
-                urlSchemeTask.didFailWithError(URLError(.unknown))
-                return
-            }
-
-            // Serve the fresh data to the webview
-            urlSchemeTask.didReceive(response)
-            urlSchemeTask.didReceive(data)
+    private func fetchFromServer(url: URL, originalURL: URL, for urlSchemeTask: WKURLSchemeTask) {
+        let task = URLSession.shared.dataTask(with: url) { data, response, error in
+        if let error = error {
+            // 离线或拉取失败时，返回一段最简 HTML，避免白屏无回调
+            let html = "<html><body><h3>Local server fetch failed</h3><p>\(error.localizedDescription)</p></body></html>"
+            let d = Data(html.utf8)
+            let resp = URLResponse(
+                url: originalURL,                   // 关键：用 local-first 原始 URL
+                mimeType: "text/html",
+                expectedContentLength: d.count,
+                textEncodingName: "utf-8"
+            )
+            urlSchemeTask.didReceive(resp)
+            urlSchemeTask.didReceive(d)
             urlSchemeTask.didFinish()
-
-            // Update the cache in the background
-            print("🗄️ Caching response for \(url.absoluteString)")
-
+            return
         }
-        task.resume()
+        guard let http = response as? HTTPURLResponse, let data = data else {
+            urlSchemeTask.didFailWithError(URLError(.unknown))
+            return
+        }
+
+        // 用 http 响应的 mimeType/编码，但 URL 必须是 originalURL（local-first）
+        let resp = URLResponse(
+            url: originalURL,                       // 关键：保持自定义 scheme
+            mimeType: http.mimeType ?? "application/octet-stream",
+            expectedContentLength: data.count,
+            textEncodingName: http.textEncodingName
+        )
+        urlSchemeTask.didReceive(resp)
+        urlSchemeTask.didReceive(data)
+        urlSchemeTask.didFinish()
+    }
+    task.resume()
     }
 }

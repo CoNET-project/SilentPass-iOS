@@ -190,12 +190,12 @@ public final class LayerMinusBridge {
           }))
     }
 
-    
+    private static let GLOBAL_BUFFER_BUDGET = 6 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
-	private static var GLOBAL_BUFFER_BUDGET: Int = {
-		let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
-		return (physicalMB > 4096 ? 10 : 6) * 1024 * 1024
-	}()
+	// private static var GLOBAL_BUFFER_BUDGET: Int = {
+	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
+	// 	return (physicalMB > 4096 ? 10 : 6) * 1024 * 1024
+	// }()
 
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
