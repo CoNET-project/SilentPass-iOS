@@ -564,7 +564,10 @@ public final class LayerMinusBridge {
         
             cuBuffer.append(d)
             addGlobalBytes(d.count)
-            
+
+			// ① 预留容量，减少重分配/拷贝
+            cuBuffer.reserveCapacity(cuBuffer.count + d.count)
+
             // 检查缓冲区限制
             if cuBuffer.count >= currentBufferLimit {
                 pausedC2U = true
@@ -585,7 +588,12 @@ public final class LayerMinusBridge {
                 scheduleBackpressureTimer()
                 scheduleMaybeResumeCheck()
             }
-        
+
+		// ② 未触发阈值/预算时，马上挂一个冲刷定时器，避免“小包一直攒不到阈值”
+		if cuFlushTimer == nil && !pausedC2U && !cuBuffer.isEmpty {
+			scheduleCUFlush(allowExtend: true)
+		}
+
     }
 
     // 新增：flush 后 2ms 再查一次 in-flight，用于打破“回压后僵住”
@@ -2147,10 +2155,13 @@ private func handleAppToUpstream(_ data: Data) {
     
     private func sendToUpstream(_ data: Data, remark: String) {
         
-        guard let up = upstream, alive() else {
-            log("Cannot send to upstream: upstream=\(upstream != nil), closed=\(closed)")
-            return
-        }
+ 		guard let up = upstream, alive() else {
+			// ③ 上游未就绪：绝不丢，入队等待 .ready 后统一发送
+			if !data.isEmpty { c2uQueue.append(data) }
+			_maybePauseReadFromApp()
+			vlog("enqueue-before-ready \(data.count)B (\(remark))")
+			return
+		}
         
         let seq = { sendSeq &+= 1; return sendSeq }()
         inflight.insert(seq)
