@@ -1130,6 +1130,64 @@ public final class LayerMinusBridge {
 			}
 		})
     }
+
+	private func performImmediateCleanup(reason: String) {
+		// Ensure single execution
+		var shouldProceed = false
+		stateLock.lock()
+		if !closed {
+			closed = true
+			shouldProceed = true
+		}
+		stateLock.unlock()
+		
+		guard shouldProceed else { return }
+		
+		log("Immediate cleanup: \(reason)")
+		
+		// 1. Stop all timers synchronously
+		stopAllTimersImmediate()
+		
+		// 2. Clear all handlers
+		upstream?.stateUpdateHandler = nil
+		downstream?.stateUpdateHandler = nil
+		upstream?.viabilityUpdateHandler = nil
+		upstream?.betterPathUpdateHandler = nil
+		downstream?.viabilityUpdateHandler = nil
+		downstream?.betterPathUpdateHandler = nil
+		
+		// 3. Clean buffers and release memory
+		autoreleasepool {
+			cleanupBuffers()
+		}
+		
+		// 4. Cancel connections
+		upstream?.cancel()
+		downstream?.cancel()
+		client.cancel()
+		
+		// 5. Clear references
+		upstream = nil
+		downstream = nil
+		
+		// 6. Remove from coordinator
+		BridgeCoordinator.shared.remove(self)
+		
+		// 7. Release domain gate
+		let connectionId = "conn-\(self.id)"
+		DomainGate.shared.release(domain: etld1(of: resHost), connectionId: connectionId)
+		
+		// 8. Release self-retain
+		releaseRetainWhenFullyClosed()
+		
+		// 9. Notify closure
+		if let cb = onClosed {
+			// Use main queue to avoid retain
+			DispatchQueue.main.async {
+				cb(self.id)
+			}
+		}
+	}
     
     private var isCancelling = false
     public func cancel(reason: String) {
@@ -1139,9 +1197,26 @@ public final class LayerMinusBridge {
 		if reason.contains("LayerMinus cutover") {
 			// 热切换：标为“交接收尾”，避免误判为 KILL
 			log("🔴CLOSE_CLASS=HANDOFF note=cutover handoff🔴")
-			// 直接进入 drain 路径：给对向 25s（你已设置 drainGrace=25s）
-			// 如果你已有任一侧 EOF，可改短到 3~5s
-			scheduleDrainCancel(hint: "handoff")
+			let cutoverDrainGrace: TimeInterval = 3.0
+			// Immediately mark as cancelling
+			stateLock.lock()
+			if !closed && !isCancelling {
+				closed = true
+				isCancelling = true
+			} else {
+				stateLock.unlock()
+				return
+			}
+			stateLock.unlock()
+			
+			// Stop activity immediately
+			pausedC2U = true
+			pausedD2C = true
+			
+			// Schedule immediate cleanup with short grace
+			queue.asyncAfter(deadline: .now() + cutoverDrainGrace) { [weak self] in
+				self?.performImmediateCleanup(reason: "cutover complete")
+			}
 			return
 		}
 
@@ -1241,18 +1316,27 @@ public final class LayerMinusBridge {
         
         client.cancel()
     }
+	
     
     private func cleanupBuffers() {
-        if !cuBuffer.isEmpty {
-            subGlobalBytes(cuBuffer.count)
-            cuBuffer = Data()
-        }
-        if !stBuffer.isEmpty {
-            subGlobalBytes(stBuffer.count)
-            stBuffer = Data()
-        }
-        inflightBytes = 0
-        inflight.removeAll()
+    // Use autoreleasepool for immediate memory release
+		autoreleasepool {
+			if !cuBuffer.isEmpty {
+				subGlobalBytes(cuBuffer.count)
+				cuBuffer = Data()
+			}
+			if !stBuffer.isEmpty {
+				subGlobalBytes(stBuffer.count)
+				stBuffer = Data()
+			}
+			if !c2uQueue.isEmpty {
+				let totalBytes = c2uQueue.reduce(0) { $0 + $1.count }
+				subGlobalBytes(totalBytes)
+				c2uQueue.removeAll(keepingCapacity: false)
+			}
+			inflightBytes = 0
+			inflight.removeAll(keepingCapacity: false)
+		}
     }
 
 	// 每 200ms 被 Coordinator 派发一次，跑在“本连接的 queue”上
@@ -1710,6 +1794,7 @@ public final class LayerMinusBridge {
         if !isDIRECT, let down = self.downstream, down !== up {
             down.start(queue: queue)
         }
+
     }
 
 	private func recomputePrimaryRole() {
@@ -2165,17 +2250,25 @@ public final class LayerMinusBridge {
     
     private func scheduleDrainCancel(hint: String) {
         // half-close 空闲计时器：每次调用都会重置，确保有活动就不收尾
-        drainTimer?.setEventHandler {}   // 新增
-        drainTimer?.cancel()
+
+		// Clear old timer completely
+		if let oldTimer = drainTimer {
+			oldTimer.setEventHandler {}
+			oldTimer.cancel()
+			drainTimer = nil
+		}
         
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + drainGrace)
+
+
         timer.setEventHandler { [weak self] in
 			autoreleasepool {
 				guard let s = self, s.alive() else { return }
 				s.cancel(reason: "drain timeout after \(hint)")
 			}
         }
+
         drainTimer = timer
         timer.resume()
     }
