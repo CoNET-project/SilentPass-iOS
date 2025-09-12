@@ -281,7 +281,7 @@ public final class LayerMinusBridge {
             if memoryState.consecutivePressureCount >= 1 && !memoryState.isUnderPressure {
                 log("Memory pressure ON: \(Int(residentMB))MB (\(Int(ratio*100))%)")
                 memoryState.isUnderPressure = true
-                handleMemoryPressure(reason: "memory pressure")
+                handleMemoryPressure()
             }
             return true
         } else {
@@ -311,7 +311,7 @@ public final class LayerMinusBridge {
 		performImmediateCleanup(reason: "immediate cleanup")
 	}
     
-    private func handleMemoryPressure() {
+    private func handleMemoryPressure(_ reason: String = "memory pressure") {
 
 		// Immediately drop non-critical connections
 		if primaryRole == .balanced {
@@ -327,7 +327,7 @@ public final class LayerMinusBridge {
 				log("Memory pressure ignored: too young (\(lifetime)ms)")
 				return
 			}
-			
+
         queue.async { [weak self] in
 			guard let self = self, self.alive() else { return }
 
