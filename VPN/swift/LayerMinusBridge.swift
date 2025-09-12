@@ -278,10 +278,10 @@ public final class LayerMinusBridge {
         if ratio > threshold || residentMB > 100 {  // 超过阈值或绝对值超过100MB
             memoryState.consecutivePressureCount += 1
             
-            if memoryState.consecutivePressureCount >= 2 && !memoryState.isUnderPressure {
+            if memoryState.consecutivePressureCount >= 1 && !memoryState.isUnderPressure {
                 log("Memory pressure ON: \(Int(residentMB))MB (\(Int(ratio*100))%)")
                 memoryState.isUnderPressure = true
-                handleMemoryPressure()
+                handleMemoryPressure(reason: "memory pressure")
             }
             return true
         } else {
@@ -297,6 +297,19 @@ public final class LayerMinusBridge {
             return false
         }
     }
+
+	private func ensureMinimumLifetime() {
+		let lifetime = diffMs(start: tStart, end: .now())
+		if lifetime < Self.MIN_LIFETIME_MS {
+			// 延迟销毁
+			queue.asyncAfter(deadline: .now() + .milliseconds(Int(Self.MIN_LIFETIME_MS - lifetime))) { [weak self] in
+				self?.performImmediateCleanup(reason: "deferred cleanup after minimum lifetime")
+			}
+			return
+		}
+		// 如果已满足最小生命周期，立即清理
+		performImmediateCleanup(reason: "immediate cleanup")
+	}
     
     private func handleMemoryPressure() {
 
@@ -308,6 +321,13 @@ public final class LayerMinusBridge {
 		}
 		
 
+		// 检查生命周期，避免过早取消
+			let lifetime = diffMs(start: tStart, end: .now())
+			if lifetime < 50 {  // 至少存活50ms才允许内存压力取消
+				log("Memory pressure ignored: too young (\(lifetime)ms)")
+				return
+			}
+			
         queue.async { [weak self] in
 			guard let self = self, self.alive() else { return }
 
@@ -372,7 +392,7 @@ public final class LayerMinusBridge {
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 2 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -489,7 +509,7 @@ public final class LayerMinusBridge {
 	private var winUpBytes = 0
 	private var winDownBytes = 0
 	private var roleTimer: DispatchSourceTimer?
-	private let ROLE_INTERVAL_MS = 300
+	private let ROLE_INTERVAL_MS = 200
 
 	// 抖動抑制：連續 N 個窗口一致才切換
 	private var pendingRole: FlowPrimary = .balanced
@@ -508,9 +528,9 @@ public final class LayerMinusBridge {
     private var pausedD2C = false
     private var downInflightBytes = 0        // 已送入 client、尚未完成的字节数
     private var downInflightCount = 0
-    private var downMaxRead = 16 * 1024      // 动态读窗口
+    private var downMaxRead = 128 * 1024      // 动态读窗口
     private let DOWN_MIN_READ = 4 * 1024
-    private let DOWN_MAX_READ = 16 * 1024
+    private let DOWN_MAX_READ = 32 * 1024
 
     // 下行最小版 BBR（以真正“交付给 client”的速率为准）
     private var d_bbrBw_bps: Double = 0
@@ -522,7 +542,7 @@ public final class LayerMinusBridge {
     private var downDeliveredBytes = 0
 
     // 预算夹紧/回退
-    private let D_BBR_MIN_BUDGET_BYTES = 192 * 1024
+    private let D_BBR_MIN_BUDGET_BYTES = 256 * 1024
     private let D_BBR_MAX_BUDGET_BYTES = 2 * 1024 * 1024
     private let D_BBR_FALLBACK_BUDGET_BYTES = 1 * 1024 * 1024
 
@@ -533,7 +553,14 @@ public final class LayerMinusBridge {
 		// 先获取当前LayerMinusBridge传输对的主次角色
     	let role = self.primaryRole
 
-		
+		// Early phase: never cap down read before/soon after TTFB
+		if tFirstByte == nil || diffMs(start: tFirstByte!, end: .now()) < 600 {
+			downReadHardCap = nil
+		} else if primaryRole == .upstreamPrimary {
+			downReadHardCap = STRICT_SECONDARY_CAP_BYTES // 4KB
+		} else {
+			downReadHardCap = nil
+		}
 
         // ===== 上行 (client -> upstream) =====
         let oldUploadLimit = currentBufferLimit
@@ -584,7 +611,7 @@ public final class LayerMinusBridge {
         let smoothStart: Bool = {
             if let tfb = tFirstByte {
                 let ageMs = diffMs(start: tfb, end: .now())
-                return ageMs < 500 || downDeliveredBytes < 128 * 1024
+                return ageMs < 800 || downDeliveredBytes < 256 * 1024
             }
             return true // 还没拿到首字节，也认为在平滑期
         }()
@@ -691,8 +718,8 @@ public final class LayerMinusBridge {
     // --- 上行(c->u)微批：默认 32KB 或 8ms（可被 override 为 4KB/4ms） ---
     private var cuBuffer = Data()
     private var cuFlushTimer: DispatchSourceTimer?
-    private let CU_FLUSH_BYTES = 32 * 1024
-    private let CU_FLUSH_MS = 8
+    private let CU_FLUSH_BYTES = 48 * 1024
+    private let CU_FLUSH_MS = 4
     // 当定时到点但缓冲小于该值时，允许再延一次以攒到更“胖”的报文
     private let CU_MIN_FLUSH_BYTES = 8 * 1024
     private let CU_EXTRA_MS = 10
@@ -898,7 +925,7 @@ public final class LayerMinusBridge {
 
     private func setupMemoryMonitoring() {
 		// 每5秒检查一次内存
-		queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+		queue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
 			guard let self = self, self.alive() else { return }
 			self.checkAndHandleMemoryPressure()
 			self.setupMemoryMonitoring() // 递归调用
@@ -1264,6 +1291,9 @@ public final class LayerMinusBridge {
                 
                 // 清理缓冲区
                 self.cleanupBuffers()
+
+				// 确保满足最小生命周期
+            	self.ensureMinimumLifetime()
                 
                 // 断开连接
                 self.closeConnectionsImmediate()
@@ -1490,7 +1520,10 @@ public final class LayerMinusBridge {
 
 					// 首頁不要關 watchdog；只有上傳測速才關
 					if !self.isSpeedtestUploadMode {
-						let delay: TimeInterval = (self.reqPort == 443) ? 15.0 : 12.0
+
+
+						let delay = self.calcFirstByteWatchdogDelay()
+
 						let wd = DispatchSource.makeTimerSource(queue: self.queue)
 						wd.schedule(deadline: .now() + delay)
 						wd.setEventHandler { [weak self] in
@@ -1730,6 +1763,11 @@ public final class LayerMinusBridge {
 				case .ready:
 					s.log("UP ready UUID:\(s.UUID ?? "") \(s.reqHost):\(s.reqPort)")
 					s.tReady = .now()
+
+					// 新增：拆解 TTFB 的第一段——连接/握手耗时
+					let connectMs = s.diffMs(start: s.tStart, end: s.tReady!)
+					s.log(String(format: "KPI connectRTT_ms=%.1f", connectMs))
+
 					upReady = true
 					if isDIRECT {
 					// 先就緒再觸發 maybeKickPumps；並補上 tDownReady 供 KPI 使用
@@ -2633,7 +2671,8 @@ public final class LayerMinusBridge {
 					
 					let isHTTPS = (self.reqPort == 443)
 					if !self.isSpeedtestUploadMode {
-						let watchdogDelay: TimeInterval = isHTTPS ? 15.0 : 8.0
+						
+						let watchdogDelay = self.calcFirstByteWatchdogDelay()
 						let wd = DispatchSource.makeTimerSource(queue: self.queue)
 						wd.schedule(deadline: .now() + watchdogDelay)
 						wd.setEventHandler { [weak self] in
@@ -2652,7 +2691,16 @@ public final class LayerMinusBridge {
 
         }))
     }
-    
+
+	@inline(__always)
+    private func calcFirstByteWatchdogDelay() -> TimeInterval {
+        // 更宽松的基础值：443→25s，其它→20s
+        let base: TimeInterval = (self.reqPort == 443) ? 25.0 : 20.0
+        // 如果下行已 ready 但尚未见首字节，说明上游握手/回源可能偏慢，再给一点余量
+        let extra: TimeInterval = (self.tDownReady != nil && self.tFirstByte == nil) ? 10.0 : 0.0
+        return base + extra
+    }
+
     private func kpiLog(reason: String) {
         let now = DispatchTime.now()
             let durMs = Double(now.uptimeNanoseconds &- tStart.uptimeNanoseconds) / 1e6
@@ -2781,7 +2829,7 @@ public final class LayerMinusBridge {
 }
 
 final class DomainGate {
-    static let shared = DomainGate(limitPerDomain: 8, globalLimit: 32)
+    static let shared = DomainGate(limitPerDomain: 6, globalLimit: 24)
     private let q = DispatchQueue(label: "domain.gate", qos: .userInitiated)
     private let perLimit: Int
     private let globalLimit: Int
