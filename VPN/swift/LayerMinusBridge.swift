@@ -546,8 +546,8 @@ public final class LayerMinusBridge {
         // 结合（上行）BBR 的动态 in-flight 预算，决定是否允许扩张
         let (B, C) = inflightBudget()
         let canGrowUpload = globalBytes <= Self.GLOBAL_BUFFER_BUDGET
-                        && inflightBytes < (B * 90) / 100
-                        && inflight.count < (C * 90) / 100
+                        && inflightBytes < (B * 95) / 100
+                        && inflight.count < (C * 95) / 100
 
 		// 角色影响
 
@@ -584,7 +584,7 @@ public final class LayerMinusBridge {
         let smoothStart: Bool = {
             if let tfb = tFirstByte {
                 let ageMs = diffMs(start: tfb, end: .now())
-                return ageMs < 300 || downDeliveredBytes < 128 * 1024
+                return ageMs < 500 || downDeliveredBytes < 128 * 1024
             }
             return true // 还没拿到首字节，也认为在平滑期
         }()
@@ -1490,7 +1490,7 @@ public final class LayerMinusBridge {
 
 					// 首頁不要關 watchdog；只有上傳測速才關
 					if !self.isSpeedtestUploadMode {
-						let delay: TimeInterval = (self.reqPort == 443) ? 15.0 : 8.0
+						let delay: TimeInterval = (self.reqPort == 443) ? 15.0 : 12.0
 						let wd = DispatchSource.makeTimerSource(queue: self.queue)
 						wd.schedule(deadline: .now() + delay)
 						wd.setEventHandler { [weak self] in
