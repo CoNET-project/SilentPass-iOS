@@ -1526,7 +1526,7 @@ public final class LayerMinusBridge {
 
 	// MARK: - C2U 直送总开关 & 背压护栏
 	private let immediateUpload = true                // 默认开启“零阈值直送”
-	private let maxInFlightC2U = 1 << 20              // 1MB 在途上限（可按机型微调）
+	private let maxInFlightC2U = 1 << 19              // 512KB 在途上限（可按机型微调）
 
 	// 运行时状态
 	private var inFlightC2U: Int = 0                  // 当前在途上行字节
@@ -2676,7 +2676,7 @@ public final class LayerMinusBridge {
 }
 
 final class DomainGate {
-    static let shared = DomainGate(limitPerDomain: 16, globalLimit: 64)
+    static let shared = DomainGate(limitPerDomain: 16, globalLimit: 15)
         private let q = DispatchQueue(label: "domain.gate", qos: .userInitiated)
         private let perLimit: Int
         private let globalLimit: Int
