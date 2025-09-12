@@ -189,7 +189,12 @@ public final class ServerConnection {
     }
     
     private let RECV_BUFFER_SOFT_LIMIT = 2 * 1024 * 1024  // 2MB：降低首部稍大的场景的误伤
-    
+    @inline(__always)
+	private func etld1(of host: String) -> String {
+		let parts = host.lowercased().split(separator: ".")
+		if parts.count >= 2 { return parts.suffix(2).joined(separator: ".") }
+		return host.lowercased()
+	}
     
     /// 该连接是否已切到 LayerMinus 通道（由业务分支显式标记）
     public private(set) var isLayerMinusRouted: Bool = false
@@ -952,44 +957,51 @@ public final class ServerConnection {
                         return
                     }
                     
-                    let _reqData = self.layerMinus.makeRequest(host: reqEntryInfo.ip_addr, data: rePre)
-                    let _resData = self.layerMinus.makeRequest(host: resEntryInfo.ip_addr, data: rePre)
-
-
-                    
-
-                    self.log("KPI handoff -> LM host=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr):80 resEntry \(resEntryInfo.ip_addr):80 egress=\(egressNode.ip_addr)")
-                    let connectInfo = "origin=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr) egress=\(egressNode.ip_addr) UUID: \(securityKey) "
-
-                    let newBridge = LayerMinusBridge(
-                        id: self.id,
-                        client: self.client,
-                        reqHost: reqEntryInfo.ip_addr, reqPort: 80,
-                        resHost: resEntryInfo.ip_addr, resPort: 80,
-                        verbose: self.verbose,
-                        connectInfo: connectInfo,
-                        onClosed: { [weak self] bridgeId in
-                            self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
-                            self?.close(reason: "Bridge closed")
-                        }
-                    )
-
 					
 
-                    self.isLayerMinusRouted = true
-                    self.bridge = newBridge
-                    self.onRoutingDecided?(self)
 
-					// 关键：持有引用
-					self.bridge = bridge
-					
-					// 标记 handoff 时间
-					bridge?.markHandoffNow()
+					// KORREKTUR: Rufen Sie DomainGate HIER auf, BEVOR das Bridge-Objekt erstellt wird.
+					let connectionId = "conn-\(self.id)"
+					let domain = self.etld1(of: host)
+					DomainGate.shared.acquire(domain: domain) { [weak self] in
+						guard let self = self, !self.closed else {
+							// Wenn die Verbindung bereits geschlossen wurde, geben Sie den Slot sofort frei.
+							DomainGate.shared.release(domain: domain, connectionId: connectionId)
+							return
+						}
+
+						// VERSCHOBEN: Der gesamte folgende Code wird jetzt INNERHALB des acquire-Closures ausgeführt.
+						let _reqData = self.layerMinus.makeRequest(host: reqEntryInfo.ip_addr, data: rePre)
+						let _resData = self.layerMinus.makeRequest(host: resEntryInfo.ip_addr, data: rePre)
+						self.log("KPI handoff -> LM host=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr):80 resEntry \(resEntryInfo.ip_addr):80 egress=\(egressNode.ip_addr)")
+						let connectInfo = "origin=\(host):\(port) reqEntry \(reqEntryInfo.ip_addr) resEntry \(resEntryInfo.ip_addr) egress=\(egressNode.ip_addr) UUID: \(securityKey) "
+
+						let newBridge = LayerMinusBridge(
+							id: self.id,
+							client: self.client,
+							reqHost: reqEntryInfo.ip_addr, reqPort: 80,
+							resHost: resEntryInfo.ip_addr, resPort: 80,
+							verbose: self.verbose,
+							connectInfo: connectInfo,
+							onClosed: { [weak self] bridgeId in
+								self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
+								self?.close(reason: "Bridge closed")
+							}
+						)
+
+						self.isLayerMinusRouted = true
+						self.bridge = newBridge
+						self.onRoutingDecided?(self)
+						newBridge.markHandoffNow()
+
+						let reqFirst = Data(_reqData.utf8)
+						let resFirst = Data(_resData.utf8)
+						newBridge.connectUpstreamAndRun(reqFirstBody: reqFirst, resFirstBody: resFirst)
+
+					}
 
 
-                    newBridge.start(reqFirstBody: _reqData, resFirstBody: _resData, UUID: securityKey)
-
-                } catch {
+				} catch {
                     self.log("LM sign error: \(error)")
                     // （可选）这里可 fallbackDirect(...)，避免因签名异常导致隧道断
                 }

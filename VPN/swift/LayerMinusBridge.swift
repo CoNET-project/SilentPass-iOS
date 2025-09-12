@@ -299,8 +299,19 @@ public final class LayerMinusBridge {
     }
     
     private func handleMemoryPressure() {
+
+		// Immediately drop non-critical connections
+		if primaryRole == .balanced {
+			// Cancel balanced connections first
+			self.cancel(reason: "memory pressure - dropping balanced connection")
+			return
+		}
+		
+
         queue.async { [weak self] in
 			guard let self = self, self.alive() else { return }
+
+			
 			autoreleasepool {
 				// 1) 立刻止血（本桥）
 				self.flushAllBuffers()                     
@@ -361,7 +372,7 @@ public final class LayerMinusBridge {
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 2 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -497,9 +508,9 @@ public final class LayerMinusBridge {
     private var pausedD2C = false
     private var downInflightBytes = 0        // 已送入 client、尚未完成的字节数
     private var downInflightCount = 0
-    private var downMaxRead = 32 * 1024      // 动态读窗口
+    private var downMaxRead = 16 * 1024      // 动态读窗口
     private let DOWN_MIN_READ = 4 * 1024
-    private let DOWN_MAX_READ = 32 * 1024
+    private let DOWN_MAX_READ = 16 * 1024
 
     // 下行最小版 BBR（以真正“交付给 client”的速率为准）
     private var d_bbrBw_bps: Double = 0
@@ -1191,7 +1202,8 @@ public final class LayerMinusBridge {
     			BridgeCoordinator.shared.remove(self)
                 
                 // 释放域名锁
-                DomainGate.shared.release(domain: self.etld1(of: self.resHost))
+				let connectionId = "conn-\(self.id)"
+                DomainGate.shared.release(domain: self.etld1(of: self.resHost), connectionId: connectionId)
                 
                 // 等待 pendingOperations 清零（最多 ~300ms）
 
@@ -1536,7 +1548,7 @@ public final class LayerMinusBridge {
 	private var upstreamPausedByBackpressure = false  // 已暂停从 APP 读取
 
     
-    private func connectUpstreamAndRun(reqFirstBody: Data, resFirstBody: Data?) {
+    public func connectUpstreamAndRun(reqFirstBody: Data, resFirstBody: Data?) {
         // 端口合法性
         guard let reqNWPort = NWEndpoint.Port(rawValue: UInt16(self.reqPort)) else {
             log("invalid reqPort \(self.reqPort)"); cancel(reason: "invalid reqPort"); return
@@ -2676,58 +2688,168 @@ public final class LayerMinusBridge {
 }
 
 final class DomainGate {
-    static let shared = DomainGate(limitPerDomain: 16, globalLimit: 15)
-        private let q = DispatchQueue(label: "domain.gate", qos: .userInitiated)
-        private let perLimit: Int
-        private let globalLimit: Int
-        private var per: [String:Int] = [:]
-        private var global = 0
-        private var pend: [String:[() -> Void]] = [:]
-        
-        init(limitPerDomain: Int, globalLimit: Int) {
-            self.perLimit = limitPerDomain
-            self.globalLimit = globalLimit
-        }
-        
-        func acquire(domain: String, run: @escaping () -> Void) {
-            q.async { [weak self] in
-                guard let self = self else { return }
+    static let shared = DomainGate(limitPerDomain: 8, globalLimit: 32)
+    private let q = DispatchQueue(label: "domain.gate", qos: .userInitiated)
+    private let perLimit: Int
+    private let globalLimit: Int
+    private var per: [String:Int] = [:]
+    private var global = 0
+    private var pend: [String:[() -> Void]] = [:]
+    
+    // Add tracking for debugging
+    private var activeConnections: Set<String> = []  // Track active connection IDs
+    
+    init(limitPerDomain: Int, globalLimit: Int) {
+        self.perLimit = limitPerDomain
+        self.globalLimit = globalLimit
+    }
+    
+    func acquire(domain: String, connectionId: String = UUID().uuidString, run: @escaping () -> Void) {
+        q.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Check both limits
+            let domainCount = self.per[domain] ?? 0
+            let wouldExceedGlobal = self.global >= self.globalLimit
+            let wouldExceedDomain = domainCount >= self.perLimit
+            
+            #if DEBUG
+            print("DomainGate.acquire: domain=\(domain) id=\(connectionId)")
+            print("  Current state: global=\(self.global)/\(self.globalLimit), domain=\(domainCount)/\(self.perLimit)")
+            print("  Would exceed: global=\(wouldExceedGlobal), domain=\(wouldExceedDomain)")
+            #endif
+            
+            if wouldExceedGlobal || wouldExceedDomain {
+                // Queue the request
+                autoreleasepool {
+                    self.pend[domain, default: []].append(run)
+                }
                 
-                if self.global >= self.globalLimit || (self.per[domain] ?? 0) >= self.perLimit {
-                    // 存储闭包时使用 autoreleasepool
-                    autoreleasepool {
-                        self.pend[domain, default: []].append(run)
-                    }
-                } else {
-                    self.global += 1
-                    self.per[domain, default: 0] += 1
-                    // 在新的队列中执行，避免阻塞 gate 队列
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        autoreleasepool { run() }
-                    }
+                #if DEBUG
+                print("DomainGate: QUEUED for \(domain) (id=\(connectionId))")
+                if wouldExceedGlobal {
+                    print("  Reason: Global limit reached (\(self.global)/\(self.globalLimit))")
+                }
+                if wouldExceedDomain {
+                    print("  Reason: Domain limit reached (\(domainCount)/\(self.perLimit))")
+                }
+                print("  Pending queue size for \(domain): \(self.pend[domain]?.count ?? 0)")
+                #endif
+            } else {
+                // Can execute immediately
+                self.global += 1
+                self.per[domain, default: 0] += 1
+                self.activeConnections.insert(connectionId)
+                
+                #if DEBUG
+                print("DomainGate: ACQUIRED for \(domain) (id=\(connectionId))")
+                print("  New state: global=\(self.global)/\(self.globalLimit), domain=\(self.per[domain]!)/\(self.perLimit)")
+                print("  Active connections: \(self.activeConnections.count)")
+                #endif
+                
+                // Execute in a different queue
+                DispatchQueue.global(qos: .userInitiated).async {
+                    autoreleasepool { run() }
                 }
             }
         }
-        
-        func release(domain: String) {
-            q.async { [weak self] in
-                guard let self = self else { return }
-                
-                if self.global > 0 { self.global -= 1 }
-                if let c = self.per[domain], c > 0 { self.per[domain] = c - 1 }
-                
-                if var queue = self.pend[domain], !queue.isEmpty {
+    }
+    
+    func release(domain: String, connectionId: String = "") {
+        q.async { [weak self] in
+            guard let self = self else { return }
+            
+            let prevGlobal = self.global
+            let prevDomain = self.per[domain] ?? 0
+            
+            // Decrement counters (but don't go below 0)
+            if self.global > 0 {
+                self.global -= 1
+            }
+            
+            if let c = self.per[domain], c > 0 {
+                self.per[domain] = c - 1
+                if self.per[domain] == 0 {
+                    self.per.removeValue(forKey: domain)
+                }
+            }
+            
+            if !connectionId.isEmpty {
+                self.activeConnections.remove(connectionId)
+            }
+            
+            #if DEBUG
+            print("DomainGate.release: domain=\(domain) id=\(connectionId)")
+            print("  Previous: global=\(prevGlobal)/\(self.globalLimit), domain=\(prevDomain)/\(self.perLimit)")
+            print("  New state: global=\(self.global)/\(self.globalLimit), domain=\(self.per[domain] ?? 0)/\(self.perLimit)")
+            print("  Active connections remaining: \(self.activeConnections.count)")
+            #endif
+            
+            // Try to process pending requests for this domain first
+            if var queue = self.pend[domain], !queue.isEmpty {
+                let currentDomainCount = self.per[domain] ?? 0
+                if self.global < self.globalLimit && currentDomainCount < self.perLimit {
                     let next = queue.removeFirst()
-                    self.pend[domain] = queue.isEmpty ? nil : queue  // 清理空数组
+                    self.pend[domain] = queue.isEmpty ? nil : queue
+                    
                     self.global += 1
                     self.per[domain, default: 0] += 1
-                    // 在新队列执行
+                    
+                    #if DEBUG
+                    print("  Processing pending from \(domain) queue (remaining: \(queue.count))")
+                    #endif
+                    
                     DispatchQueue.global(qos: .userInitiated).async {
                         autoreleasepool { next() }
                     }
+                    return
+                }
+            }
+            
+            // Try other domains if global limit allows
+            if self.global < self.globalLimit {
+                for (otherDomain, var queue) in self.pend where !queue.isEmpty {
+                    let otherDomainCount = self.per[otherDomain] ?? 0
+                    if otherDomainCount < self.perLimit {
+                        let next = queue.removeFirst()
+                        self.pend[otherDomain] = queue.isEmpty ? nil : queue
+                        
+                        self.global += 1
+                        self.per[otherDomain, default: 0] += 1
+                        
+                        #if DEBUG
+                        print("  Processing pending from OTHER domain \(otherDomain) (remaining: \(queue.count))")
+                        #endif
+                        
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            autoreleasepool { next() }
+                        }
+                        break
+                    }
                 }
             }
         }
+    }
+    
+    // Debug method to check status
+    func status(completion: @escaping (Int, [String: Int], [String: Int], Int) -> Void) {
+        q.async {
+            let pending = self.pend.mapValues { $0.count }
+            completion(self.global, self.per, pending, self.activeConnections.count)
+        }
+    }
+    
+    // Add a method to print current status (for debugging)
+    func printStatus() {
+        status { global, perDomain, pending, active in
+            print("=== DomainGate Status ===")
+            print("Global: \(global)/\(self.globalLimit)")
+            print("Per domain: \(perDomain)")
+            print("Pending queues: \(pending)")
+            print("Active connections: \(active)")
+            print("========================")
+        }
+    }
 }
 
 // 放在同文件底部或新文件中
