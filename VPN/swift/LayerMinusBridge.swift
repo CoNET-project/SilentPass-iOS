@@ -18,6 +18,73 @@ enum L {
 }
 #endif
 
+//	上行 = c2uQueue（排队） + cuBuffer/stBuffer（缓冲） + 在途/背压（硬上限 1MB + 恢复/暂停）
+//	下行 = 无队列，靠“读窗（downMaxRead/downReadHardCap）+ 在途预算（downInflightBytes/BBR 预算）+ pausedD2C”三件套来控水位与速率。
+
+//  1. 排队机制（c2uQueue）
+//	private var c2uQueue: [Data] = []  // 无上限，主要内存压力源
+//	private var upstreamPausedByBackpressure = false
+
+//  2. 缓冲机制（cuBuffer/stBuffer）
+//	private var cuBuffer = Data()     // 有上限，let currentBufferLimit: Int = 4 * 1024  // 初始4KB，可动态调整，let maxBufferLimit: Int = 156 * 1024     // 最大156KB
+//	private var stBuffer = Data()     // 有上限，private var inFlightC2U: Int = 0  private let ST_FLUSH_BYTES = 64 * 1024  // 64KB上限
+
+//  3. 在途/背压机制（inFlightC2U）
+//	private var inFlightC2U: Int = 0   // 有上限，private var inFlightC2U: Int = 0 初始0，可动态调整，private let maxInFlightC2U = 1 << 20  // 1MB 硬上限
+//
+// 背压触发
+//		if self.inFlightC2U >= self.maxInFlightC2U {
+//    		self.c2uQueue.append(data)  // 入队
+//    		self._maybePauseReadFromApp()  // 暂停读取
+//		}
+//
+
+//  4. 全局水位（Self.globalBufferedBytes）
+//	private static var GLOBAL_BUFFER_BUDGET = 6 * 1024 * 1024 // 6MB 全局水位预算
+//  5. 内存压力保护（checkAndHandleMemoryPressure）
+
+//  下行架构验证
+//  1. 读窗（downMaxRead/downReadHardCap）
+//	private var downMaxRead = 32 * 1024  // 32KB 初始值
+//	private let DOWN_MIN_READ = 4 * 1024  // 4KB 下限
+//	private let DOWN_MAX_READ = 32 * 1024  // 32KB 上限
+//	private var downReadHardCap: Int? = nil           // 次要方向为下行时：4KB
+
+//  2. 在途预算（downInflightBytes/BBR 预算）
+// BBR 计算的动态预算
+//      private func downInflightBudgetBytes() -> Int {
+//      if d_bbrBwMax_bps <= 0 || d_bbrMinRtt_ms <= 0 {
+//        return D_BBR_FALLBACK_BUDGET_BYTES  // 1MB 默认值
+//    }
+//    let bdp = Int((d_bbrBwMax_bps / 8.0) * (d_bbrMinRtt_ms / 1000.0))
+//    return min(max(bdp, D_BBR_MIN_BUDGET_BYTES), D_BBR_MAX_BUDGET_BYTES)
+//  }
+
+// 实际在途
+//  private var pausedD2C = false
+
+// 触发暂停
+//	if downInflightBytes >= targetDown {
+//		pausedD2C = true
+//		vlog("pause d->c: inflight=\(downInflightBytes) >= target=\(targetDown)")
+// }
+
+// 恢复条件
+//	if pausedD2C && downInflightBytes <= (target * 90) / 100 {
+//		pausedD2C = false
+//		pumpDownstreamToClient()
+// }
+
+//  关键洞察
+
+//      上行更复杂：三层缓冲（队列+缓冲+在途）
+//		下行更简洁：让数据留在内核，仅控制读取速率
+//		内存风险不对称：上行的 c2uQueue 是主要风险点
+//		优先级影响：
+//
+//		上传优先时：应限制 downMaxRead 到 4KB，释放内存给 c2uQueue
+//		下载优先时：应尽快清空 c2uQueue，扩大 downMaxRead
+
 
 
 private extension LayerMinusBridge {
@@ -30,6 +97,62 @@ private extension LayerMinusBridge {
 
 
 public final class LayerMinusBridge {
+    
+    // 次要方向的严格内存帽（4KB）
+    private let STRICT_SECONDARY_CAP_BYTES = 4 * 1024
+
+	private var writeUpstreamImmediatePreferred = true  // 默认偏好直送
+
+    // 统计上行/下行内存占用（不含系统 socket 缓冲，只计算我们可控部分）
+    private func currentUpstreamBytes() -> Int {
+        let qBytes = c2uQueue.reduce(0) { $0 + $1.count }
+        return inFlightC2U + cuBuffer.count + stBuffer.count + qBytes
+    }
+
+    private func currentDownstreamBytes() -> Int {
+        // 下行我们只控制“在途”与一次 receive 的读窗
+        return downInflightBytes
+    }
+
+    // 严格裁剪上行缓冲到 cap（优先保留在途，其次保留 cuBuffer 前缀；st/c2u 丢弃）
+    private func capUpstreamTo(_ cap: Int) {
+        var budget = max(0, cap - inFlightC2U)
+        // 先处理 cuBuffer：保留前 budget 字节
+        if cuBuffer.count > budget {
+            let keep = budget
+            let drop = cuBuffer.count - keep
+            if drop > 0 {
+                // 扣回全局占用（若你的实现有全局水位计数）
+                subGlobalBytes(drop)
+                cuBuffer = keep > 0 ? cuBuffer.prefix(keep) : Data()
+            }
+            budget = 0
+        } else {
+            budget -= cuBuffer.count
+        }
+        // stBuffer 在严格模式一律清空
+        if stBuffer.count > 0 {
+            subGlobalBytes(stBuffer.count)
+            stBuffer.removeAll(keepingCapacity: false)
+        }
+        // c2uQueue 全清（严格 4KB 不允许排队膨胀）
+        if !c2uQueue.isEmpty {
+            let drop = c2uQueue.reduce(0) { $0 + $1.count }
+            if drop > 0 { subGlobalBytes(drop) }
+            c2uQueue.removeAll(keepingCapacity: false)
+        }
+        // 严格暂停后续从 App 继续读
+        upstreamPausedByBackpressure = true
+        pausedC2U = true
+    }
+
+    // 计算下行一次 receive 的安全最大读取量（确保总占用≤cap）
+    private func downSafeReadCap(_ cap: Int) -> Int {
+        let budget = max(0, cap - downInflightBytes)
+        // 至少读 1B 以保持活性（如你希望完全卡死可返回 0，但建议≥1）
+        return max(1, min(budget, downMaxRead))
+    }
+    
 
 	// ===== 1) 新增属性 =====
 	private var selfRetain: LayerMinusBridge?  // 强引用保活令牌
@@ -180,7 +303,7 @@ public final class LayerMinusBridge {
 			guard let self = self, self.alive() else { return }
 			autoreleasepool {
 				// 1) 立刻止血（本桥）
-				self.flushAllBuffers()                     // 你已有
+				self.flushAllBuffers()                     
 				self.currentBufferLimit = min(self.currentBufferLimit, Self.MEMORY_PRESSURE_BUFFER)
 				self.downMaxRead = max(self.DOWN_MIN_READ, min(self.downMaxRead, 16 * 1024))
 
@@ -347,7 +470,7 @@ public final class LayerMinusBridge {
 		t.resume()
     }
 	// === Flow primary detection & caps ===
-	private enum FlowPrimary { case upstream, downstream, balanced }
+	private enum FlowPrimary { case upstreamPrimary, downstreamPrimary, balanced }
 	private var primaryRole: FlowPrimary = .balanced
 
 
@@ -394,6 +517,13 @@ public final class LayerMinusBridge {
 
 
     private func adjustBufferLimit() {
+
+
+		// 先获取当前LayerMinusBridge传输对的主次角色
+    	let role = self.primaryRole
+
+		
+
         // ===== 上行 (client -> upstream) =====
         let oldUploadLimit = currentBufferLimit
 
@@ -408,20 +538,32 @@ public final class LayerMinusBridge {
                         && inflightBytes < (B * 90) / 100
                         && inflight.count < (C * 90) / 100
 
-        if pausedC2U {
-            if canGrowUpload {
-                currentBufferLimit = min(currentBufferLimit * 2, maxBufferLimit)  // 温和扩张
-            }
-            // else: 不具备扩张条件，维持现状，避免峰值继续放大
-        } else {
-            currentBufferLimit = max(currentBufferLimit / 4, 4 * 1024)             // 快速收敛
-        }
+		// 角色影响
+
+		// 主要方向为上行时，允许更大窗口
+		if role == .upstreamPrimary {
+
+			// 先考虑内存压力
+			if pausedC2U {
+				if canGrowUpload {
+					currentBufferLimit = min(currentBufferLimit * 2, maxBufferLimit)  // 温和扩张
+				}
+				// else: 不具备扩张条件，维持现状，避免峰值继续放大
+			} else {
+				currentBufferLimit = max(currentBufferLimit / 4, 4 * 1024)             // 快速收敛
+			}
+
+		} else if role == .downstreamPrimary {
+			// 主要方向为下行时，限制更小窗口
+			currentBufferLimit = min(currentBufferLimit, 16 * 1024)  // 温和收敛
+		}
+        
 
         if currentBufferLimit != oldUploadLimit {
             log("Adjust upload buffer: \(oldUploadLimit) -> \(currentBufferLimit)")
         }
 
-        // ===== 下行 (downstream -> client) =====
+        // ===== 下行 (downstreamPrimary -> client) =====
         let targetDown = downInflightBudgetBytes()
 
         // 根据占用调整读取粒度（抑峰/提吞吐）
@@ -478,6 +620,22 @@ public final class LayerMinusBridge {
                 pumpDownstreamToClient()
             }
         }
+
+		switch primaryRole {
+		case .upstreamPrimary:
+			// 强化下行读窗：受 4KB 硬帽约束
+            if let cap = downReadHardCap, cap > 0 {
+				// 不改变 downMaxRead 的自适应，只要在 receive() 前取 min()
+				// 这里仅作保护，实际使用在 pumpDownstreamToClient() 内
+			}
+		case .downstreamPrimary:
+			// 强化上行：任何新增长度都不能突破 4KB
+			if currentUpstreamBytes() > STRICT_SECONDARY_CAP_BYTES {
+				capUpstreamTo(STRICT_SECONDARY_CAP_BYTES)
+			}
+		case .balanced:
+			break
+		}
     }
 
 
@@ -1099,6 +1257,22 @@ public final class LayerMinusBridge {
 		recomputePrimaryRole()
 		applyPressureCapsIfNeeded()
 
+		    switch primaryRole {
+			case .downstreamPrimary:
+				if currentUpstreamBytes() > STRICT_SECONDARY_CAP_BYTES {
+					capUpstreamTo(STRICT_SECONDARY_CAP_BYTES)
+					log("strict-cap UP: enforced to \(STRICT_SECONDARY_CAP_BYTES)B")
+				}
+			case .upstreamPrimary:
+				if currentDownstreamBytes() > STRICT_SECONDARY_CAP_BYTES {
+					// 超额就暂停，等待 contentProcessed 回落
+					pausedD2C = true
+					log("strict-cap DOWN: inflight \(currentDownstreamBytes())B > cap")
+				}
+			case .balanced:
+				break
+			}
+
 		// (c) 替代 scheduleBackpressureTimer() 的循环：仅在 pausedC2U 时调整
 		if pausedC2U {
 			let old = currentBufferLimit
@@ -1356,7 +1530,9 @@ public final class LayerMinusBridge {
 
 	// 运行时状态
 	private var inFlightC2U: Int = 0                  // 当前在途上行字节
-	private var c2uQueue: [Data] = []                 // 背压/竞速排队数据（保持顺序）
+	private var c2uQueue: [Data] = []                 // 上行 背压/竞速排队数据（保持顺序）
+
+
 	private var upstreamPausedByBackpressure = false  // 已暂停从 APP 读取
 
     
@@ -1536,9 +1712,9 @@ public final class LayerMinusBridge {
 
 		let newRole: FlowPrimary
 		if up >= MIN_BYTES && ratio >= 3.0 {
-			newRole = .upstream
+			newRole = .upstreamPrimary
 		} else if down >= MIN_BYTES && (1.0/ratio) >= 3.0 {
-			newRole = .downstream
+			newRole = .downstreamPrimary
 		} else {
 			newRole = .balanced
 		}
@@ -1555,23 +1731,33 @@ public final class LayerMinusBridge {
 		}
 	}
 
+	// 上传优先：只给下行加硬帽与暂停触发点；
+	// 下载优先：调用 capUpstreamTo(4KB) 一次性把上行排队与缓冲清到 4KB 以内，并暂停继续读 App；
+	// balanced：回到原先的自适应。
+
+
 	private func applyPrimaryCaps() {
 		switch primaryRole {
-		case .upstream:
-			downReadHardCap = 4 * 1024
-			cuFlushBytesOverride = nil
-			cuFlushMsOverride = nil
-			log("ROLE -> upstream-primary; cap downRead=4KB")
-		case .downstream:
-			downReadHardCap = nil
-			cuFlushBytesOverride = 4 * 1024
-			cuFlushMsOverride = 4
-			 log("ROLE -> downstream-primary; cap up flush=4KB/4ms")
+		case .upstreamPrimary:
+			// 上传优先：限制下行到 4KB
+			downReadHardCap = STRICT_SECONDARY_CAP_BYTES
+			// 若在途已超 4KB，立即暂停并等待回落
+			if currentDownstreamBytes() >= STRICT_SECONDARY_CAP_BYTES {
+				pausedD2C = true
+			}
+			// 上行放开为你当前默认（例如 32KB/8ms），不用改
+		case .downstreamPrimary:
+			// 下载优先：限制上行到 4KB（强制裁剪）
+			
+			// 取消上行直送偏好，避免瞬时膨胀
+			writeUpstreamImmediatePreferred = false
+			// 下行放开为你当前默认策略
+			downReadHardCap = 0   // 0/或nil 表示不启用硬帽，按原逻辑
 		case .balanced:
-			downReadHardCap = nil
-			cuFlushBytesOverride = nil
-			cuFlushMsOverride = nil
-			log("ROLE -> balanced; remove caps")
+			// 恢复默认
+			downReadHardCap = 0
+			upstreamPausedByBackpressure = false
+			pausedC2U = false
 		}
 	}
 
@@ -1595,18 +1781,19 @@ public final class LayerMinusBridge {
     }
 
 	@inline(__always)
-private func handleAppToUpstream(_ data: Data) {
-	guard !data.isEmpty, alive() else { return }
-	if immediateUpload {
-		writeUpstreamImmediately(data)
-	} else {
-		appendToCUBuffer(data) // 兼容旧路径
+	private func handleAppToUpstream(_ data: Data) {
+		guard !data.isEmpty, alive() else { return }
+		if immediateUpload {
+			writeUpstreamImmediately(data)
+		} else {
+			appendToCUBuffer(data) // 兼容旧路径
+		}
 	}
-}
 
 	// MARK: - 直送核心（含竞速保护）
 	private func writeUpstreamImmediately(_ data: Data) {
 		guard let _ = self.upstream, alive() else { return }
+
 
 		// 上游未就绪：不可丢，整块入队，待 .ready 后首发
 		if self.upstream == nil {
@@ -1614,6 +1801,8 @@ private func handleAppToUpstream(_ data: Data) {
 			self._maybePauseReadFromApp()
 			return
 		}
+
+
 		// 竞速期保护：角色未定且非测速上传 => 仅直送 4KB 头，其余先排队
 		if !self.roleFinalized && !self.isSpeedtestUploadMode {
 			let head = min(data.count, 4 * 1024)
@@ -1627,6 +1816,7 @@ private func handleAppToUpstream(_ data: Data) {
 			}
 			return
 		}
+
 
 		// 角色已定/测速上传：零阈值直送整块
 		self._writeUpstreamSingleChunk(data, remark: "c->u(immediate)")
@@ -1659,6 +1849,8 @@ private func handleAppToUpstream(_ data: Data) {
 	private func _writeUpstreamSingleChunk(_ data: Data, remark: String) {
 		guard let up = self.upstream, alive() else { return }
 
+		// 移除多余的记账逻辑
+		// if !alreadyAccounted { addGlobalBytes(data.count) }
 		// 计入上行窗口统计，驱动角色判定
 		winUpBytes &+= data.count
 
@@ -1671,7 +1863,6 @@ private func handleAppToUpstream(_ data: Data) {
 		}
 
 		self.inFlightC2U &+= data.count
-		self.addGlobalBytes(data.count)                      // NEW
 
 		up.send(content: data, completion: .contentProcessed { [weak self] err in
 			guard let s = self, s.alive() else { return }
@@ -1682,7 +1873,7 @@ private func handleAppToUpstream(_ data: Data) {
 			}
 
 			
-
+			// 完成时出账
 			s.inFlightC2U &-= data.count
 
 			s.subGlobalBytes(data.count)                     // NEW
@@ -1777,7 +1968,7 @@ private func handleAppToUpstream(_ data: Data) {
         }
     }
 
-	// 添加一个统一的flush函数（约第1100行附近）
+
 	private func flushAllBuffers() {
 		if !stBuffer.isEmpty {
 			let data = stBuffer
@@ -1795,8 +1986,23 @@ private func handleAppToUpstream(_ data: Data) {
     private func pumpClientToUpstream() {
         if closed { return }
         
+		// --- 新增：基于角色的“只限读” ---
+		var maxToRead = 64 * 1024
+		if primaryRole == .downstreamPrimary {           // 下行为主：上行严格4KB
+			let used = currentUpstreamBytes()
+			let remain = STRICT_SECONDARY_CAP_BYTES - used
+			if remain <= 0 {
+				// 没额度了：暂停继续读 App，等待在途回落再恢复
+				upstreamPausedByBackpressure = true
+				pausedC2U = true
+				vlog("strict-cap UP(read-only): pause c->u receive, used=\(used)B")
+				return
+			}
+			maxToRead = min(maxToRead, remain)
+		}
+		
 		 pendingOperations.incrementAndGet()  // 进入操作
-			client.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
+			client.receive(minimumIncompleteLength: 1, maximumLength: maxToRead) { [weak self] (data, _, isComplete, err) in
 
 				defer {
 					self?.pendingOperations.decrementAndGet()  // 确保退出
@@ -2014,7 +2220,18 @@ private func handleAppToUpstream(_ data: Data) {
 			lastDownListenLog = now
 		}
 
-        downstream?.receive(minimumIncompleteLength: 1, maximumLength: downMaxRead) { [weak self] (data, _, isComplete, err) in
+		var maxToRead = downMaxRead
+        if primaryRole == .upstreamPrimary, let cap = downReadHardCap, cap > 0 {
+			let safeCap = downSafeReadCap(STRICT_SECONDARY_CAP_BYTES)
+			if safeCap <= 0 {
+				pausedD2C = true
+				log("strict-cap DOWN: pause receive, inflight=\(downInflightBytes)B")
+				return
+			}
+			maxToRead = min(maxToRead, safeCap)
+		}
+
+        downstream?.receive(minimumIncompleteLength: 1, maximumLength: maxToRead) { [weak self] (data, _, isComplete, err) in
 			autoreleasepool {
 				guard let self = self, self.alive() else { return }
 
@@ -2166,7 +2383,7 @@ private func handleAppToUpstream(_ data: Data) {
 				cuFlushBytesOverride = nil
 				cuFlushMsOverride = nil
 				// 若當前角色不是 upstream-primary，就解除 downRead 硬上限
-				if primaryRole != .upstream { downReadHardCap = nil }
+				if primaryRole != .upstreamPrimary { downReadHardCap = nil }
 				log(String(format:"PRESSURE cap OFF (util=%.0f%%)", util*100))
 			}
 		}
