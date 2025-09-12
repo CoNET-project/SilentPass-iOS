@@ -22,7 +22,7 @@ enum L {
 
 private extension LayerMinusBridge {
     // 内存管理常量
-    static let ABSOLUTE_MAX_BUFFER = 512 * 1024  // 512KB 绝对上限
+    static let ABSOLUTE_MAX_BUFFER = 256 * 1024  // 256KB 绝对上限
     static let MEMORY_PRESSURE_BUFFER = 64 * 1024  // 内存压力时缓冲区
     static let MEMORY_WARNING_THRESHOLD = 48 * 1024 * 1024  // 50MB 警告阈值
 
@@ -167,8 +167,8 @@ public final class LayerMinusBridge {
                 memoryState.isUnderPressure = false
 
 				// 压力解除后强制恢复 pump，打破僵持
-				if pausedC2U { pausedC2U = false; pumpClientToUpstream() }
-				if pausedD2C { pausedD2C = false; pumpDownstreamToClient() }
+				if self.pausedC2U { self.pausedC2U = false; self.pumpClientToUpstream() }
+				if self.pausedD2C { self.pausedD2C = false; self.pumpDownstreamToClient() }
             }
             memoryState.consecutivePressureCount = 0
             return false
@@ -185,10 +185,13 @@ public final class LayerMinusBridge {
 				self.downMaxRead = max(self.DOWN_MIN_READ, min(self.downMaxRead, 16 * 1024))
 
 				// 不再直接暂停上下行，避免“卡死在高位”
-				self.vlog("memory pressure: shrink windows only (no hard pause)")
+				 self.vlog("memory pressure: shrink windows only (no hard pause)")
 
 				self.safeStopTimer(&self.roleTimer)
 				self.safeStopTimer(&self.backpressureTimer)
+
+				if self.pausedC2U { self.pausedC2U = false; self.pumpClientToUpstream() }
+				if self.pausedD2C { self.pausedD2C = false; self.pumpDownstreamToClient() }
 
 				// 2) 若硬红线已连续命中 2+ 次 -> 温和卸载本桥（避免全局雪崩）
 				if self.memoryState.consecutivePressureCount >= 2 {
@@ -216,19 +219,26 @@ public final class LayerMinusBridge {
 					guard let self = self, self.alive() else { return }
 					if let err = err {
 						self.log("downstream send err: \(err)")
+						// 出错也要对称出账，避免在途/全局“黏住”
+						self.downInflightBytes &-= data.count
+						if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
+						self.subGlobalBytes(data.count)
+						self.maybeResumeDownAfterInflightDrained()
+
 						self.queue.async { self.cancel(reason: "downstream send err") }
 					} else {
-						// 完成：扣回水位与在途
+						// 成功完成：对称出账 + 视情况恢复读窗
 						self.downInflightBytes &-= data.count
+						if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
 						self.subGlobalBytes(data.count)
-						self.vlog("sent \(remark) \(data.count)B -> downstream ok")
+						self.maybeResumeDownAfterInflightDrained()
 						_ = self.checkAndHandleMemoryPressure()
 					}
 				}
           }))
     }
 
-    private static let GLOBAL_BUFFER_BUDGET = 16 * 1024 * 1024
+    private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
 	// 动态全局缓冲水位：≥4GB 设备放宽到 10MiB，否则维持 6MiB
 	// private static var GLOBAL_BUFFER_BUDGET: Int = {
 	// 	let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
@@ -312,7 +322,7 @@ public final class LayerMinusBridge {
     
 
     private var currentBufferLimit: Int = 4 * 1024 // 初始大小 4KB
-    private let maxBufferLimit: Int = 256 * 1024 // 最大大小 256KB
+    private let maxBufferLimit: Int = 156 * 1024 // 最大大小 156KB
     private var backpressureTimer: DispatchSourceTimer?
 
         // 新增：在背压状态下，每 50ms 动态调整一次缓冲区大小
@@ -404,7 +414,7 @@ public final class LayerMinusBridge {
             }
             // else: 不具备扩张条件，维持现状，避免峰值继续放大
         } else {
-            currentBufferLimit = max(currentBufferLimit / 3, 4 * 1024)             // 快速收敛
+            currentBufferLimit = max(currentBufferLimit / 4, 4 * 1024)             // 快速收敛
         }
 
         if currentBufferLimit != oldUploadLimit {
@@ -1548,23 +1558,20 @@ public final class LayerMinusBridge {
 	private func applyPrimaryCaps() {
 		switch primaryRole {
 		case .upstream:
-		// 上行為主：下行讀窗硬上限 4KB
-		downReadHardCap = 4 * 1024
-		cuFlushBytesOverride = nil
-		cuFlushMsOverride = nil
-		log("ROLE -> upstream-primary; cap downRead to 4KB")
+			downReadHardCap = 4 * 1024
+			cuFlushBytesOverride = nil
+			cuFlushMsOverride = nil
+			log("ROLE -> upstream-primary; cap downRead=4KB")
 		case .downstream:
-		// 下行為主：上行微批硬上限 4KB/4ms
 			downReadHardCap = nil
 			cuFlushBytesOverride = 4 * 1024
 			cuFlushMsOverride = 4
-		log("ROLE -> downstream-primary; cap up flush to 4KB/4ms")
+			 log("ROLE -> downstream-primary; cap up flush=4KB/4ms")
 		case .balanced:
-			// 解除硬上限
 			downReadHardCap = nil
 			cuFlushBytesOverride = nil
 			cuFlushMsOverride = nil
-			log("ROLE -> balanced; remove hard caps")
+			log("ROLE -> balanced; remove caps")
 		}
 	}
 
@@ -1643,7 +1650,7 @@ private func handleAppToUpstream(_ data: Data) {
 	private func drainC2UQueueIfPossible() {
 		guard alive(), !upstreamPausedByBackpressure, !c2uQueue.isEmpty else { return }
 		let next = c2uQueue.removeFirst()
-		self.subGlobalBytes(next.count)  
+		// 不要在这里扣账，让 _writeUpstreamSingleChunk 统一处理
 		_writeUpstreamSingleChunk(next, remark: "c->u(drain)")
 	}
 
@@ -1702,6 +1709,7 @@ private func handleAppToUpstream(_ data: Data) {
 		let t = DispatchSource.makeTimerSource(queue: queue)
 		// 取 4ms 覆盖或默认
 		let ms = afterMs ?? (cuFlushMsOverride ?? CU_FLUSH_MS)
+		vlog("CU flush schedule ms=\(cuFlushMsOverride ?? CU_FLUSH_MS) bytes=\(cuFlushBytesOverride ?? CU_MIN_FLUSH_BYTES)")
 		t.schedule(deadline: .now() + .milliseconds(ms))
 
 		t.setEventHandler { [weak self] in
@@ -1723,7 +1731,7 @@ private func handleAppToUpstream(_ data: Data) {
 						}
 					}
 					
-					
+                    s.log("CU flush schedule ms=\(s.cuFlushMsOverride ?? s.CU_FLUSH_MS) bytes=\(s.cuFlushBytesOverride ?? s.CU_MIN_FLUSH_BYTES)")
 					s.cuFlushTimer = t2
 					t2.resume()
 				} else {
@@ -2365,6 +2373,9 @@ private func handleAppToUpstream(_ data: Data) {
 				if self.downInflightBytes < 0 { self.downInflightBytes = 0 }
 				self.downInflightCount &-= 1
 				if self.downInflightCount < 0 { self.downInflightCount = 0 }
+
+				// ★ 统计到“已交付客户端”的字节，用于 300ms 窗口的主/次角色判定
+				self.winDownBytes &+= data.count
 
 				if let err = err {
 					self.log("client send err: \(err)")
