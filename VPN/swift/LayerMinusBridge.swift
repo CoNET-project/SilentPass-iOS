@@ -693,7 +693,7 @@ public final class LayerMinusBridge {
     private func pumpUpstreamToClient() {
         if closed { return }
         
-        upstream?.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] (data, _, isComplete, err) in
+        upstream?.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [weak self] (data, _, isComplete, err) in
             
             guard let self = self else { return }
             if !self.alive() { return }

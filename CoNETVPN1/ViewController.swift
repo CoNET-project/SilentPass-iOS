@@ -162,15 +162,15 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //        }
  
 //        let monitor = NWPathMonitor()
-//        
+//
 //        // 开始监听网络状态
 //                monitor.pathUpdateHandler = { path in
 //                    if path.status == .satisfied {
 //                        DispatchQueue.main.async {
 //                            monitor.cancel()
 //                            print("网络已恢复，重新加载 WebView")
-//                            
-//                            
+//
+//
 //                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
 //                                if let url = URL(string: Constants.baseURL) {
 //                                    let request = URLRequest(url: url)
@@ -178,7 +178,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //                                }
 //                            }
 //
-//                            
+//
 //                        }
 //                    }
 //                }
@@ -189,7 +189,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //                monitor.start(queue: queue)
 //        DispatchQueue.main.async{
 //
-//            
+//
 //        }
         
        
@@ -506,9 +506,9 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //            switch status {
 //            case .connected:
 //                print("VPN 已连接")
-//                
 //
-//                
+//
+//
 //            case .connecting:
 //                print("VPN 正在连接")
 //            case .disconnected:
@@ -552,4 +552,3 @@ class ViewController: UIViewController, WKNavigationDelegate {
         NotificationCenter.default.removeObserver(self)
         }
 }
-

@@ -4,7 +4,7 @@ import os
 import Darwin
 
 
-
+//		ServerConnection LayerMinusBridge
 public final class ServerConnection {
     
     // 命中黑名单 → 立即废止（HTTP 返回 403；SOCKS5 返回 0x02），统一在 ServerConnection 的 queue 上执行
@@ -755,6 +755,7 @@ public final class ServerConnection {
         guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
               !egressNode.isEmpty else {
             let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
+            
             // 创建并启动 LayerMinusBridge，保存引用
             let newBridge = LayerMinusBridge(
                 id: self.id,
