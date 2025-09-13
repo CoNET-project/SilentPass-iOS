@@ -6,9 +6,78 @@ import Darwin
 
 //		ServerConnection LayerMinusBridge
 public final class ServerConnection {
-    
-    // 命中黑名单 → 立即废止（HTTP 返回 403；SOCKS5 返回 0x02），统一在 ServerConnection 的 queue 上执行
+
+    // MARK: - Static→Instance 日志桥
+    private static weak var _logTarget: ServerConnection?
+	private static var _memTick: Int = 0   // 用于周期性心跳打印
     @inline(__always)
+    private static func _log(_ msg: String) {
+        if let t = _logTarget {
+            t.log(msg)                 // 使用实例的 log(_:)
+        } else {
+            #if DEBUG
+            print(msg)                 // 兜底：尚未注册时不丢日志
+            #else
+            NSLog("%@", msg)
+            #endif
+        }
+    }
+
+	// MARK: - Global Memory Monitor (500ms)
+	private struct MemoryState {
+		var isUnderPressure = false
+		var lastCheckTime = DispatchTime.now()
+		var consecutivePressureCount = 0
+	}
+    private static var _memTimer: DispatchSourceTimer?
+	private static var _memState = MemoryState()
+
+	private static let _memQueue = DispatchQueue(label: "ServerConnection.mem.monitor")
+	// 可按机型调整软阈值（MB）
+	private static let _MEM_SOFT_LIMIT_MB: Int = 48
+	private static let _MEM_CHECK_INTERVAL: DispatchTimeInterval = .milliseconds(500)
+
+	/// 全局内存压力只读开关（其他模块可读取）
+	public static var isUnderMemoryPressure: Bool { _memState.isUnderPressure }
+
+    /// 改为：仅在被调用时**采样并打印一次**（无定时器）
+    private static func startGlobalMemoryMonitorIfNeeded(event: String, logger: (String) -> Void) {
+        _memState.lastCheckTime = .now()
+        guard let rss = currentRSSMB() else {
+            logger("⚠️ [MEM] \(event)  rss=unavailable  limit=\(_MEM_SOFT_LIMIT_MB)MB")
+            return
+        }
+        let was = _memState.isUnderPressure
+        let isPressure = (rss >= _MEM_SOFT_LIMIT_MB)
+        _memState.isUnderPressure = isPressure
+        _memState.consecutivePressureCount = isPressure ? (_memState.consecutivePressureCount + 1) : 0
+        logger("⚠️ [MEM] \(event)  pressure=\(isPressure ? "ON" : "OFF")  rss=\(rss)MB  limit=\(_MEM_SOFT_LIMIT_MB)MB  consec=\(_memState.consecutivePressureCount)")
+        if was != isPressure {
+            logger("⚠️ [MEM] pressure state changed: \(was ? "ON→OFF" : "OFF→ON")")
+        }
+    }
+
+
+	/// 获取当前进程物理占用（MB），优先使用 task_vm_info.phys_footprint
+	private static func currentRSSMB() -> Int? {
+		#if canImport(Darwin)
+		var info = task_vm_info_data_t()
+		var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
+		let kr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+			$0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+				task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+			}
+		}
+		guard kr == KERN_SUCCESS else { return nil }
+		let footprint = info.phys_footprint // bytes
+		return Int(footprint) / (1024 * 1024)
+		#else
+		return nil
+		#endif
+	}
+
+	// 命中黑名单 → 立即废止（HTTP 返回 403；SOCKS5 返回 0x02），统一在 ServerConnection 的 queue 上执行
+	@inline(__always)
     private func shouldBlock(host: String) -> Bool {
         return AdBlacklist.matches(host)
     }
@@ -132,6 +201,8 @@ public final class ServerConnection {
     #endif
 
     public func start() {
+        // 始终以“最新实例”作为日志目标（弱引用，实例释放后自动失效）
+        Self._logTarget = self
         client.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             switch state {
@@ -765,9 +836,13 @@ public final class ServerConnection {
                 verbose: self.verbose,
                 connectInfo: connectInfo,
                 onClosed: { [weak self] bridgeId in
-                    // 当 bridge 关闭时，关闭 ServerConnection
-                    self?.log("Bridge #\(bridgeId) closed, closing ServerConnection")
-                    self?.close(reason: "Bridge closed")
+                    // 当 bridge 关闭时，先采样打印内存，再关闭连接
+                    if let strong = self {
+                        Self.startGlobalMemoryMonitorIfNeeded(event: "LayerMinusBridge #\(bridgeId) DESTROYED", logger: { strong.log($0) })
+                        strong.log("Bridge #\(bridgeId) closed, closing ServerConnection")
+                        strong.close(reason: "Bridge closed")
+                    }
+
                 }
             )
             
@@ -777,6 +852,8 @@ public final class ServerConnection {
             // KPI：标记 handoff 时刻（与 Bridge.start 的 tStart 对齐，用于 handoff->start）
             self.log("KPI handoff -> LM host=\(host):\(port) ")
             newBridge.markHandoffNow()
+
+			Self.startGlobalMemoryMonitorIfNeeded(event: "LayerMinusBridge #\(self.id) CREATED", logger: { [weak self] in self?.log($0) })
             // 传递 Base64 编码的首包给 bridge
             newBridge.start(withFirstBody: b64)
             return
@@ -824,6 +901,7 @@ public final class ServerConnection {
                     self.isLayerMinusRouted = true
                     self.bridge = newBridge
                     self.onRoutingDecided?(self)
+					Self.startGlobalMemoryMonitorIfNeeded(event: "LayerMinusBridge #\(self.id) CREATED", logger: { [weak self] in self?.log($0) })
                     
                     // 传递 Base64 编码的首包给 bridge
                     newBridge.start(withFirstBody: request.data(using: .utf8)!.base64EncodedString())

@@ -8,6 +8,246 @@ enum L {
 }
 
 public final class LayerMinusBridge {
+
+	// —— 当前连接是否使用 AsyncStream 桥接（而非旧的 pump* 循环）
+	private var usingBridge = false
+
+	// —— 只在角色切换后的第一轮 receive 打印一次 maxLen 观测日志
+	private var justSwitchedFlag = false
+
+	// MARK: - 二层 role：上行/下行主导
+	private enum PrimaryRole { case upstreamPrimary, downstreamPrimary }
+	// 主导方向（默认为未知时偏保守：下行主导）
+	private var primaryRole: PrimaryRole = .downstreamPrimary
+	// 用于判定主导方向的累计流量统计
+	private var bytesC2U: Int64 = 0   // client -> upstream
+	private var bytesD2C: Int64 = 0   // upstream -> client
+	// 切换阈值与裕度（防抖）
+	private let ROLE_SWITCH_BASE: Int64 = 4 * 1024     // 4KB
+	private let ROLE_HYSTERESIS : Int64 = 32 * 1024     // 32KB 方向裕度
+
+	@inline(__always)
+	private func observeBytes(direction: String, n: Int) {
+		// direction: "C2U" 或 "D2C"
+		if direction == "C2U" {
+			bytesC2U &+= Int64(n)
+		} else {
+			bytesD2C &+= Int64(n)
+		}
+		maybeSwitchPrimaryRole()
+	}
+
+	// 根据累计字节判断是否需要切换主导方向
+	private func maybeSwitchPrimaryRole() {
+		let c = bytesC2U
+		let d = bytesD2C
+		// 只有累计到一定规模再判断，避免冷启动时抖动
+		guard (c + d) >= ROLE_SWITCH_BASE else { return }
+
+		let newRole: PrimaryRole
+		if c > d + ROLE_HYSTERESIS {
+			newRole = .upstreamPrimary
+		} else if d > c + ROLE_HYSTERESIS {
+			newRole = .downstreamPrimary
+		} else {
+			return
+		}
+		if newRole != primaryRole {
+			// —— 切换前先记录当前（旧 role 下）的 maximumLength
+			let oldMaxC2U = computeDesiredMax(isC2U: true)
+			let oldMaxD2C = computeDesiredMax(isC2U: false)
+
+			// —— 进行切换
+			primaryRole = newRole
+
+			// 让下一轮 receive 打一条“计划窗口”观测日志
+			justSwitchedFlag = true
+
+			// —— 切换后再计算一次，打印“前 → 后”的对比
+			let newMaxC2U = computeDesiredMax(isC2U: true)
+			let newMaxD2C = computeDesiredMax(isC2U: false)
+			log(
+				"ROLE switch -> \(newRole == .upstreamPrimary ? "UPSTREAM_PRIMARY" : "DOWNSTREAM_PRIMARY") " +
+				"C2U=\(c)B D2C=\(d)B " +
+				"maxLen(C2U): \(oldMaxC2U) -> \(newMaxC2U)  maxLen(D2C): \(oldMaxD2C) -> \(newMaxD2C) " +
+				"pausedC2U=\(pausedC2U) pausedD2C=\(pausedD2C) global=\(Self.globalBufferedBytes)B"
+			)
+			// 主导方向切换时，及时释放“被最小化侧”的内存，化解压力
+			releaseMinimizedSideBuffers()
+		}
+	}
+
+	// 统一计算本次 receive 的 maximumLength（供 role 切换与 receiveStream 复用）
+	@inline(__always)
+	private func computeDesiredMax(isC2U: Bool) -> Int {
+		var base: Int
+		switch primaryRole {
+		case .upstreamPrimary:   base = isC2U ? 512*1024 : 4*1024
+		case .downstreamPrimary: base = isC2U ? 4*1024   : 512*1024
+		}
+		// 全局预算吃紧：强制把上限收缩到 ≤16KB
+		Self.globalLock.lock()
+		let gBytes = Self.globalBufferedBytes
+		Self.globalLock.unlock()
+		if gBytes > Self.GLOBAL_BUFFER_BUDGET { base = min(base, 16*1024) }
+		// 本地背压：强制最小化 4KB
+		if isC2U, pausedC2U { base = 4*1024 }
+		if !isC2U, pausedD2C { base = 4*1024 }
+		return max(1024, base)
+	}
+
+	// 尝试释放被最小化侧的缓冲（存在则清空，不存在则忽略）
+	private func releaseMinimizedSideBuffers() {
+
+		// 下行最小化（UPSTREAM_PRIMARY）：清 D2C 队列与测速合包缓冲
+		if primaryRole == .upstreamPrimary {
+			let clearedQ  = self.d2cBufferedBytes
+			let clearedSt = self.stBuffer.count
+			// 真实清空
+			var q = self.d2cQueue; q.removeAll(keepingCapacity: false); self.d2cQueue = q
+			var st = self.stBuffer; st.removeAll(keepingCapacity: false); self.stBuffer = st
+			self.d2cBufferedBytes = 0
+			// 全局预算出账
+			let total = clearedQ &+ clearedSt
+			if total > 0 { self.subGlobalBytes(total) }
+			log("ROLE minimized clear (DOWNSTREAM minimized): d2cQueued=\(clearedQ)B st=\(clearedSt)B global=\(Self.globalBufferedBytes)B")
+		} else {
+			// 上行最小化（DOWNSTREAM_PRIMARY）：清 C2U 微批缓冲
+			let clearedCu = self.cuBuffer.count
+			var cu = self.cuBuffer; cu.removeAll(keepingCapacity: false); self.cuBuffer = cu
+			if clearedCu > 0 { self.subGlobalBytes(clearedCu) }
+			log("ROLE minimized clear (UPSTREAM minimized): cu=\(clearedCu)B global=\(Self.globalBufferedBytes)B")
+		}
+	}
+
+    // MARK: - Global Memory Monitor (500ms)
+    private struct MemoryState {
+        var isUnderPressure = false
+        var lastCheckTime = DispatchTime.now()
+        var consecutivePressureCount = 0
+    }
+    private static var _memState = MemoryState()
+    private static var _memTimer: DispatchSourceTimer?
+    private static let _memQueue = DispatchQueue(label: "LayerMinus.mem.monitor")
+	// 默认软阈值（MB），可按机型/业务自行调小或调大
+	private static let _MEM_SOFT_LIMIT_MB: Int = 48
+	private static let _MEM_CHECK_INTERVAL: DispatchTimeInterval = .milliseconds(500)
+
+
+
+	//		下行管理
+	//
+	//// —— 下行（u->c）背压与缓冲
+	private var d2cQueue = [Data]()              // 顺序队列
+	private var d2cBufferedBytes: Int = 0        // 队列累计字节
+	private var d2cSending: Bool = false         // 是否有在途 send
+	private var pausedD2C: Bool = false          // 是否已对上游施加背压（暂停 receive）
+
+	// 下行水位：高水位触发暂停上游读，低水位解除
+	private var D2C_HIGH_WATER: Int = 512 * 1024     // 512KB
+	private var D2C_LOW_WATER:  Int = 256 * 1024     // 256KB（hysteresis）
+	private let D2C_MAX_CHUNK:  Int = 64 * 1024      // 单次写入客户端最大块
+
+	@inline(__always)
+	private func enqueueDownstream(_ d: Data) {
+		// 入队与全局预算入账
+		d2cQueue.append(d)
+		d2cBufferedBytes &+= d.count
+		addGlobalBytes(d.count)
+
+		// 若超高水位或全局预算吃紧，则暂停上游读
+		var overGlobal = false
+		Self.globalLock.lock()
+		overGlobal = (Self.globalBufferedBytes > Self.GLOBAL_BUFFER_BUDGET)
+		Self.globalLock.unlock()
+
+		if !pausedD2C && (d2cBufferedBytes >= D2C_HIGH_WATER || overGlobal) {
+			pausedD2C = true
+			vlog("pause u->c receive due to d2c backpressure: queued=\(d2cBufferedBytes)B global=\(Self.globalBufferedBytes)B")
+		}
+
+		// 驱动发送
+		sendNextToClientIfIdle()
+	}
+
+	@inline(__always)
+	private func sendNextToClientIfIdle() {
+		guard !d2cSending, !d2cQueue.isEmpty, alive() else { return }
+
+		// 合并小块：尽量凑一个不超过 D2C_MAX_CHUNK 的数据包
+		var quota = D2C_MAX_CHUNK
+		var merged = Data()
+		while quota > 0, !d2cQueue.isEmpty {
+			var head = d2cQueue[0]
+			if head.count <= quota {
+				merged.append(head)
+				d2cQueue.removeFirst()
+				quota &-= head.count
+			} else {
+				// 切片发送，剩余部分放回队首（不复制大块，避免扩散内存）
+				let part = head.prefix(quota)
+				merged.append(part)
+				head.removeFirst(quota)
+				d2cQueue[0] = head
+				quota = 0
+			}
+		}
+
+		d2cSending = true
+		let sz = merged.count
+		vlog("send u->c(bp) \(sz)B -> client (queued=\(d2cBufferedBytes)B)")
+		client.send(content: merged, completion: .contentProcessed({ [weak self] err in
+			guard let s = self, s.alive() else { return }
+			s.d2cSending = false
+			if let err = err {
+				s.log("client send err: \(err)")
+				s.queue.async { s.cancel(reason: "client send err") }
+				return
+			}
+			// 发送完成：全局/本地出账
+			s.d2cBufferedBytes &-= sz
+			s.subGlobalBytes(sz)
+			s.vlog("sent u->c(bp) ok, remain queued=\(s.d2cBufferedBytes)B")
+
+			// 若此前因背压暂停上游读，且降到低水位，恢复上游读
+			if s.pausedD2C && s.d2cBufferedBytes <= s.D2C_LOW_WATER {
+				s.pausedD2C = false
+				s.vlog("resume u->c receive after d2c drained: queued=\(s.d2cBufferedBytes)B")
+				// s.pumpUpstreamToClient()   // 立刻续上一次 receive 循环
+
+				// 桥接模式下由 receiveStream 自驱动，不再唤醒旧的 pump 循环
+				if !s.usingBridge {
+					s.pumpUpstreamToClient()
+				} else {
+					s.vlog("bridge mode: upstream receive auto-loop continues (no pump)")
+				}
+
+			}
+
+			// 继续冲队列
+			s.sendNextToClientIfIdle()
+		}))
+	}
+
+	@inline(__always)
+	private func adjustD2CWatermarks() {
+		// 根据全局水位动态收缩/放大下行水位
+		Self.globalLock.lock()
+		let g = Self.globalBufferedBytes
+		Self.globalLock.unlock()
+
+		if g > Self.GLOBAL_BUFFER_BUDGET {
+			// 全局吃紧：更保守
+			D2C_HIGH_WATER = 256 * 1024
+			D2C_LOW_WATER  = 128 * 1024
+		} else {
+			// 恢复默认
+			D2C_HIGH_WATER = 512 * 1024
+			D2C_LOW_WATER  = 256 * 1024
+		}
+	}
+
+
     private static let GLOBAL_BUFFER_BUDGET = 8 * 1024 * 1024
     // —— 100-Continue 兼容：观测到上游 100 后，直到客户端真正发出实体前，避免过早 half-close 上游
     private var saw100Continue = false
@@ -349,8 +589,74 @@ public final class LayerMinusBridge {
             
         }
     }
-    
-    
+
+    // MARK: - Backpressure-aware receive stream（按角色/背压/全局预算动态调节窗口）
+    private func receiveStream(of conn: NWConnection, role: String) -> AsyncStream<Data> {
+        AsyncStream<Data>(bufferingPolicy: .unbounded) { [weak self] continuation in
+            guard let s = self else { continuation.finish(); return }
+            let q = s.queue
+
+            func loop() {
+                // 背压时暂停发起新的 receive（真正对端施压），8ms 后重试
+                if (role == "client" && s.pausedC2U) || (role == "upstream" && s.pausedD2C) {
+                    q.asyncAfter(deadline: .now() + .milliseconds(8)) { loop() }
+                    return
+                }
+                // 统一用类方法计算当次 maximumLength，确保与切换日志一致
+                let maxLen = s.computeDesiredMax(isC2U: (role == "client"))
+                // 仅在角色切换后的第一轮打印一次计划窗口，避免刷屏
+                if s.verbose, s.justSwitchedFlag {
+                    s.vlog("recv plan after role switch: role=\(s.primaryRole) isC2U=\(role == "client") maxLen=\(maxLen) global=\(Self.globalBufferedBytes)B pausedC2U=\(s.pausedC2U) pausedD2C=\(s.pausedD2C)")
+                    s.justSwitchedFlag = false
+                }
+                conn.receive(minimumIncompleteLength: 1, maximumLength: maxLen) { (data, _, isComplete, err) in
+                    if let err = err {
+                        L.lm("\(role) recv error: \(err)")
+                        continuation.finish()
+                        return
+                    }
+                    if let d = data, !d.isEmpty {
+                        // 统计方向以驱动 role 切换
+                        s.observeBytes(direction: (role == "client") ? "C2U" : "D2C", n: d.count)
+                        continuation.yield(d)
+                    }
+                    if isComplete {
+                        L.lm("\(role) EOF")
+                        continuation.finish()
+                        return
+                    }
+                    loop()
+                }
+            }
+            loop()
+        }
+    }
+
+    // Bridge both directions concurrently. No queues, no watermarks, no local buffers.
+    private func bridgeConnections(client: NWConnection, remote: NWConnection) async {
+        await withTaskGroup(of: Void.self) { group in
+            // client -> remote
+            group.addTask {
+                for await chunk in self.receiveStream(of: client, role: "client") {
+                    remote.send(content: chunk, completion: .contentProcessed { _ in })
+                }
+                // Half-close remote write when client finished sending
+                remote.send(content: nil, completion: .contentProcessed { _ in })
+            }
+            // remote -> client
+            group.addTask {
+               for await chunk in self.receiveStream(of: remote, role: "upstream") {
+                    client.send(content: chunk, completion: .contentProcessed { _ in })
+                }
+                // Half-close client write when remote finished sending
+                client.send(content: nil, completion: .contentProcessed { _ in })
+            }
+            // Wait for both directions to complete
+            for await _ in group { }
+        }
+        // Tear down after bridge completes
+        self.cancel(reason: "bridge completed")
+    }
     
     
     public func cancel(reason: String) {
@@ -459,9 +765,18 @@ public final class LayerMinusBridge {
                 }
                 
                 // 启动双向数据泵
-                self.pumpClientToUpstream()
-                self.pumpUpstreamToClient()
-                
+                // self.pumpClientToUpstream()
+                // self.pumpUpstreamToClient()
+
+                // 启动简单桥接（AsyncStream/Task，去掉内存管理）
+
+				self.usingBridge = true
+
+                Task { [weak self] in
+                    guard let s = self else { return }
+                    await s.bridgeConnections(client: s.client, remote: up)
+                }
+
             case .waiting(let error):
                 self.log("upstream waiting: \(error)")
                 
@@ -496,7 +811,12 @@ public final class LayerMinusBridge {
            self.inflight.count <= (C * 90) / 100 {
             self.pausedC2U = false
             self.vlog("resume c->u after inflight drained: bytes=\(self.inflightBytes) count=\(self.inflight.count)")
-            self.pumpClientToUpstream()
+            // 桥接模式下由 receiveStream 自驱动，不再唤醒旧的 pump 循环
+            if !self.usingBridge {
+                self.pumpClientToUpstream()
+            } else {
+                self.vlog("bridge mode: client receive auto-loop continues (no pump)")
+            }
         }
     }
     
@@ -567,8 +887,6 @@ public final class LayerMinusBridge {
                 
                 // 避免在 receive 回调栈内同步取消，引发重入/竞态
                 self.queue.async { self.cancel(reason: "client recv err") }
-                
-                
                 
                 
                 return
@@ -735,10 +1053,10 @@ public final class LayerMinusBridge {
                     }
                 }
                 
-
+				adjustD2CWatermarks()
                 self.bytesDown &+= d.count
-                self.sendToClient(d, remark: "u->c")
-                
+                self.enqueueDownstream(d)
+
                 // 若客户端已 EOF（half-close），但上游仍在下发数据，则刷新空闲计时器，避免早收尾
                 if self.eofClient {
                     self.scheduleDrainCancel(hint: "client EOF (upstream->client activity)")
@@ -756,7 +1074,12 @@ public final class LayerMinusBridge {
             }
             
             // 继续接收
-            self.pumpUpstreamToClient()
+            // 继续接收：若因下行背压暂停，则暂不继续读上游
+            if !self.pausedD2C {
+                self.pumpUpstreamToClient()
+            } else {
+                self.vlog("pause u->c receive loop due to d2c backpressure (queued=\(self.d2cBufferedBytes)B)")
+            }
         }
     }
     
