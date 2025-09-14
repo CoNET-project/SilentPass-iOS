@@ -536,7 +536,7 @@ struct NWReceiveSequence: AsyncSequence {
 		private let minBuffer = 4 * 1024
 		private let maxBuffer = 512 * 1024
 		private let growthStep = 16 * 1024
-		private let memoryWarningThreshold = 45 * 1024 * 1024
+		private let memoryWarningThreshold = 38 * 1024 * 1024
 		
 		init(conn: NWConnection, max: Int, bridgeId: UInt64, connectInfo: String?) {
 			self.conn = conn
@@ -576,7 +576,7 @@ struct NWReceiveSequence: AsyncSequence {
 			currentBufferSize == maxBuffer ||
 			(consecutiveDataReads > 0 && consecutiveDataReads % 10 == 0) {
 				let memoryMB = getCurrentMemoryUsage() / (1024 * 1024)
-				NSLog("\(makeLogTag()) Buffer: \(currentBufferSize/1024)KB (RSS: \(memoryMB)MB, data:\(consecutiveDataReads) empty:\(consecutiveEmptyReads))")
+				NSLog("\(makeLogTag()) 🔵🔵🔵 Buffer: \(currentBufferSize/1024)KB (RSS: \(memoryMB)MB, data:\(consecutiveDataReads) empty:\(consecutiveEmptyReads))")
 			}
 			#endif
 			
@@ -611,13 +611,13 @@ struct NWReceiveSequence: AsyncSequence {
 			if currentMemory >= memoryWarningThreshold {
 				// 内存达到警告线，停止增长并尝试缩减
 				if currentBufferSize > minBuffer {
-					let targetSize = Swift.max(minBuffer, 16 * 1024)
-					if targetSize < currentBufferSize {
+					// let targetSize = Swift.max(minBuffer, 16 * 1024)
+					// if targetSize < currentBufferSize {
 						#if DEBUG
-						NSLog("\(makeLogTag()) Memory pressure (\(currentMemory/(1024*1024))MB >= \(memoryWarningThreshold/(1024*1024))MB): buffer \(currentBufferSize/1024)KB → \(targetSize/1024)KB")
+						NSLog("\(makeLogTag()) 🔵🔵🔵 Memory pressure (\(currentMemory/(1024*1024))MB >= \(memoryWarningThreshold/(1024*1024))MB): buffer \(currentBufferSize/1024)KB")
 						#endif
-						currentBufferSize = targetSize
-					}
+					// 	currentBufferSize = targetSize
+					// }
 				}
 				return
 			}
@@ -629,13 +629,13 @@ struct NWReceiveSequence: AsyncSequence {
 					let newSize = Swift.min(currentBufferSize + growthStep, maxBuffer)
 					if newSize != currentBufferSize {
 						#if DEBUG
-						NSLog("\(makeLogTag()) Buffer growing: \(currentBufferSize/1024)KB → \(newSize/1024)KB (RSS: \(currentMemory/(1024*1024))MB)")
+						NSLog("\(makeLogTag()) 🔵🔵🔵 Buffer growing: \(currentBufferSize/1024)KB → \(newSize/1024)KB (RSS: \(currentMemory/(1024*1024))MB)")
 						#endif
 						currentBufferSize = newSize
 					}
 				} else {
 					#if DEBUG
-					NSLog("\(makeLogTag()) Growth blocked: would exceed memory threshold (current: \(currentMemory/(1024*1024))MB)")
+					NSLog("\(makeLogTag()) 🔵🔵🔵 Growth blocked: would exceed memory threshold (current: \(currentMemory/(1024*1024))MB)")
 					#endif
 				}
 			}
@@ -653,7 +653,7 @@ struct NWReceiveSequence: AsyncSequence {
 				
 				if targetSize != currentBufferSize {
 					#if DEBUG
-					NSLog("\(makeLogTag()) Buffer shrinking: \(currentBufferSize/1024)KB → \(targetSize/1024)KB")
+					NSLog("\(makeLogTag()) 🔵🔵🔵 Buffer shrinking: \(currentBufferSize/1024)KB → \(targetSize/1024)KB")
 					#endif
 					currentBufferSize = targetSize
 				}
