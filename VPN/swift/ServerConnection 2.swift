@@ -149,7 +149,7 @@ public final class ServerConnection {
         case closed
     }
     
-    private let RECV_BUFFER_SOFT_LIMIT = 2 * 1024 * 1024  // 2MB：降低首部稍大的场景的误伤
+    private let RECV_BUFFER_SOFT_LIMIT = 5 * 1024 * 1024  // 2MB：降低首部稍大的场景的误伤
     
     
     /// 该连接是否已切到 LayerMinus 通道（由业务分支显式标记）

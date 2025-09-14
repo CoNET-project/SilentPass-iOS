@@ -423,7 +423,6 @@ class ViewController: UIViewController, WKNavigationDelegate {
 				print("已完成首导航，忽略重复 load")
 				return
 			}
-			self.didPerformInitialLoad = true
 			DispatchQueue.main.async {
 				guard let url = URL(string: "local-first://localhost:3001") else { return }
 				self.webView.load(URLRequest(url: url))

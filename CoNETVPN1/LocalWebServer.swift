@@ -98,6 +98,12 @@ class LocalWebServer {
             guard let self = self else { return .internalServerError }
             return self.handleVarRequest(rootDir: rootDir)
         }
+
+		server.head["/"] = { _ in
+			var headers = [String: String]()
+			headers["Cache-Control"] = "no-store"
+			return .raw(200, "OK", headers, { _ in /* no body for HEAD */ })
+		}
         
         // --- 规则 2: 使用 notFoundHandler 作为文件服务的 "全捕获" 路由 ---
         // 这是最健壮的方式，可以避免所有路由优先级和正则表达式问题。
