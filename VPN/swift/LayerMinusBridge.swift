@@ -5,6 +5,11 @@ import Darwin
 
 // MARK: - LayerMinusBridge as an Actor
 public actor LayerMinusBridge {
+	// 小工具：毫秒级延迟
+	@inline(__always)
+	private func delayMs(_ ms: Int) async {
+		try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+	}
 
 	enum ConnectionState {
 		case idle
@@ -338,17 +343,23 @@ public actor LayerMinusBridge {
 					log("Connection reset detected (ECONNRESET), no retry in DIRECT mode")
 				case .ENETDOWN:
 					log("Network down detected (ENETDOWN)")
+				case .ECANCELED:
+					log("ECANCELED → soft-delay cancel")
+					await delayMs(150)               // 给 in-flight 的 completion 一个窗口
+					if !closed { cancel(reason: "upstream failed(ECANCELED): \(error)") }
+					return
 				default:
 					break
 				}
 			}
-			
-			cancel(reason: "upstream failed: \(error)")
+			await delayMs(50) // 普通失败也稍微缓一缓
+			if !closed { cancel(reason: "upstream failed: \(error)") }
 
         case .cancelled:
 			guard !closed else { return }
             log("upstream cancelled")
-            cancel(reason: "upstream cancelled")
+            await delayMs(100)
+            if !closed { cancel(reason: "upstream cancelled (delayed)") }
 
         default:
             log("upstream state: \(st)")
@@ -359,8 +370,11 @@ public actor LayerMinusBridge {
     // MARK: Pipe bridge (true backpressure)
     private func bridgeConnections(client: NWConnection, remote: NWConnection) async {
        
-		
+		var c2sHadError = false
+    	var s2cHadError = false
 		await withTaskGroup(of: Void.self) { group in
+			var c2sHadError = false
+			var s2cHadError = false
 			group.addTask { [weak self] in
 				guard let self = self else { return }
 				do {
@@ -368,8 +382,8 @@ public actor LayerMinusBridge {
 					// 传递 bridgeId 和 connectInfo
 					for try await data in client.receiveStream(
 						maxLength: 512 * 1024,
-						bridgeId: await self.id,
-						connectInfo: await self.connectInfo
+						bridgeId: self.id,
+						connectInfo: self.connectInfo
 					) {
 						chunkCount += 1
 						await self.addUpBytes(data.count)
@@ -381,8 +395,8 @@ public actor LayerMinusBridge {
 						try await remote.sendAsync(data)
 					}
 				} catch {
-					await self.log("C->S error: \(error)")
-					await self.cancel(reason: "bridge C->S error: \(error)")
+					await self.log("C->S error (benign, no immediate cancel): \(error)")
+					c2sHadError = true
 					return
 				}
 				try? await remote.sendAsync(nil, final: true)
@@ -394,24 +408,30 @@ public actor LayerMinusBridge {
 					// 同样传递 bridgeId 和 connectInfo
 					for try await data in remote.receiveStream(
 						maxLength: 512 * 1024,
-						bridgeId: await self.id,
-						connectInfo: await self.connectInfo
+						bridgeId: self.id,
+						connectInfo: self.connectInfo
 					) {
 						await self.onFirstDownBytes(n: data.count)
 						try await client.sendAsync(data)
 					}
 				} catch {
-					await self.log("S->C error: \(error)")
-					await self.cancel(reason: "bridge S->C error: \(error)")
+					await self.log("S->C error (benign, no immediate cancel): \(error)")
+					s2cHadError = true
 					return
 				}
 				try? await client.sendAsync(nil, final: true)
 			}
 		}
-		
+
+		// 统一收尾：给在途 completion 一个“极小宽限期”再 cancel
 		if !closed {
-			cancel(reason: "bridge completed")
+			let reason = (c2sHadError || s2cHadError)
+				? "bridge completed (had half-side error)"
+				: "bridge completed"
+			await delayMs(150)       // ← 关键：避免 89 号错误后的过早 cancel
+			if !closed { cancel(reason: reason) }
 		}
+    
 	}
 
     // Helpers (actor-isolated mutations)
@@ -609,15 +629,19 @@ struct NWReceiveSequence: AsyncSequence {
 			
 			// 内存压力检查
 			if currentMemory >= memoryWarningThreshold {
-				// 内存达到警告线，停止增长并尝试缩减
-				if currentBufferSize > minBuffer {
-					// let targetSize = Swift.max(minBuffer, 16 * 1024)
-					// if targetSize < currentBufferSize {
-						#if DEBUG
-						NSLog("\(makeLogTag()) 🔵🔵🔵 Memory pressure (\(currentMemory/(1024*1024))MB >= \(memoryWarningThreshold/(1024*1024))MB): buffer \(currentBufferSize/1024)KB")
-						#endif
-					// 	currentBufferSize = targetSize
-					// }
+				// 达到警戒线：仅在当前缓冲 > 128KB 时减半；<=128KB 保持不变
+				if currentBufferSize > 128 * 1024 {
+					let newSize = Swift.max(currentBufferSize / 2, minBuffer)
+					#if DEBUG
+					NSLog("\(makeLogTag()) 🔵🔵🔵 Memory pressure \(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
+						+ "shrink \(currentBufferSize/1024)KB → \(newSize/1024)KB")
+					#endif
+					currentBufferSize = newSize
+				} else {
+					#if DEBUG
+					NSLog("\(makeLogTag()) 🔵🔵🔵 Memory pressure \(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
+						+ "buffer kept \(currentBufferSize/1024)KB (≤128KB)")
+					#endif
 				}
 				return
 			}
