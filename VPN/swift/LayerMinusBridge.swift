@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import os
+import Darwin
 
 // MARK: - LayerMinusBridge as an Actor
 public actor LayerMinusBridge {
@@ -361,10 +362,22 @@ public actor LayerMinusBridge {
 		
 		await withTaskGroup(of: Void.self) { group in
 			group.addTask { [weak self] in
-				guard let self = self else { return }  // 提前退出
+				guard let self = self else { return }
 				do {
-					for try await data in client.receiveStream(maxLength: 512 * 1024) {
+					var chunkCount = 0
+					// 传递 bridgeId 和 connectInfo
+					for try await data in client.receiveStream(
+						maxLength: 512 * 1024,
+						bridgeId: await self.id,
+						connectInfo: await self.connectInfo
+					) {
+						chunkCount += 1
 						await self.addUpBytes(data.count)
+						
+						if chunkCount % 100 == 0 {
+							await self.log("C->S chunks:\(chunkCount) bytes:\(data.count)")
+						}
+						
 						try await remote.sendAsync(data)
 					}
 				} catch {
@@ -376,9 +389,14 @@ public actor LayerMinusBridge {
 			}
 			
 			group.addTask { [weak self] in
-				guard let self = self else { return }  // 提前退出
+				guard let self = self else { return }
 				do {
-					for try await data in remote.receiveStream(maxLength: 512 * 1024) {
+					// 同样传递 bridgeId 和 connectInfo
+					for try await data in remote.receiveStream(
+						maxLength: 512 * 1024,
+						bridgeId: await self.id,
+						connectInfo: await self.connectInfo
+					) {
 						await self.onFirstDownBytes(n: data.count)
 						try await client.sendAsync(data)
 					}
@@ -390,8 +408,7 @@ public actor LayerMinusBridge {
 				try? await client.sendAsync(nil, final: true)
 			}
 		}
-
-		// 桥接完成后取消
+		
 		if !closed {
 			cancel(reason: "bridge completed")
 		}
@@ -506,25 +523,181 @@ public actor LayerMinusBridge {
 
 struct NWReceiveSequence: AsyncSequence {
     typealias Element = Data
-    struct Iterator: AsyncIteratorProtocol {
-        let conn: NWConnection
-        let max: Int
-        mutating func next() async throws -> Data? {
-            while let d = try await conn.recv(max: max) {     // EOF -> nil
-                if !d.isEmpty { return d }                    // skip empty chunks
-            }
-            return nil
-        }
-    }
+	struct Iterator: AsyncIteratorProtocol {
+		let conn: NWConnection
+		private let baseMax: Int
+		private var consecutiveEmptyReads = 0
+		private var consecutiveDataReads = 0
+		private var currentBufferSize = 16 * 1024
+		private let bridgeId: UInt64
+		private let connectInfo: String?
+		
+		// 缓冲区配置
+		private let minBuffer = 4 * 1024
+		private let maxBuffer = 512 * 1024
+		private let growthStep = 16 * 1024
+		private let memoryWarningThreshold = 45 * 1024 * 1024
+		
+		init(conn: NWConnection, max: Int, bridgeId: UInt64, connectInfo: String?) {
+			self.conn = conn
+			self.baseMax = max
+			self.bridgeId = bridgeId
+			self.connectInfo = connectInfo
+		}
+		
+		private func makeLogTag() -> String {
+			let info = connectInfo.map { " [\($0)]" } ?? ""
+			return "[LayerMinusBridge \(bridgeId)\(info)]"
+		}
+		
+		// 获取当前内存使用量（定义在 Iterator 内部）
+		private func getCurrentMemoryUsage() -> Int64 {
+			var info = mach_task_basic_info()
+			var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+			
+			let result = withUnsafeMutablePointer(to: &info) {
+				$0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+					task_info(mach_task_self_,
+							task_flavor_t(MACH_TASK_BASIC_INFO),
+							$0,
+							&count)
+				}
+			}
+			
+			return result == KERN_SUCCESS ? Int64(info.resident_size) : 0
+		}
+		
+		mutating func next() async throws -> Data? {
+			// 动态调整缓冲区大小
+			adjustBufferSize()
+			
+			#if DEBUG
+			if currentBufferSize == minBuffer || 
+			currentBufferSize == maxBuffer ||
+			(consecutiveDataReads > 0 && consecutiveDataReads % 10 == 0) {
+				let memoryMB = getCurrentMemoryUsage() / (1024 * 1024)
+				NSLog("\(makeLogTag()) Buffer: \(currentBufferSize/1024)KB (RSS: \(memoryMB)MB, data:\(consecutiveDataReads) empty:\(consecutiveEmptyReads))")
+			}
+			#endif
+			
+			while let d = try await conn.recv(max: Swift.min(currentBufferSize, baseMax)) {
+				if !d.isEmpty {
+					consecutiveEmptyReads = 0
+					consecutiveDataReads += 1
+					
+					if d.count >= currentBufferSize * 3 / 4 {
+						consecutiveDataReads += 2
+					}
+					
+					return d
+				} else {
+					consecutiveEmptyReads += 1
+					consecutiveDataReads = 0
+					
+					if consecutiveEmptyReads > 1 {
+						let sleepMs = Swift.min(consecutiveEmptyReads, 10)
+						try? await Task.sleep(nanoseconds: UInt64(sleepMs * 1_000_000))
+					}
+				}
+			}
+			return nil
+		}
+		
+		private mutating func adjustBufferSize() {
+			// 获取当前内存使用量
+			let currentMemory = getCurrentMemoryUsage()
+			
+			// 内存压力检查
+			if currentMemory >= memoryWarningThreshold {
+				// 内存达到警告线，停止增长并尝试缩减
+				if currentBufferSize > minBuffer {
+					let targetSize = Swift.max(minBuffer, 16 * 1024)
+					if targetSize < currentBufferSize {
+						#if DEBUG
+						NSLog("\(makeLogTag()) Memory pressure (\(currentMemory/(1024*1024))MB >= \(memoryWarningThreshold/(1024*1024))MB): buffer \(currentBufferSize/1024)KB → \(targetSize/1024)KB")
+						#endif
+						currentBufferSize = targetSize
+					}
+				}
+				return
+			}
+			
+			// 增长逻辑：仅在内存充足时
+			if consecutiveDataReads >= 5 && currentBufferSize < maxBuffer {
+				let projectedMemory = currentMemory + Int64(growthStep)
+				if projectedMemory < memoryWarningThreshold {
+					let newSize = Swift.min(currentBufferSize + growthStep, maxBuffer)
+					if newSize != currentBufferSize {
+						#if DEBUG
+						NSLog("\(makeLogTag()) Buffer growing: \(currentBufferSize/1024)KB → \(newSize/1024)KB (RSS: \(currentMemory/(1024*1024))MB)")
+						#endif
+						currentBufferSize = newSize
+					}
+				} else {
+					#if DEBUG
+					NSLog("\(makeLogTag()) Growth blocked: would exceed memory threshold (current: \(currentMemory/(1024*1024))MB)")
+					#endif
+				}
+			}
+			// 缩减逻辑
+			else if consecutiveEmptyReads >= 3 && currentBufferSize > minBuffer {
+				let targetSize: Int
+				switch consecutiveEmptyReads {
+				case 3...5:
+					targetSize = Swift.max(currentBufferSize / 2, minBuffer)
+				case 6...10:
+					targetSize = Swift.max(currentBufferSize / 4, minBuffer)
+				default:
+					targetSize = minBuffer
+				}
+				
+				if targetSize != currentBufferSize {
+					#if DEBUG
+					NSLog("\(makeLogTag()) Buffer shrinking: \(currentBufferSize/1024)KB → \(targetSize/1024)KB")
+					#endif
+					currentBufferSize = targetSize
+				}
+			}
+		}
+	}
+
+	private func getCurrentMemoryUsage() -> Int64 {
+		var info = mach_task_basic_info()
+		var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+		
+		let result = withUnsafeMutablePointer(to: &info) {
+			$0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+				task_info(mach_task_self_,
+						task_flavor_t(MACH_TASK_BASIC_INFO),
+						$0,
+						&count)
+			}
+		}
+		
+		return result == KERN_SUCCESS ? Int64(info.resident_size) : 0
+	}
+    
     let conn: NWConnection
     let max: Int
-    func makeAsyncIterator() -> Iterator { Iterator(conn: conn, max: max) }
+    let bridgeId: UInt64
+    let connectInfo: String?
+    
+    init(conn: NWConnection, max: Int, bridgeId: UInt64, connectInfo: String?) {
+        self.conn = conn
+        self.max = max
+        self.bridgeId = bridgeId
+        self.connectInfo = connectInfo
+    }
+    
+    func makeAsyncIterator() -> Iterator {
+        Iterator(conn: conn, max: max, bridgeId: bridgeId, connectInfo: connectInfo)
+    }
 }
 
 extension NWConnection {
     /// Pull-driven stream: next() triggers exactly one receive
-    func receiveStream(maxLength: Int) -> NWReceiveSequence {
-        NWReceiveSequence(conn: self, max: maxLength)
+    func receiveStream(maxLength: Int, bridgeId: UInt64 = 0, connectInfo: String? = nil) -> NWReceiveSequence {
+        NWReceiveSequence(conn: self, max: maxLength, bridgeId: bridgeId, connectInfo: connectInfo)
     }
 }
 
