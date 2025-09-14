@@ -532,15 +532,15 @@ extension NWConnection {
     func recv(max: Int) async throws -> Data? {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { cont in
-            self.receive(minimumIncompleteLength: 1, maximumLength: max) { data, _, isComplete, error in
-                if let error { 
-                    cont.resume(throwing: error)
-                } else if isComplete { 
-                    cont.resume(returning: nil)  // EOF
-                } else {
-                    cont.resume(returning: data ?? Data())
+                self.receive(minimumIncompleteLength: 1, maximumLength: max) { data, _, isComplete, error in
+                    if let error {
+                        cont.resume(throwing: error)
+                    } else if isComplete {
+                        cont.resume(returning: nil)  // EOF
+                    } else {
+                        cont.resume(returning: data ?? Data())
+                    }
                 }
-            }
 			}
 		}, onCancel: {
 			// 注意：这里违反了线程模型，但作为防止资源泄漏的最后防线
