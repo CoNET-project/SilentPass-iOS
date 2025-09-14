@@ -19,6 +19,7 @@ class LocalWebServer {
      let server = HttpServer()
     private let port: UInt16
     private let fileManager = FileManager.default
+	 private var starting = false // ➕ 新增：去抖/并发保护
 
     private var rootDir: URL?
     private let workersDir: URL
@@ -33,9 +34,18 @@ class LocalWebServer {
     }
 
     func prepareAndStart() async {
-//        stop() // 确保先停止现有服务器
+		// 幂等：如果已运行，直接广播并返回
+		if server.state == .running {
+            NotificationCenter.default.post(name: .webServerDidStart, object: nil, userInfo: ["port": port])
+            return
+        }
 
-        do {
+		// 去抖/并发保护
+        guard !starting else { return }
+        starting = true
+        defer { starting = false }
+
+       	do {
             print("🚀 准备启动本地服务器...")
             try await prepareRootDirectory()
             configureRoutes()
@@ -44,19 +54,9 @@ class LocalWebServer {
             if let rootPath = rootDir?.path {
                 print("📁 当前服务目录: \(rootPath)")
             }
-            
-            index += 1
-            if index == 1
-            {
-                // 👉 通知其他地方服务器已启动，并传递端口号
-                        NotificationCenter.default.post(name: .webServerDidStart,
-                                                        object: nil,
-                                                        userInfo: ["port": port])
-                
-                
-            }
-            
-            
+            // 无论第几次启动，都广播一次，避免只在 index==1 才发通知导致后续无法首导航
+            NotificationCenter.default.post(name: .webServerDidStart, object: nil, userInfo: ["port": port])
+
         } catch {
             print("❌ 启动服务器失败: \(error.localizedDescription)")
         }
@@ -172,7 +172,13 @@ class LocalWebServer {
                     try writer.write(data)
                 }
             } catch {
-                print("❌ 写入文件到响应时出错: \(error)")
+                // ➕ 常见：客户端取消导致 EPIPE/Broken pipe，降噪
+                let nsErr = error as NSError
+                if nsErr.domain == NSPOSIXErrorDomain && nsErr.code == EPIPE {
+                    print("ℹ️ 客户端取消（Broken pipe），忽略")
+                } else {
+                    print("❌ 写入文件到响应时出错: \(error)")
+                }
             }
         })
     }

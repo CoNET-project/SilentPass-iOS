@@ -36,6 +36,8 @@ class ViewController: UIViewController, WKNavigationDelegate {
     var webServer = LocalWebServer()
 	private var didPerformInitialLoad = false
 	private let schemeHandler = LocalServerFirstSchemeHandler()
+
+	private var isStartingServer = false // ➕ 新增：去抖
     
     // 1. 在 ViewController 里加一个静态 token，保证它不会跟随 VC 释放
     private static var vpnObserverToken: NSObjectProtocol?
@@ -199,13 +201,17 @@ class ViewController: UIViewController, WKNavigationDelegate {
         let queue = DispatchQueue.global(qos: .background)
         monitor.start(queue: queue)
 
-        monitor.pathUpdateHandler = { path in
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self = self else { return }   // 或：guard let self else { return }
             if path.status == .satisfied {
                 print("输出✅ 网络可用")
               
-                // 启动本地服务器是一个异步任务，所以在一个 Task 中执行
+                // ➕ 去抖：避免并发 prepareAndStart
+                guard !self.isStartingServer else { return }
+                self.isStartingServer = true
                 Task {
                     await self.webServer.prepareAndStart()
+                    self.isStartingServer = false
                 }
                 
                 
@@ -385,24 +391,29 @@ class ViewController: UIViewController, WKNavigationDelegate {
 	// ✅ 兜底：如果是本地协议的超时/网络错误，延迟自动重试一次
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
        let nsErr = error as NSError
-		guard nsErr.domain == NSURLErrorDomain else { return }
+        guard nsErr.domain == NSURLErrorDomain else { return }
+        if nsErr.code == NSURLErrorTimedOut
+            || nsErr.code == NSURLErrorCannotFindHost
+            || nsErr.code == NSURLErrorCannotConnectToHost {
 
-		if nsErr.code == NSURLErrorTimedOut
-			|| nsErr.code == NSURLErrorCannotFindHost
-			|| nsErr.code == NSURLErrorCannotConnectToHost {
+            // 关键：失败时允许再次触发首导航
+            self.didPerformInitialLoad = false
 
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-				if self.webServer.server.state == .running {
-					webView.reload()
-				}
-			}
-		}
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if self.webServer.server.state == .running {
+                    // 用和首导航一致的 URL
+                    if let url = URL(string: "local-first://localhost:3001/index.html") {
+                        self.webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 5))
+                    }
+                }
+            }
+        }
     }
 
 
     @objc private func handleWebServerStarted(_ notification: Notification)  {
        
-	getVPNConfigurationStatus()
+		getVPNConfigurationStatus()
 
 		switch self.webServer.server.state {
 		case .starting:
@@ -427,6 +438,12 @@ class ViewController: UIViewController, WKNavigationDelegate {
 		}
         
     }
+
+	// ✅ 首次加载成功后再置位，防止“提前置位后失败不再尝试”的黑屏
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if !didPerformInitialLoad { didPerformInitialLoad = true }
+    }
+
     
     @objc func vpnStatusChanged(_ notification: Notification) {
         
