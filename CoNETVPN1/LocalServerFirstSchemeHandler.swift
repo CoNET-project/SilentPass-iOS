@@ -107,12 +107,53 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
 
-		let deadline = Date().addingTimeInterval(WaitPlan.maxWait)
-    	self.waitUntilOnlineThenFetch(finalURL,
-                              for: urlSchemeTask,
-                              deadline: deadline,
-                              delay: WaitPlan.firstDelay)
+		// 🚀 立即返回一个极轻的引导页，由 H5 侧轮询 127.0.0.1，就绪后再跳转到 http
+		self.respondBootstrapLoader(to: urlSchemeTask, targetURL: finalURL)
     }
+	
+	/// HTML + JS 轮询本地服务器，在线后 replace 到 http://127.0.0.1:port
+	private func respondBootstrapLoader(to task: WKURLSchemeTask, targetURL: URL) {
+		var comps = URLComponents(url: targetURL, resolvingAgainstBaseURL: false)!
+		comps.scheme = "http"; comps.host = "127.0.0.1"
+		let httpURL = comps.url!
+		var healthComps = URLComponents(url: httpURL, resolvingAgainstBaseURL: false)!
+		healthComps.path = "/"; healthComps.query = nil
+
+		let html = [
+			"<!doctype html><meta charset=\"utf-8\"><title>Loading…</title>",
+			"<style>",
+			"html,body{height:100%;margin:0;background:#000;color:#9aa0a6;",
+			"font:-apple-system,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;",
+			"display:flex;align-items:center;justify-content:center}",
+			"</style>",
+			"<p>Starting local UI…</p>",
+			"<script>",
+			"(function(){",
+			"  const target = \(String(reflecting: httpURL.absoluteString));",
+			"  const health = \(String(reflecting: healthComps.url!.absoluteString));",
+			"  let delay = 250;",
+			"  const sleep = ms => new Promise(r => setTimeout(r, ms));",
+			"  (async function loop(){",
+			"    for(;;){",
+			"      try{",
+			"        const ctl = new AbortController();",
+			"        const to = setTimeout(()=>ctl.abort(), 600);",
+			"        const res = await fetch(health, {method:'HEAD', cache:'no-store', signal: ctl.signal});",
+			"        clearTimeout(to);",
+			"        if(res.ok){ location.replace(target); return }",
+			"      }catch(e){}",
+			"      await sleep(delay); delay = Math.min(delay*2, 1500);",
+			"    }",
+			"  })();",
+			"</script>"
+		].joined(separator: "\n")
+       let data = Data(html.utf8)
+       let headers = ["Content-Type":"text/html; charset=utf-8", "Cache-Control":"no-store"]
+       let resp = HTTPURLResponse(url: task.request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+       task.didReceive(resp)
+       task.didReceive(data)
+       task.didFinish()
+   }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
         // 标记为已停止，供等待循环及时退出

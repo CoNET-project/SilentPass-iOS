@@ -631,7 +631,7 @@ struct NWReceiveSequence: AsyncSequence {
 			if currentMemory >= memoryWarningThreshold {
 				// 达到警戒线：仅在当前缓冲 > 128KB 时减半；<=128KB 保持不变
 				if currentBufferSize > 128 * 1024 {
-					let newSize = Swift.max(currentBufferSize / 2, minBuffer)
+					let newSize = Swift.max(currentBufferSize / 4, minBuffer)
 					#if DEBUG
 					NSLog("\(makeLogTag()) 🔵🔵🔵 Memory pressure \(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
 						+ "shrink \(currentBufferSize/1024)KB → \(newSize/1024)KB")

@@ -7,6 +7,24 @@ import Darwin
 //		ServerConnection LayerMinusBridge
 public final class ServerConnection {
 
+	// Header、Body 都必须小于 32KB（严格小于 ⇒ 31KB）
+	private let HTTP_HDR_MAX  = 31 * 1024
+	private let HTTP_BODY_MAX = 31 * 1024
+
+	private func blockHTTPAndClose(statusLine: String, reason: String) {
+		let body = "Blocked: \(reason)\n"
+		let header =
+			"HTTP/1.1 \(statusLine)\r\n" +
+			"Connection: close\r\n" +
+			"Content-Type: text/plain; charset=utf-8\r\n" +
+			"Content-Length: \(body.utf8.count)\r\n\r\n"
+		let payload = Data((header + body).utf8)
+		client.send(content: payload, completion: .contentProcessed { _ in
+			self.recvBuffer.removeAll(keepingCapacity: false)
+			self.close(reason: "http_block: \(reason)")
+		})
+	}
+
     // MARK: - Static→Instance 日志桥
     private static weak var _logTarget: ServerConnection?
 	private static var _memTick: Int = 0   // 用于周期性心跳打印
@@ -149,7 +167,7 @@ public final class ServerConnection {
         case closed
     }
     
-    private let RECV_BUFFER_SOFT_LIMIT = 5 * 1024 * 1024  // 2MB：降低首部稍大的场景的误伤
+    private let RECV_BUFFER_SOFT_LIMIT = 32 * 1024  // 32KB：降低首部稍大的场景的误伤
     
     
     /// 该连接是否已切到 LayerMinus 通道（由业务分支显式标记）
@@ -222,12 +240,21 @@ public final class ServerConnection {
         client.start(queue: queue)
         log("will start")
     }
+    
+    // MARK: - Stop origin (logging-only)
+    private static var _stopOriginTag: String = "unknown"
+    private static var _stopNote: String = ""
 
     public func close(reason: String) {
         guard !closed else { return }
         closed = true
         phase = .closed
-        log("close: \(reason)")
+		
+        if reason.lowercased().contains("server stop") {
+			log("close: \(reason) | origin=\(Self._stopOriginTag) note=\(Self._stopNote)")
+		} else {
+			log("close: \(reason)")
+		}
         
         // 取消客户端连接
         client.cancel()
@@ -276,7 +303,7 @@ public final class ServerConnection {
                     self.log("recvBuffer exceeded soft limit (\(self.recvBuffer.count)B) -> close to protect memory")
 
                     // 仅保留最新 1MB，避免 OOM 同时不中断连接
-                    let KEEP = 1 * 1024 * 1024
+                    let KEEP = 512 * 1024
                     if self.recvBuffer.count > KEEP {
                         self.recvBuffer = self.recvBuffer.suffix(KEEP)
                     }
@@ -307,6 +334,16 @@ public final class ServerConnection {
             self.recvLoop()
         }
     }
+
+	private func parseContentLength(_ header: String) -> Int? {
+		for line in header.split(separator: "\r\n", omittingEmptySubsequences: false) {
+			if line.lowercased().hasPrefix("content-length:") {
+				let v = line.drop { $0 != ":" }.dropFirst().trimmingCharacters(in: .whitespaces)
+				return Int(v)
+			}
+		}
+		return nil
+	}
 
     private func parseBuffer() {
         // 安全检查：确保 buffer 不为空
@@ -379,6 +416,57 @@ public final class ServerConnection {
         // 我们至少需要一行（\r\n）来判断方法，且处理非 CONNECT 时需要首部结束（\r\n\r\n）
         let CRLF = Data([0x0d, 0x0a])
         let CRLFCRLF = Data([0x0d, 0x0a, 0x0d, 0x0a])
+
+		if recvBuffer.count > HTTP_HDR_MAX, recvBuffer.range(of: CRLFCRLF) == nil {
+			log("❌ HTTP header too large or malformed: \(recvBuffer.count) bytes, no CRLFCRLF")
+			blockHTTPAndClose(statusLine: "431 Request Header Fields Too Large", reason: "Header > 31KB or malformed")
+			return true
+		}
+
+		// —— 2) 如果已拿到完整 Header，进一步做 Header 长度与 Body 长度限制
+		if let sep = recvBuffer.range(of: CRLFCRLF) {
+			let headerLen = recvBuffer.distance(from: recvBuffer.startIndex, to: sep.lowerBound)
+			if headerLen > HTTP_HDR_MAX {
+				log("❌ HTTP header too large: \(headerLen) > \(HTTP_HDR_MAX)")
+				blockHTTPAndClose(statusLine: "431 Request Header Fields Too Large", reason: "Header > 31KB")
+				return true
+			}
+
+			// CONNECT 一般无 Body；非 CONNECT 则检查 Body 上限
+			let methodIsCONNECT: Bool = {
+				// 只读前几个字节判断是否以 "CONNECT " 开头，避免大规模复制
+				let prefixLen = min(7, headerLen)
+				let prefixData = recvBuffer[recvBuffer.startIndex..<recvBuffer.index(recvBuffer.startIndex, offsetBy: prefixLen)]
+				return String(data: prefixData, encoding: .utf8)?.uppercased().hasPrefix("CONNECT") == true
+			}()
+
+			if !methodIsCONNECT {
+				// 已经缓冲到的 Body 长度（可能为 0）
+				let bodyStart = sep.upperBound
+				let bufferedBodyLen = recvBuffer.distance(from: bodyStart, to: recvBuffer.endIndex)
+				if bufferedBodyLen > HTTP_BODY_MAX {
+					log("❌ HTTP body buffered too large: \(bufferedBodyLen) > \(HTTP_BODY_MAX)")
+					blockHTTPAndClose(statusLine: "413 Payload Too Large", reason: "Body > 31KB (buffered)")
+					return true
+				}
+
+				// 解析 Content-Length；若声明超限也直接拒绝
+				if let headerStr = String(data: recvBuffer[recvBuffer.startIndex..<sep.lowerBound], encoding: .utf8) {
+					if headerStr.range(of: "transfer-encoding:", options: .caseInsensitive) != nil,
+					headerStr.range(of: "chunked", options: .caseInsensitive) != nil {
+						// 为了满足“Body < 32KB”的硬约束，这里直接拒绝 chunked
+						log("❌ chunked body not allowed")
+						blockHTTPAndClose(statusLine: "413 Payload Too Large", reason: "Chunked not allowed (>31KB)")
+						return true
+					}
+					if let cl = parseContentLength(headerStr), cl > HTTP_BODY_MAX {
+						log("❌ Content-Length too large: \(cl) > \(HTTP_BODY_MAX)")
+						blockHTTPAndClose(statusLine: "413 Payload Too Large", reason: "Content-Length > 31KB")
+						return true
+					}
+				}
+			}
+		}
 
         guard let firstLineEnd = recvBuffer.range(of: CRLF) else { return false }
 
