@@ -16,6 +16,8 @@ import GCDWebServer
 import ZIPFoundation
 import Swifter
 
+
+
 class ViewController: UIViewController, WKNavigationDelegate {
     var webView: WKWebView!
     var localServer: Server?
@@ -32,6 +34,8 @@ class ViewController: UIViewController, WKNavigationDelegate {
     var vPNManager: VPNManager!
     var port: Int = 8888
     var webServer = LocalWebServer()
+	private var didPerformInitialLoad = false
+	private let schemeHandler = LocalServerFirstSchemeHandler()
     
     // 1. 在 ViewController 里加一个静态 token，保证它不会跟随 VC 释放
     private static var vpnObserverToken: NSObjectProtocol?
@@ -70,7 +74,6 @@ class ViewController: UIViewController, WKNavigationDelegate {
 //        config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
 //        config.limitsNavigationsToAppBoundDomains = true
         let userContentController = WKUserContentController()
-        let schemeHandler = LocalServerFirstSchemeHandler()
         config.setURLSchemeHandler(schemeHandler, forURLScheme: "local-first")
         
         
@@ -82,7 +85,6 @@ class ViewController: UIViewController, WKNavigationDelegate {
         config.userContentController = userContentController
         config.preferences.javaScriptEnabled = true
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
-        config.suppressesIncrementalRendering = true // 是否支持记忆读取
 
         // ❗️以下是私有 API，不推荐用于生产，调试可用
 //        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
@@ -107,7 +109,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
                webView.translatesAutoresizingMaskIntoConstraints = false
         
 //        //      设置捕获JavaScript错误
-//        webView.navigationDelegate = self
+       webView.navigationDelegate = self
         
         self.view.addSubview(webView)
 //        webView.frame = CGRect(x: 0, y: 0, width: self.view.frame.size.width, height: self.view.frame.size.height)
@@ -232,25 +234,6 @@ class ViewController: UIViewController, WKNavigationDelegate {
                 object: nil
             )
         
-
-
-
-
-
-        monitor.pathUpdateHandler = { path in
-            if path.status == .satisfied {
-                print("输出✅ 网络可用")
-              
-                // 启动本地服务器是一个异步任务，所以在一个 Task 中执行
-                Task {
-                    await self.webServer.prepareAndStart()
-                }
-                
-                
-            } else {
-                print("输出❌ 网络不可用")
-            }
-        }
         
         
         
@@ -354,7 +337,7 @@ class ViewController: UIViewController, WKNavigationDelegate {
     
     @objc func handleServerStarted1(_ notification: Notification)   {
         
-        self.webServer.server.stop()
+        // self.webServer.server.stop()
         
     }
     @objc func handleServerStarted(_ notification: Notification)   {
@@ -397,75 +380,51 @@ class ViewController: UIViewController, WKNavigationDelegate {
             
         }
     }
+
+
+	// ✅ 兜底：如果是本地协议的超时/网络错误，延迟自动重试一次
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+       let nsErr = error as NSError
+		guard nsErr.domain == NSURLErrorDomain else { return }
+
+		if nsErr.code == NSURLErrorTimedOut
+			|| nsErr.code == NSURLErrorCannotFindHost
+			|| nsErr.code == NSURLErrorCannotConnectToHost {
+
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+				if self.webServer.server.state == .running {
+					webView.reload()
+				}
+			}
+		}
+    }
+
+
     @objc private func handleWebServerStarted(_ notification: Notification)  {
        
-//        SVProgressHUD.show(withStatus: "开始加载本地html")
-//         SVProgressHUD.dismiss(withDelay: 3)
-        
-        if self.webServer.server.state == .starting {
-         
-        }
-        else if self.webServer.server.state == .running {
-            
-            DispatchQueue.main.async {
-                
-//                guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
-                guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
-                    self.webView.load(URLRequest(url: url_cache))
-            }
-               
-     
-        }
-        else if self.webServer.server.state == .stopping {
-            Task {
-                await self.webServer.prepareAndStart()
-            }
-        }
-        else if self.webServer.server.state == .stopped {
-     
-            Task {
-                await self.webServer.prepareAndStart()
-            }
-            
-        }
-        
-        
-         
-            
-        
-        return
-        let monitor = NWPathMonitor()
-        let queue = DispatchQueue(label: "NetworkMonitor")
-        monitor.start(queue: queue)
-        
-        
-        let currentPath = monitor.currentPath
-        if currentPath.status == .satisfied {
-            DispatchQueue.main.async {
-                monitor.cancel()
-                guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
-//                guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
-                
-                
-                
-                    self.webView.load(URLRequest(url: url_cache))
-                
-            }
-        } else {
-            monitor.pathUpdateHandler = { [weak self] path in
-                if path.status == .satisfied {
-                    DispatchQueue.main.async {
-                        monitor.cancel()
-                        guard let url_cache = URL(string: "local-first://localhost:3001") else { return }
-                        
-//                        guard let url_cache = URL(string: "https://testuc.2rich.net/testsp/index.html") else { return }
-                        
-                        self?.webView.load(URLRequest(url: url_cache))
-                        
-                    }
-                }
-            }
-        }
+	getVPNConfigurationStatus()
+
+		switch self.webServer.server.state {
+		case .starting:
+			print("本地服务器启动中")
+		case .running:
+			guard !self.didPerformInitialLoad else {
+				print("已完成首导航，忽略重复 load")
+				return
+			}
+			self.didPerformInitialLoad = true
+			DispatchQueue.main.async {
+				guard let url = URL(string: "local-first://localhost:3001") else { return }
+				self.webView.load(URLRequest(url: url))
+			}
+		case .stopping:
+			Task { await self.webServer.prepareAndStart() }
+		case .stopped:
+			print("本地服务器已停止")
+			Task { await self.webServer.prepareAndStart() }
+		default:
+			break
+		}
         
     }
     

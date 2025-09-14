@@ -233,7 +233,9 @@ public final class ServerConnection {
         client.cancel()
         
         // 如果有 bridge，也要关闭它
-        bridge?.cancel(reason: "ServerConnection closed: \(reason)")
+        if let b = bridge {
+            Task { await b.cancel(reason: "ServerConnection closed: \(reason)") }
+        }
         bridge = nil
         
         // 通知 Server 移除此连接
@@ -824,7 +826,9 @@ public final class ServerConnection {
         
         
         guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
-              !egressNode.isEmpty else {
+            !egressNode.isEmpty else {
+		// guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
+        //     egressNode.isEmpty else {
             let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
             
             // 创建并启动 LayerMinusBridge，保存引用
@@ -851,11 +855,11 @@ public final class ServerConnection {
             
             // KPI：标记 handoff 时刻（与 Bridge.start 的 tStart 对齐，用于 handoff->start）
             self.log("KPI handoff -> LM host=\(host):\(port) ")
-            newBridge.markHandoffNow()
+            Task { await newBridge.markHandoffNow() }
 
 			Self.startGlobalMemoryMonitorIfNeeded(event: "LayerMinusBridge #\(self.id) CREATED", logger: { [weak self] in self?.log($0) })
             // 传递 Base64 编码的首包给 bridge
-            newBridge.start(withFirstBody: b64)
+            Task { await newBridge.start(withFirstBody: b64) }
             return
         }
         
@@ -903,8 +907,10 @@ public final class ServerConnection {
                     self.onRoutingDecided?(self)
 					Self.startGlobalMemoryMonitorIfNeeded(event: "LayerMinusBridge #\(self.id) CREATED", logger: { [weak self] in self?.log($0) })
                     
-                    // 传递 Base64 编码的首包给 bridge
-                    newBridge.start(withFirstBody: request.data(using: .utf8)!.base64EncodedString())
+                    // 传递 Base64 编码的首包给 bridge（actor 方法需 await）
+                    Task {
+                        await newBridge.start(withFirstBody: request.data(using: .utf8)!.base64EncodedString())
+                    }
                 }
             }
         }
