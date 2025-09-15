@@ -37,19 +37,19 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Called when the scene has moved from an inactive state to an active state.
         // Use this method to restart any tasks that were paused (or not yet started) when the scene was inactive.
         print("app将要进入app")
-//        if hasEnteredForegroundBefore {
-//                    NotificationCenter.default.post(
-//                        name: Notification.Name("LocalServerStarted"),
-//                        object: nil,
-//                        userInfo: ["status": "running"]
-//                        
-//                    )
-//            
-//            print("app已经进入前台1")
-//                } else {
-//                    hasEnteredForegroundBefore = true
-//                    print("app已经进入前台2")
-//                }
+        if hasEnteredForegroundBefore {
+                    NotificationCenter.default.post(
+                        name: Notification.Name("LocalServerStarted"),
+                        object: nil,
+                        userInfo: ["status": "running"]
+                        
+                    )
+            
+            print("app已经进入前台1")
+                } else {
+                    hasEnteredForegroundBefore = true
+                    print("app已经进入前台2")
+                }
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
