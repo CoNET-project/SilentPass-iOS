@@ -2,230 +2,202 @@
 //  LocalServerFirstSchemeHandler.swift
 //  CoNETVPN1
 //
-//  Created by peter on 2025-07-17.
+//  A scheme handler that routes local-first:// requests to the local HTTP server
 //
 
 import WebKit
-
-private struct WaitPlan {
-    static let maxWait: TimeInterval = 10.0   // 调试态子进程慢；可按需调大
-    static let firstDelay: TimeInterval = 0.25
-}
+import Foundation
 
 class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
-
-
-	private let stoppedTasks = NSHashTable<WKURLSchemeTask>.weakObjects()
-
-	private func respondBootstrapRedirect(to task: WKURLSchemeTask, targetURL: URL) {
-		// 将目标URL强制为 http://127.0.0.1:port，并保留 path / query / hash
-		var comps = URLComponents(url: targetURL, resolvingAgainstBaseURL: false)!
-		comps.scheme = "http"                      // 如果你启了 TLS，可换成 "https"
-		comps.host = "127.0.0.1"                   // 统一成 127.0.0.1
-		let httpURL = comps.url!
-
-		let html = """
-		<!doctype html>
-		<meta charset="utf-8">
-		<title>Loading…</title>
-		<style>
-		html,body{height:100%;margin:0;background:#000;color:#9aa0a6;
-		font:-apple-system,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-		display:flex;align-items:center;justify-content:center}
-		</style>
-		<p>Local server is ready. Opening…</p>
-		<script>
-		// 用 replace 不留历史记录；保持 path/search/hash
-		location.replace(\(String(reflecting: httpURL.absoluteString)));
-		</script>
-		"""
-
-		let data = Data(html.utf8)
-		let headers = [
-			"Content-Type": "text/html; charset=utf-8",
-			"Cache-Control": "no-store"
-		]
-		let resp = HTTPURLResponse(url: task.request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
-		task.didReceive(resp)
-		task.didReceive(data)
-		task.didFinish()
-	}
-
-	private func waitUntilOnlineThenFetch(_ url: URL,
-                                      for task: WKURLSchemeTask,
-                                      deadline: Date,
-                                      delay: TimeInterval) {
-
-		if self.stoppedTasks.contains(task) { return }
-
-		isServerOnline(url: url) { [weak self] ok in
-			guard let self = self else { return }
-			if ok {
-				print("🟢 Server online. Respond bootstrap redirect → http")
-				self.respondBootstrapRedirect(to: task, targetURL: url)
-				return
-			}
-
-			// 还没 online：看看是否超时
-			// 1) 修复超时分支的语法完整性（在 waitUntilOnlineThenFetch 内）
-			if Date() > deadline {
-				print("🔴 Server still offline after wait. Failing with .timedOut")
-				task.didFailWithError(URLError(.timedOut))
-				return
-			}
-
-
-			// 递增回退（最多到 1.5s 左右），减少 busy loop
-			let nextDelay = min(delay * 2, 1.5)
-			DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-				self.waitUntilOnlineThenFetch(url, for: task, deadline: deadline, delay: nextDelay)
-			}
-		}
-	}
-
-    // NEW: 记录每个 schemeTask 对应的 URLSessionTask，便于 stop 时取消
-    private var taskMap = NSMapTable<WKURLSchemeTask, URLSessionTask>(keyOptions: .weakMemory,
-                                                                      valueOptions: .strongMemory)
-
+    
+    // Track active tasks to handle cancellation
+    private var activeTasks = [URLRequest: URLSessionDataTask]()
+    private let taskQueue = DispatchQueue(label: "com.conet.schemehandler", attributes: .concurrent)
+    
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        guard let requestURL = urlSchemeTask.request.url else {
+        guard let url = urlSchemeTask.request.url else {
             urlSchemeTask.didFailWithError(URLError(.badURL))
             return
         }
-
-        // local-first://localhost:3001/path  ->  http://127.0.0.1:3001/path
-        guard var components = URLComponents(url: requestURL, resolvingAgainstBaseURL: false) else {
+        
+        // Convert local-first://localhost:3001/path to http://127.0.0.1:3001/path
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             urlSchemeTask.didFailWithError(URLError(.badURL))
             return
         }
+        
+        // Change scheme to http
         components.scheme = "http"
-        if components.host == "localhost" { components.host = "127.0.0.1" }
-
-        guard let finalURL = components.url else {
+        
+        // Replace localhost with 127.0.0.1 for better reliability
+        if components.host == "localhost" {
+            components.host = "127.0.0.1"
+        }
+        
+        // Default to port 3001 if not specified
+        if components.port == nil {
+            components.port = 3001
+        }
+        
+        guard let httpURL = components.url else {
             urlSchemeTask.didFailWithError(URLError(.badURL))
             return
         }
-
-
-		// 🚀 立即返回一个极轻的引导页，由 H5 侧轮询 127.0.0.1，就绪后再跳转到 http
-		self.respondBootstrapLoader(to: urlSchemeTask, targetURL: finalURL)
-    }
-	
-	/// HTML + JS 轮询本地服务器，在线后 replace 到 http://127.0.0.1:port
-	private func respondBootstrapLoader(to task: WKURLSchemeTask, targetURL: URL) {
-		var comps = URLComponents(url: targetURL, resolvingAgainstBaseURL: false)!
-		comps.scheme = "http"; comps.host = "127.0.0.1"
-		let httpURL = comps.url!
-		var healthComps = URLComponents(url: httpURL, resolvingAgainstBaseURL: false)!
-		healthComps.path = "/"; healthComps.query = nil
-
-		let html = [
-			"<!doctype html><meta charset=\"utf-8\"><title>Loading…</title>",
-			"<style>",
-			"html,body{height:100%;margin:0;background:#000;color:#9aa0a6;",
-			"font:-apple-system,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;",
-			"display:flex;align-items:center;justify-content:center}",
-			"</style>",
-			"<p>Starting local UI…</p>",
-			"<script>",
-			"(function(){",
-			"  const target = \(String(reflecting: httpURL.absoluteString));",
-			"  const health = \(String(reflecting: healthComps.url!.absoluteString));",
-			"  let delay = 250;",
-			"  const sleep = ms => new Promise(r => setTimeout(r, ms));",
-			"  (async function loop(){",
-			"    for(;;){",
-			"      try{",
-			"        const ctl = new AbortController();",
-			"        const to = setTimeout(()=>ctl.abort(), 600);",
-			"        const res = await fetch(health, {method:'HEAD', cache:'no-store', signal: ctl.signal});",
-			"        clearTimeout(to);",
-			"        if(res.ok){ location.replace(target); return }",
-			"      }catch(e){}",
-			"      await sleep(delay); delay = Math.min(delay*2, 1500);",
-			"    }",
-			"  })();",
-			"</script>"
-		].joined(separator: "\n")
-       let data = Data(html.utf8)
-       let headers = ["Content-Type":"text/html; charset=utf-8", "Cache-Control":"no-store"]
-       let resp = HTTPURLResponse(url: task.request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
-       task.didReceive(resp)
-       task.didReceive(data)
-       task.didFinish()
-   }
-
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        // 标记为已停止，供等待循环及时退出
-		self.stoppedTasks.add(urlSchemeTask)
-
-		if let t = taskMap.object(forKey: urlSchemeTask) {
-			t.cancel()
-			taskMap.removeObject(forKey: urlSchemeTask)
-		}
-    }
-
-    // MARK: - Helper Methods
-
-    /// 1) HEAD 探活：更宽松的 2.5s
-    private func isServerOnline(url: URL, completion: @escaping (Bool) -> Void) {
-         // ✅ 固定探活根路径，避免被具体资源状态干扰
-		var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-		comps.path = "/"
-		comps.query = nil
-		let healthURL = comps.url!
-
-		var request = URLRequest(url: healthURL)
-		request.httpMethod = "HEAD"
-		request.timeoutInterval = 0.5
-		request.cachePolicy = .reloadIgnoringLocalCacheData
-		request.setValue("close", forHTTPHeaderField: "Connection")
-
-		let task = URLSession.shared.dataTask(with: request) { _, response, error in
-			if let err = error as? URLError,
-			err.code == .cannotConnectToHost || err.code == .timedOut || err.code == .networkConnectionLost {
-				completion(false); return
-			}
-			if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-				completion(true)
-			} else {
-				completion(false)
-			}
-		}
-		task.resume()
-    }
-
-    /// 2) GET：返回 URLSessionTask，便于 stop 时取消
-    @discardableResult
-    private func fetchFromServer(url: URL, for urlSchemeTask: WKURLSchemeTask) -> URLSessionTask {
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 15.0
-        request.setValue("close", forHTTPHeaderField: "Connection")
-
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            defer {
-                if let self = self { self.taskMap.removeObject(forKey: urlSchemeTask) }
+        
+        print("📱 [SchemeHandler] Converting: \(url.absoluteString) -> \(httpURL.absoluteString)")
+        
+        // Create request with short timeout for local server
+        var request = URLRequest(url: httpURL)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.timeoutInterval = 5.0 // Short timeout for local server
+        
+        // Copy headers from original request
+        if let headers = urlSchemeTask.request.allHTTPHeaderFields {
+            for (key, value) in headers {
+                request.setValue(value, forHTTPHeaderField: key)
             }
-
-            // 如果是取消，不再回调 WebKit（避免 didFail 后再次回调导致状态错乱）
-            if let err = error as NSError?, err.domain == NSURLErrorDomain, err.code == NSURLErrorCancelled {
-                return
+        }
+        
+        // Create URLSession task
+        let dataTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            // Remove from active tasks
+            self.taskQueue.async(flags: .barrier) {
+                self.activeTasks.removeValue(forKey: urlSchemeTask.request)
             }
+            
+            // Handle error
             if let error = error {
-                urlSchemeTask.didFailWithError(error)
+                print("❌ [SchemeHandler] Failed to load: \(httpURL.absoluteString), error: \(error.localizedDescription)")
+                
+                // Check if it's a connection error and provide fallback content
+                if (error as NSError).code == NSURLErrorCannotConnectToHost ||
+                   (error as NSError).code == NSURLErrorTimedOut {
+                    // Provide a fallback loading page
+                    self.provideFallbackContent(for: urlSchemeTask)
+                } else {
+                    urlSchemeTask.didFailWithError(error)
+                }
                 return
             }
-            guard let response = response, let data = data else {
-                urlSchemeTask.didFailWithError(URLError(.unknown))
+            
+            // Handle successful response
+            guard let data = data, let response = response else {
+                urlSchemeTask.didFailWithError(URLError(.cannotLoadFromNetwork))
                 return
             }
-
+            
+            print("✅ [SchemeHandler] Successfully loaded: \(httpURL.absoluteString)")
+            
+            // Send response and data to WebView
             urlSchemeTask.didReceive(response)
             urlSchemeTask.didReceive(data)
             urlSchemeTask.didFinish()
         }
-        task.resume()
-        return task
+        
+        // Store task for potential cancellation
+        taskQueue.async(flags: .barrier) {
+            self.activeTasks[urlSchemeTask.request] = dataTask
+        }
+        
+        // Start the task
+        dataTask.resume()
     }
-
+    
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        print("🛑 [SchemeHandler] Stopping task for: \(urlSchemeTask.request.url?.absoluteString ?? "unknown")")
+        
+        // Cancel the corresponding URLSession task
+        taskQueue.async(flags: .barrier) {
+            if let task = self.activeTasks.removeValue(forKey: urlSchemeTask.request) {
+                task.cancel()
+            }
+        }
+    }
+    
+    // Provide fallback content when local server is not ready
+    private func provideFallbackContent(for urlSchemeTask: WKURLSchemeTask) {
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Loading...</title>
+            <style>
+                body {
+                    background-color: #000;
+                    color: #fff;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    padding: 0;
+                }
+                .container {
+                    text-align: center;
+                }
+                .spinner {
+                    border: 3px solid rgba(255, 255, 255, 0.3);
+                    border-radius: 50%;
+                    border-top: 3px solid white;
+                    width: 40px;
+                    height: 40px;
+                    animation: spin 1s linear infinite;
+                    margin: 0 auto 20px;
+                }
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+                h1 {
+                    font-size: 24px;
+                    font-weight: normal;
+                    margin: 0;
+                }
+                p {
+                    font-size: 14px;
+                    color: #888;
+                    margin-top: 10px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="spinner"></div>
+                <h1>Loading...</h1>
+                <p>Initializing local server</p>
+            </div>
+            <script>
+                // Auto-retry after 1 second
+                setTimeout(function() {
+                    window.location.reload();
+                }, 1000);
+            </script>
+        </body>
+        </html>
+        """
+        
+        guard let data = html.data(using: .utf8) else {
+            urlSchemeTask.didFailWithError(URLError(.cannotLoadFromNetwork))
+            return
+        }
+        
+        let response = HTTPURLResponse(
+            url: urlSchemeTask.request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: [
+                "Content-Type": "text/html; charset=utf-8",
+                "Content-Length": String(data.count)
+            ]
+        )!
+        
+        urlSchemeTask.didReceive(response)
+        urlSchemeTask.didReceive(data)
+        urlSchemeTask.didFinish()
+    }
 }

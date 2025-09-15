@@ -64,6 +64,25 @@ enum PACBuilder {
           var a = s.split('.');
           return ((+a[0]<<24)>>>0) | ((+a[1]<<16)>>>0) | ((+a[2]<<8)>>>0) | (+a[3]>>>0);
         }
+                // ===== Helpers: IPv6 =====
+        function _isIPv6(s) {
+             if (!s) return false;
+             // 去掉方括号形式的 IPv6: "[::1]"
+             if (s[0] === "[" && s[s.length-1] === "]") {
+               s = s.substring(1, s.length-1);
+             }
+             // 必须包含冒号，且不能有非法字符
+             if (s.indexOf(":") < 0) return false;
+             // 简单验证：每个分段 <= 4 个十六进制数
+             var parts = s.split(":");
+             if (parts.length < 3) return false;
+             for (var i = 0; i < parts.length; i++) {
+               if (parts[i].length === 0) continue; // "::" 缩写
+               if (!/^[0-9a-fA-F]{1,4}$/.test(parts[i])) return false;
+             }
+             return true;
+        }
+        
         function _parseCIDR(c) {
           var p = (c||"").split('/');
           if (p.length !== 2) return null;
@@ -125,7 +144,8 @@ enum PACBuilder {
         function FindProxyForURL(url, host) {
           if (!host) return "DIRECT";
           if (isPlainHostName(host)) return "DIRECT";
-
+          // —— 如果 host 是 IPv4 或 IPv6 地址，强制 DIRECT —— //
+          if (_isIPv4(host) || _isIPv6(host)) return "DIRECT";
           var h = host.toLowerCase();
 
           // —— 静态本地优先：命中即 DIRECT —— //

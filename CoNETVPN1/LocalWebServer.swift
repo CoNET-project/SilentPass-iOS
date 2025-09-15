@@ -1,30 +1,32 @@
 import Foundation
-import Swifter // 导入 Web 服务器库
-import ZIPFoundation // 导入 ZIP 解压库
+import Swifter
+import ZIPFoundation
 
-// MARK: - Codable Structs for JSON
-
-
-// 用于构建 /var 接口的返回体
-fileprivate struct VersionResponse: Codable {
-    let ver: String
-}
-
+// MARK: - Custom Notification
 extension Notification.Name {
     static let webServerDidStart = Notification.Name("webServerDidStart")
 }
 
+// MARK: - Version Response for /ver endpoint
+fileprivate struct VersionResponse: Codable {
+    let ver: String
+}
+
+// MARK: - Local UpdateInfo if not defined elsewhere
+// Comment this out if UpdateInfo is already defined in your project
+fileprivate struct LocalUpdateInfo: Codable {
+    let ver: String
+}
+
 class LocalWebServer {
-    // 使用 public 访问控制
-     let server = HttpServer()
+    let server = HttpServer()
     private let port: UInt16
     private let fileManager = FileManager.default
-	 private var starting = false // ➕ 新增：去抖/并发保护
-
+    private var starting = false
     private var rootDir: URL?
     private let workersDir: URL
     var index: Int = 0
-
+    
     init(port: UInt16 = 3001) {
         self.port = port
         guard let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
@@ -32,195 +34,308 @@ class LocalWebServer {
         }
         self.workersDir = documentsDirectory.appendingPathComponent("workers")
     }
-
+    
     func prepareAndStart() async {
-		// 幂等：如果已运行，直接广播并返回
-		if server.state == .running {
-            NotificationCenter.default.post(name: .webServerDidStart, object: nil, userInfo: ["port": port])
+        // If already running, just broadcast and return
+        if server.state == .running {
+            print("✅ Server already running on port \(port)")
+            broadcastServerStarted()
             return
         }
-
-		// 去抖/并发保护
-        guard !starting else { return }
+        
+        // Prevent concurrent starts
+        guard !starting else {
+            print("⏳ Server already starting, skipping duplicate request")
+            return
+        }
         starting = true
         defer { starting = false }
-
-       	do {
-            print("🚀 准备启动本地服务器...")
-            try await prepareRootDirectory()
-            configureRoutes()
-            try server.start(port, forceIPv4: true)
-            print("✅ 本地服务器启动于 http://127.0.0.1:\(port)")
-            if let rootPath = rootDir?.path {
-                print("📁 当前服务目录: \(rootPath)")
-            }
-            // 无论第几次启动，都广播一次，避免只在 index==1 才发通知导致后续无法首导航
-            NotificationCenter.default.post(name: .webServerDidStart, object: nil, userInfo: ["port": port])
-
-        } catch {
-            print("❌ 启动服务器失败: \(error.localizedDescription)")
-        }
-    }
-
-    func stop() {
-        server.stop()
-        print("🛑 本地服务器已停止。")
-    }
-
-    private func prepareRootDirectory() async throws {
-        let indexFile = workersDir.appendingPathComponent("index.html")
-        if fileManager.fileExists(atPath: indexFile.path) {
-            print("ℹ️ 发现有效的工作目录，直接使用: \(workersDir.path)")
-            self.rootDir = workersDir
-        } else {
-            print("ℹ️ 未找到有效的工作目录，从 App Bundle/build3.zip 解压初始内容...")
-            if fileManager.fileExists(atPath: workersDir.path) {
-                try fileManager.removeItem(at: workersDir)
-            }
-            guard let zipPath = Bundle.main.url(forResource: "build3", withExtension: "zip") else {
-                throw NSError(domain: "LocalWebServerError", code: 404, userInfo: [NSLocalizedDescriptionKey: "build3.zip not found in app bundle."])
-            }
-            try fileManager.createDirectory(at: workersDir, withIntermediateDirectories: true)
-            try fileManager.unzipItem(at: zipPath, to: workersDir)
-            self.rootDir = workersDir
-            print("✅ 初始内容解压成功到: \(workersDir.path)")
-        }
-    }
-
-    private func configureRoutes() {
-        guard let rootDir = self.rootDir else {
-            print("❌ 无法配置路由，因为 rootDir 未设置。")
-            return
-        }
-
-        // --- 规则 1: 处理 /var GET 请求 (最具体的) ---
-        server.get["/ver"] = { [weak self] _ in
-            guard let self = self else { return .internalServerError }
-            return self.handleVarRequest(rootDir: rootDir)
-        }
-
-		server.head["/"] = { _ in
-			var headers = [String: String]()
-			headers["Cache-Control"] = "no-store"
-			return .raw(200, "OK", headers, { _ in /* no body for HEAD */ })
-		}
         
-        // --- 规则 2: 使用 notFoundHandler 作为文件服务的 "全捕获" 路由 ---
-        // 这是最健壮的方式，可以避免所有路由优先级和正则表达式问题。
-        server.notFoundHandler = { [weak self] request in
-            guard let self = self else { return .internalServerError }
+        do {
+            print("🚀 Preparing to start local server...")
             
-            var path = request.path
-            // 如果请求是根路径，则将其映射到 index.html
-            if path == "/" {
-                path = "/index.html"
+            // Prepare root directory
+            try await prepareRootDirectory()
+            
+            // Configure routes
+            configureRoutes()
+            
+            // Start server
+            try server.start(port, forceIPv4: true)
+            
+            print("✅ Local server started at http://127.0.0.1:\(port)")
+            if let rootPath = rootDir?.path {
+                print("📁 Serving files from: \(rootPath)")
             }
             
-            // 从路径中移除开头的 "/" 来获取相对路径
-            let relativePath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+            // Broadcast server started
+            broadcastServerStarted()
             
-            let fileURL = rootDir.appendingPathComponent(relativePath)
-            return self.serveFile(at: fileURL)
-        }
-    }
-
-    // MARK: - Route Handlers
-
-    private func handleVarRequest(rootDir: URL) -> HttpResponse {
-        let updateJsonURL = rootDir.appendingPathComponent("update.json")
-        guard fileManager.fileExists(atPath: updateJsonURL.path) else {
-            return createJsonResponse(statusCode: 404, body: ["error": "update.json not found"])
-        }
-        do {
-            let data = try Data(contentsOf: updateJsonURL)
-            let updateInfo = try JSONDecoder().decode(UpdateInfo.self, from: data)
-            let versionResponse = VersionResponse(ver: updateInfo.ver)
-            return createJsonResponse(statusCode: 200, body: versionResponse)
         } catch {
-            return createJsonResponse(statusCode: 500, body: ["error": "Failed to read or parse update.json: \(error.localizedDescription)"])
+            print("❌ Failed to start server: \(error.localizedDescription)")
+            
+            // If it's a port binding error, try to stop and restart
+            if (error as NSError).code == 48 { // Address already in use
+                print("🔄 Port \(port) already in use, attempting restart...")
+                server.stop()
+                
+                // Wait a moment and try again
+                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                await prepareAndStart()
+            }
         }
     }
     
-    // --- 统一的文件服务函数 ---
-    private func serveFile(at absoluteURL: URL) -> HttpResponse {
-        print("--- [File Request] ---")
-        print("  尝试提供文件: \(absoluteURL.path)")
+    func stop() {
+        server.stop()
+        print("🛑 Local server stopped.")
+    }
+    
+    private func broadcastServerStarted() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .webServerDidStart,
+                object: nil,
+                userInfo: ["port": self.port]
+            )
+        }
+    }
+    
+    private func prepareRootDirectory() async throws {
+        let indexFile = workersDir.appendingPathComponent("index.html")
         
-        // 安全性检查
-        guard let rootPath = self.rootDir?.path, absoluteURL.path.hasPrefix(rootPath) else {
-            print("  [结果] ❌ 禁止访问 (路径越界)")
+        if fileManager.fileExists(atPath: indexFile.path) {
+            print("ℹ️ Found existing workers directory: \(workersDir.path)")
+            self.rootDir = workersDir
+        } else {
+            print("ℹ️ Workers directory not found, extracting from build3.zip...")
+            
+            // Remove old directory if exists
+            if fileManager.fileExists(atPath: workersDir.path) {
+                try fileManager.removeItem(at: workersDir)
+            }
+            
+            // Find build3.zip in bundle
+            guard let zipPath = Bundle.main.url(forResource: "build3", withExtension: "zip") else {
+                throw NSError(
+                    domain: "LocalWebServerError",
+                    code: 404,
+                    userInfo: [NSLocalizedDescriptionKey: "build3.zip not found in app bundle."]
+                )
+            }
+            
+            // Create directory and extract
+            try fileManager.createDirectory(at: workersDir, withIntermediateDirectories: true)
+            try fileManager.unzipItem(at: zipPath, to: workersDir)
+            
+            self.rootDir = workersDir
+            print("✅ Successfully extracted content to: \(workersDir.path)")
+        }
+    }
+    
+    private func configureRoutes() {
+        guard let rootDir = self.rootDir else {
+            print("❌ Cannot configure routes: rootDir not set")
+            return
+        }
+        
+        // Handle /ver endpoint
+        server.get["/ver"] = { [weak self] _ in
+            guard let self = self else { return .internalServerError }
+            return self.handleVersionRequest(rootDir: rootDir)
+        }
+        
+        // Handle HEAD requests for root
+        server.head["/"] = { _ in
+            var headers = [String: String]()
+            headers["Cache-Control"] = "no-store"
+            headers["Access-Control-Allow-Origin"] = "*"
+            return HttpResponse.raw(200, "OK", headers, { _ in })
+        }
+        
+        // Handle OPTIONS requests using a wildcard pattern
+        // Swifter doesn't have built-in OPTIONS support, so we use a custom route pattern
+        server.handleOPTIONS = { request in
+            var headers = [String: String]()
+            headers["Access-Control-Allow-Origin"] = "*"
+            headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, HEAD"
+            headers["Access-Control-Allow-Headers"] = "Origin, Content-Type, Accept, Authorization"
+            headers["Access-Control-Max-Age"] = "3600"
+            return HttpResponse.raw(200, "OK", headers, { _ in })
+        }
+        
+        // Use notFoundHandler as catch-all for file serving
+        server.notFoundHandler = { [weak self] request in
+            guard let self = self else { return .internalServerError }
+            
+            // Handle OPTIONS requests here if handleOPTIONS doesn't work
+            if request.method == "OPTIONS" {
+                var headers = [String: String]()
+                headers["Access-Control-Allow-Origin"] = "*"
+                headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, HEAD"
+                headers["Access-Control-Allow-Headers"] = "Origin, Content-Type, Accept, Authorization"
+                return HttpResponse.raw(200, "OK", headers, { _ in })
+            }
+            
+            var path = request.path
+            
+            // Default root to index.html
+            if path == "/" || path == "" {
+                path = "/index.html"
+            }
+            
+            // Remove leading slash for relative path
+            let relativePath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+            
+            // Construct file URL
+            let fileURL = rootDir.appendingPathComponent(relativePath)
+            
+            // Log request
+            print("📄 Request: \(request.path) -> \(fileURL.lastPathComponent)")
+            
+            return self.serveFile(at: fileURL)
+        }
+    }
+    
+    private func handleVersionRequest(rootDir: URL) -> HttpResponse {
+        let updateJsonURL = rootDir.appendingPathComponent("update.json")
+        
+        guard fileManager.fileExists(atPath: updateJsonURL.path) else {
+            print("❌ update.json not found")
+            return createJsonResponse(statusCode: 404, body: ["error": "update.json not found"])
+        }
+        
+        do {
+            let data = try Data(contentsOf: updateJsonURL)
+            // Try to decode using the local struct
+            if let updateInfo = try? JSONDecoder().decode(LocalUpdateInfo.self, from: data) {
+                let versionResponse = VersionResponse(ver: updateInfo.ver)
+                print("✅ Version request: \(updateInfo.ver)")
+                return createJsonResponse(statusCode: 200, body: versionResponse)
+            } else {
+                // Fallback to a dictionary approach
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let ver = json["ver"] as? String {
+                    let versionResponse = VersionResponse(ver: ver)
+                    print("✅ Version request: \(ver)")
+                    return createJsonResponse(statusCode: 200, body: versionResponse)
+                }
+                throw NSError(domain: "LocalWebServerError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid update.json format"])
+            }
+        } catch {
+            print("❌ Failed to read update.json: \(error)")
+            return createJsonResponse(statusCode: 500, body: ["error": error.localizedDescription])
+        }
+    }
+    
+    private func serveFile(at absoluteURL: URL) -> HttpResponse {
+        // Security check - ensure file is within rootDir
+        guard let rootPath = self.rootDir?.path,
+              absoluteURL.path.hasPrefix(rootPath) else {
+            print("❌ Security violation: attempting to access file outside root")
             return .forbidden
         }
         
+        // Check if file exists
         guard fileManager.fileExists(atPath: absoluteURL.path) else {
-            print("  [结果] ❌ 404 Not Found")
+            print("❌ File not found: \(absoluteURL.lastPathComponent)")
             return .notFound
         }
         
+        // Try to open file
         guard let fileHandle = try? FileHandle(forReadingFrom: absoluteURL) else {
-            print("  [结果] ❌ 500 Server Error (无法打开文件)")
+            print("❌ Cannot open file: \(absoluteURL.lastPathComponent)")
             return .internalServerError
         }
         
-        print("  [结果] ✅ 200 OK (文件找到)")
+        print("✅ Serving: \(absoluteURL.lastPathComponent)")
         
+        // Determine MIME type
         let mime = mimeType(for: absoluteURL.pathExtension)
+        
+        // Prepare headers
         var headers = [String: String]()
         headers["Content-Type"] = mime
-        addCorsHeaders(toRawHeaders: &headers)
-
-        return .raw(200, "OK", headers, { writer in
+        headers["Access-Control-Allow-Origin"] = "*"
+        headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        
+        // Return file content
+        return HttpResponse.raw(200, "OK", headers, { writer in
             defer { try? fileHandle.close() }
+            
             do {
+                // Read and write file in chunks
                 while true {
-                    let data = fileHandle.readData(ofLength: 4096)
+                    let data = fileHandle.readData(ofLength: 65536) // 64KB chunks
                     if data.isEmpty { break }
                     try writer.write(data)
                 }
             } catch {
-                // ➕ 常见：客户端取消导致 EPIPE/Broken pipe，降噪
+                // Handle broken pipe gracefully
                 let nsErr = error as NSError
                 if nsErr.domain == NSPOSIXErrorDomain && nsErr.code == EPIPE {
-                    print("ℹ️ 客户端取消（Broken pipe），忽略")
+                    // Client disconnected - this is normal
                 } else {
-                    print("❌ 写入文件到响应时出错: \(error)")
+                    print("❌ Error writing response: \(error)")
                 }
             }
         })
     }
-
-    // MARK: - Helper Methods
-
+    
     private func createJsonResponse<T: Codable>(statusCode: Int, body: T) -> HttpResponse {
         do {
             let data = try JSONEncoder().encode(body)
             var headers = [String: String]()
             headers["Content-Type"] = "application/json"
-            addCorsHeaders(toRawHeaders: &headers)
-            return .raw(statusCode, "OK", headers, { writer in try? writer.write(data) })
+            headers["Access-Control-Allow-Origin"] = "*"
+            headers["Cache-Control"] = "no-cache"
+            
+            return HttpResponse.raw(statusCode, "OK", headers, { writer in
+                try? writer.write(data)
+            })
         } catch {
             return .internalServerError
         }
     }
     
-    private func addCorsHeaders(toRawHeaders headers: inout [String: String]) {
-        headers["Access-Control-Allow-Origin"] = "*"
-        headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        headers["Access-Control-Allow-Headers"] = "Origin, Content-Type, Accept"
-    }
-    
     private func mimeType(for pathExtension: String) -> String {
         switch pathExtension.lowercased() {
-            case "html": return "text/html"
-            case "css": return "text/css"
-            case "js": return "application/javascript"
-            case "json": return "application/json"
-            case "png": return "image/png"
-            case "jpg", "jpeg": return "image/jpeg"
-            case "gif": return "image/gif"
-            case "svg": return "image/svg+xml"
-            case "ico": return "image/x-icon"
-            default: return "application/octet-stream"
+        case "html", "htm": return "text/html; charset=utf-8"
+        case "css": return "text/css; charset=utf-8"
+        case "js", "mjs": return "application/javascript; charset=utf-8"
+        case "json": return "application/json; charset=utf-8"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "svg": return "image/svg+xml"
+        case "ico": return "image/x-icon"
+        case "woff": return "font/woff"
+        case "woff2": return "font/woff2"
+        case "ttf": return "font/ttf"
+        case "otf": return "font/otf"
+        case "txt": return "text/plain; charset=utf-8"
+        case "xml": return "text/xml; charset=utf-8"
+        case "pdf": return "application/pdf"
+        case "zip": return "application/zip"
+        case "mp3": return "audio/mpeg"
+        case "mp4": return "video/mp4"
+        case "webm": return "video/webm"
+        case "webp": return "image/webp"
+        default: return "application/octet-stream"
+        }
+    }
+}
+
+// MARK: - Swifter Extension for OPTIONS if needed
+extension HttpServer {
+    var handleOPTIONS: ((HttpRequest) -> HttpResponse)? {
+        get { return nil }
+        set {
+            if let handler = newValue {
+                // Register a middleware or use the middleware pattern if Swifter supports it
+                // Otherwise handle in notFoundHandler
+                _ = handler
+            }
         }
     }
 }
