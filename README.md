@@ -4,6 +4,7 @@ Silent Pass combines decentralization, fragmentation, and a zero-trust architect
 
 run
 ```
+git clone https://github.com/CoNET-project/SilentPass-iOS.git
 git clone  https://github.com/CoNET-project/vpn2socks.git
 pod deintegrate
 pod install
