@@ -2,6 +2,15 @@
 
 Silent Pass combines decentralization, fragmentation, and a zero-trust architecture to deliver unparalleled internet privacy.
 
+run
+```
+git checkout v1-main
+clone  https://github.com/CoNET-project/vpn2socks.git
+pod deintegrate
+pod install
+
+```
+
 Technology powered by CoNET's [Layer Minus Decentralized Physical Infrastructure Networks](https://conet.network)
 
 [White Paper](https://docs.silentpass.io/)

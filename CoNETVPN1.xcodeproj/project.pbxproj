@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		60E6EAF5E996A70C80CD5F58 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1786319CA6A7FC984FE043D4 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework */; };
+		6A7D20B4BDFE68FBA107BCD6 /* Pods_CoNETVPN1.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 34194DDEAF99D53386299D4E /* Pods_CoNETVPN1.framework */; };
 		7606D6F42D2EBC7700224EC8 /* Rfc1928.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7606D6EF2D2EBC7700224EC8 /* Rfc1928.swift */; };
 		7606D6F52D2EBC7700224EC8 /* MiningProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7606D6E72D2EBC7700224EC8 /* MiningProcess.swift */; };
 		7606D6F62D2EBC7700224EC8 /* Server.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7606D6EB2D2EBC7700224EC8 /* Server.swift */; };
@@ -48,9 +50,8 @@
 		76AD2D292D11BE1C00CAB2B7 /* web3swift in Frameworks */ = {isa = PBXBuildFile; productRef = 76AD2D282D11BE1C00CAB2B7 /* web3swift */; };
 		76AD2D2C2D11BE2C00CAB2B7 /* ObjectivePGP in Frameworks */ = {isa = PBXBuildFile; productRef = 76AD2D2B2D11BE2C00CAB2B7 /* ObjectivePGP */; };
 		76EC53462E1CD1ED0020670C /* icon.png in Resources */ = {isa = PBXBuildFile; fileRef = 76EC53452E1CD1ED0020670C /* icon.png */; };
-		BF572FEFDAA54A12D51B5FE9 /* Pods_CoNETVPN1.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DE531A7C6F806D913F3DA60 /* Pods_CoNETVPN1.framework */; };
-		C2F19D452DF27FCCD2E439F5 /* Pods_VPN.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B065FACCEF28785DA81D7B43 /* Pods_VPN.framework */; };
-		CAE69CDC58145A1A3DAC0297 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0712EF27A6FE658454DDE0C5 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework */; };
+		7831E44FC6DA9EB45E28198B /* Pods_CoNETVPN1Tests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 302632E9A53AC4BBE7DBB764 /* Pods_CoNETVPN1Tests.framework */; };
+		A683B4F830F7CC4CE7BB8C4B /* Pods_VPN.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F8977A3E26EE32090FA12208 /* Pods_VPN.framework */; };
 		D0064CEF2E5B8D74003FBD9D /* CountryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0064CEE2E5B8D74003FBD9D /* CountryManager.swift */; };
 		D01CB50F2E7552B40073C198 /* build3.zip in Resources */ = {isa = PBXBuildFile; fileRef = D01CB50E2E7552B40073C198 /* build3.zip */; };
 		D04D4DF42E593DFD0083DD23 /* LayerMinusBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */; };
@@ -67,7 +68,6 @@
 		D0D33D5F2E298A9000E849BC /* LocalServerFirstSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */; };
 		D0D33D632E298BCE00E849BC /* CodableCachedData.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D33D622E298BCD00E849BC /* CodableCachedData.swift */; };
 		D0E605702E56DA2300167745 /* vpn2socks in Frameworks */ = {isa = PBXBuildFile; productRef = D0E6056F2E56DA2300167745 /* vpn2socks */; };
-		DC54A9FB02AA54E897847413 /* Pods_CoNETVPN1Tests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64B0E3B87885C6C17DD36CB4 /* Pods_CoNETVPN1Tests.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -109,12 +109,13 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		0712EF27A6FE658454DDE0C5 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CoNETVPN1_CoNETVPN1UITests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		17ABD8F4590C1005C3C82D71 /* Pods-CoNETVPN1.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1.release.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1.release.xcconfig"; sourceTree = "<group>"; };
-		2134685EE61B99815386408D /* Pods-CoNETVPN1Tests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1Tests.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1Tests/Pods-CoNETVPN1Tests.debug.xcconfig"; sourceTree = "<group>"; };
-		2F382A5960AEA3D2CE3E2932 /* Pods-VPN.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VPN.debug.xcconfig"; path = "Target Support Files/Pods-VPN/Pods-VPN.debug.xcconfig"; sourceTree = "<group>"; };
-		3DE531A7C6F806D913F3DA60 /* Pods_CoNETVPN1.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CoNETVPN1.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		64B0E3B87885C6C17DD36CB4 /* Pods_CoNETVPN1Tests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CoNETVPN1Tests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		0663C630B5C9A544CFCEFFCB /* Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig"; sourceTree = "<group>"; };
+		0B3AE4A59103264839C9EE3C /* Pods-CoNETVPN1.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1.release.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1.release.xcconfig"; sourceTree = "<group>"; };
+		1406E49F6D01A4633204475D /* Pods-VPN.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VPN.release.xcconfig"; path = "Target Support Files/Pods-VPN/Pods-VPN.release.xcconfig"; sourceTree = "<group>"; };
+		1786319CA6A7FC984FE043D4 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CoNETVPN1_CoNETVPN1UITests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		302632E9A53AC4BBE7DBB764 /* Pods_CoNETVPN1Tests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CoNETVPN1Tests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		34194DDEAF99D53386299D4E /* Pods_CoNETVPN1.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CoNETVPN1.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		63CF77C5BE08C2142A2C3B22 /* Pods-CoNETVPN1Tests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1Tests.release.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1Tests/Pods-CoNETVPN1Tests.release.xcconfig"; sourceTree = "<group>"; };
 		7606D6E62D2EBC7700224EC8 /* CONET_Guardian_NodeInfo_ABI.text */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CONET_Guardian_NodeInfo_ABI.text; sourceTree = "<group>"; };
 		7606D6E72D2EBC7700224EC8 /* MiningProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiningProcess.swift; sourceTree = "<group>"; };
 		7606D6E82D2EBC7700224EC8 /* LayerMinus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinus.swift; sourceTree = "<group>"; };
@@ -153,15 +154,14 @@
 		765B0ED82CE476EB007ACC57 /* VPN.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VPN.entitlements; sourceTree = "<group>"; };
 		7660ED492D13A861008B6D28 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		7660ED4B2D13A863008B6D28 /* VPN-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "VPN-Bridging-Header.h"; sourceTree = "<group>"; };
+		76732EF89DFD00ACC5EF30FE /* Pods-VPN.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VPN.debug.xcconfig"; path = "Target Support Files/Pods-VPN/Pods-VPN.debug.xcconfig"; sourceTree = "<group>"; };
 		7678A40B2DADED4900A7C16C /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		76C68BF92CE1F7EE006E15EE /* CoNETVPN1.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CoNETVPN1.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		76C68C0F2CE1F7F1006E15EE /* CoNETVPN1Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CoNETVPN1Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		76C68C192CE1F7F1006E15EE /* CoNETVPN1UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CoNETVPN1UITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		76EC53452E1CD1ED0020670C /* icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = icon.png; sourceTree = "<group>"; };
-		8DADDD3292E851A193B1DB47 /* Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig"; sourceTree = "<group>"; };
-		AC447B9CF46665A6870A6FE6 /* Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig"; sourceTree = "<group>"; };
-		B065FACCEF28785DA81D7B43 /* Pods_VPN.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_VPN.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		B863739A14ADB342BEEAA7B2 /* Pods-VPN.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VPN.release.xcconfig"; path = "Target Support Files/Pods-VPN/Pods-VPN.release.xcconfig"; sourceTree = "<group>"; };
+		77018FF67F90807D012D76CF /* Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig"; sourceTree = "<group>"; };
+		9BBF8E9DFA86BB716E976196 /* Pods-CoNETVPN1.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1.debug.xcconfig"; sourceTree = "<group>"; };
 		D0064CEE2E5B8D74003FBD9D /* CountryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CountryManager.swift; sourceTree = "<group>"; };
 		D01CB50E2E7552B40073C198 /* build3.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = build3.zip; sourceTree = "<group>"; };
 		D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinusBridge.swift; sourceTree = "<group>"; };
@@ -174,8 +174,8 @@
 		D0D00E5F2E6AEF8700E76945 /* PACBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PACBuilder.swift; sourceTree = "<group>"; };
 		D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServerFirstSchemeHandler.swift; sourceTree = "<group>"; };
 		D0D33D622E298BCD00E849BC /* CodableCachedData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableCachedData.swift; sourceTree = "<group>"; };
-		E04572E9846C75F10876B175 /* Pods-CoNETVPN1.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1.debug.xcconfig"; sourceTree = "<group>"; };
-		E6D9ED8BF5C4FFE74EBCA7F2 /* Pods-CoNETVPN1Tests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1Tests.release.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1Tests/Pods-CoNETVPN1Tests.release.xcconfig"; sourceTree = "<group>"; };
+		F8977A3E26EE32090FA12208 /* Pods_VPN.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_VPN.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		FE2ED0440F6634E8FE363D6B /* Pods-CoNETVPN1Tests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1Tests.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1Tests/Pods-CoNETVPN1Tests.debug.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -189,7 +189,7 @@
 				D0850B2A2E52C1D700BC1BF4 /* vpn2socks in Frameworks */,
 				761109802D19862C00B7677B /* ObjectivePGP in Frameworks */,
 				7611097E2D19862800B7677B /* web3swift in Frameworks */,
-				C2F19D452DF27FCCD2E439F5 /* Pods_VPN.framework in Frameworks */,
+				A683B4F830F7CC4CE7BB8C4B /* Pods_VPN.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -203,7 +203,7 @@
 				762139F52D2E54A2007F0015 /* MBProgressHUD in Frameworks */,
 				D06663F92E284A9C007D010D /* Swifter in Frameworks */,
 				7648A43B2E1E4F0600B38E11 /* ZIPFoundation in Frameworks */,
-				BF572FEFDAA54A12D51B5FE9 /* Pods_CoNETVPN1.framework in Frameworks */,
+				6A7D20B4BDFE68FBA107BCD6 /* Pods_CoNETVPN1.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -211,7 +211,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				DC54A9FB02AA54E897847413 /* Pods_CoNETVPN1Tests.framework in Frameworks */,
+				7831E44FC6DA9EB45E28198B /* Pods_CoNETVPN1Tests.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -219,7 +219,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				CAE69CDC58145A1A3DAC0297 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework in Frameworks */,
+				60E6EAF5E996A70C80CD5F58 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -271,10 +271,10 @@
 			isa = PBXGroup;
 			children = (
 				765B0EAD2CE47577007ACC57 /* NetworkExtension.framework */,
-				3DE531A7C6F806D913F3DA60 /* Pods_CoNETVPN1.framework */,
-				0712EF27A6FE658454DDE0C5 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework */,
-				64B0E3B87885C6C17DD36CB4 /* Pods_CoNETVPN1Tests.framework */,
-				B065FACCEF28785DA81D7B43 /* Pods_VPN.framework */,
+				34194DDEAF99D53386299D4E /* Pods_CoNETVPN1.framework */,
+				1786319CA6A7FC984FE043D4 /* Pods_CoNETVPN1_CoNETVPN1UITests.framework */,
+				302632E9A53AC4BBE7DBB764 /* Pods_CoNETVPN1Tests.framework */,
+				F8977A3E26EE32090FA12208 /* Pods_VPN.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -359,14 +359,14 @@
 		A2DC7E49A573B740991B8154 /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				E04572E9846C75F10876B175 /* Pods-CoNETVPN1.debug.xcconfig */,
-				17ABD8F4590C1005C3C82D71 /* Pods-CoNETVPN1.release.xcconfig */,
-				8DADDD3292E851A193B1DB47 /* Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig */,
-				AC447B9CF46665A6870A6FE6 /* Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig */,
-				2134685EE61B99815386408D /* Pods-CoNETVPN1Tests.debug.xcconfig */,
-				E6D9ED8BF5C4FFE74EBCA7F2 /* Pods-CoNETVPN1Tests.release.xcconfig */,
-				2F382A5960AEA3D2CE3E2932 /* Pods-VPN.debug.xcconfig */,
-				B863739A14ADB342BEEAA7B2 /* Pods-VPN.release.xcconfig */,
+				9BBF8E9DFA86BB716E976196 /* Pods-CoNETVPN1.debug.xcconfig */,
+				0B3AE4A59103264839C9EE3C /* Pods-CoNETVPN1.release.xcconfig */,
+				77018FF67F90807D012D76CF /* Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig */,
+				0663C630B5C9A544CFCEFFCB /* Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig */,
+				FE2ED0440F6634E8FE363D6B /* Pods-CoNETVPN1Tests.debug.xcconfig */,
+				63CF77C5BE08C2142A2C3B22 /* Pods-CoNETVPN1Tests.release.xcconfig */,
+				76732EF89DFD00ACC5EF30FE /* Pods-VPN.debug.xcconfig */,
+				1406E49F6D01A4633204475D /* Pods-VPN.release.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -378,7 +378,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 765B0EB72CE47577007ACC57 /* Build configuration list for PBXNativeTarget "VPN" */;
 			buildPhases = (
-				BB621770E5F1DD14C35A76A8 /* [CP] Check Pods Manifest.lock */,
+				2CE6CD38A96A169A3692656B /* [CP] Check Pods Manifest.lock */,
 				765B0EA72CE47577007ACC57 /* Sources */,
 				765B0EA82CE47577007ACC57 /* Frameworks */,
 				765B0EA92CE47577007ACC57 /* Resources */,
@@ -396,12 +396,12 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 76C68C222CE1F7F1006E15EE /* Build configuration list for PBXNativeTarget "CoNETVPN1" */;
 			buildPhases = (
-				62D913717C6DCB2CAC302D44 /* [CP] Check Pods Manifest.lock */,
+				514FC62E110CE08E997D0BD5 /* [CP] Check Pods Manifest.lock */,
 				76C68BF52CE1F7EE006E15EE /* Sources */,
 				76C68BF62CE1F7EE006E15EE /* Frameworks */,
 				76C68BF72CE1F7EE006E15EE /* Resources */,
 				765B0EBB2CE47577007ACC57 /* Embed Foundation Extensions */,
-				4A9E7F11E5649AA8FE25787F /* [CP] Embed Pods Frameworks */,
+				CFAAF6F6F7AF142401329B49 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -417,7 +417,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 76C68C272CE1F7F1006E15EE /* Build configuration list for PBXNativeTarget "CoNETVPN1Tests" */;
 			buildPhases = (
-				8117000B60DB7166DE1AD6E4 /* [CP] Check Pods Manifest.lock */,
+				22AED4F87121CA9BA1642FFB /* [CP] Check Pods Manifest.lock */,
 				76C68C0B2CE1F7F1006E15EE /* Sources */,
 				76C68C0C2CE1F7F1006E15EE /* Frameworks */,
 				76C68C0D2CE1F7F1006E15EE /* Resources */,
@@ -436,11 +436,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 76C68C2A2CE1F7F1006E15EE /* Build configuration list for PBXNativeTarget "CoNETVPN1UITests" */;
 			buildPhases = (
-				AF856F0308FE17EBE753311F /* [CP] Check Pods Manifest.lock */,
+				3125CE2B25B9AFFD18DD6EC7 /* [CP] Check Pods Manifest.lock */,
 				76C68C152CE1F7F1006E15EE /* Sources */,
 				76C68C162CE1F7F1006E15EE /* Frameworks */,
 				76C68C172CE1F7F1006E15EE /* Resources */,
-				E3200DE111D0253BC7B52B47 /* [CP] Embed Pods Frameworks */,
+				6E7DCFB69A89DABB429A554A /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -548,50 +548,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		4A9E7F11E5649AA8FE25787F /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			inputPaths = (
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		62D913717C6DCB2CAC302D44 /* [CP] Check Pods Manifest.lock */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
-				"${PODS_ROOT}/Manifest.lock",
-			);
-			name = "[CP] Check Pods Manifest.lock";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-CoNETVPN1-checkManifestLockResult.txt",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
-		8117000B60DB7166DE1AD6E4 /* [CP] Check Pods Manifest.lock */ = {
+		22AED4F87121CA9BA1642FFB /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -613,29 +570,7 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		AF856F0308FE17EBE753311F /* [CP] Check Pods Manifest.lock */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
-				"${PODS_ROOT}/Manifest.lock",
-			);
-			name = "[CP] Check Pods Manifest.lock";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-CoNETVPN1-CoNETVPN1UITests-checkManifestLockResult.txt",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
-		BB621770E5F1DD14C35A76A8 /* [CP] Check Pods Manifest.lock */ = {
+		2CE6CD38A96A169A3692656B /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -657,7 +592,51 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		E3200DE111D0253BC7B52B47 /* [CP] Embed Pods Frameworks */ = {
+		3125CE2B25B9AFFD18DD6EC7 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-CoNETVPN1-CoNETVPN1UITests-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+		514FC62E110CE08E997D0BD5 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-CoNETVPN1-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+		6E7DCFB69A89DABB429A554A /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -665,17 +644,30 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			inputPaths = (
-			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
 			);
-			outputPaths = (
-			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		CFAAF6F6F7AF142401329B49 /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CoNETVPN1/Pods-CoNETVPN1-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -787,7 +779,7 @@
 /* Begin XCBuildConfiguration section */
 		765B0EB82CE47577007ACC57 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 2F382A5960AEA3D2CE3E2932 /* Pods-VPN.debug.xcconfig */;
+			baseConfigurationReference = 76732EF89DFD00ACC5EF30FE /* Pods-VPN.debug.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = VPN/VPN.entitlements;
@@ -832,7 +824,7 @@
 		};
 		765B0EB92CE47577007ACC57 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = B863739A14ADB342BEEAA7B2 /* Pods-VPN.release.xcconfig */;
+			baseConfigurationReference = 1406E49F6D01A4633204475D /* Pods-VPN.release.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = VPN/VPN.entitlements;
@@ -876,7 +868,7 @@
 		};
 		76C68C232CE1F7F1006E15EE /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = E04572E9846C75F10876B175 /* Pods-CoNETVPN1.debug.xcconfig */;
+			baseConfigurationReference = 9BBF8E9DFA86BB716E976196 /* Pods-CoNETVPN1.debug.xcconfig */;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -928,7 +920,7 @@
 		};
 		76C68C242CE1F7F1006E15EE /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 17ABD8F4590C1005C3C82D71 /* Pods-CoNETVPN1.release.xcconfig */;
+			baseConfigurationReference = 0B3AE4A59103264839C9EE3C /* Pods-CoNETVPN1.release.xcconfig */;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -1099,7 +1091,7 @@
 		};
 		76C68C282CE1F7F1006E15EE /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 2134685EE61B99815386408D /* Pods-CoNETVPN1Tests.debug.xcconfig */;
+			baseConfigurationReference = FE2ED0440F6634E8FE363D6B /* Pods-CoNETVPN1Tests.debug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
@@ -1119,7 +1111,7 @@
 		};
 		76C68C292CE1F7F1006E15EE /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = E6D9ED8BF5C4FFE74EBCA7F2 /* Pods-CoNETVPN1Tests.release.xcconfig */;
+			baseConfigurationReference = 63CF77C5BE08C2142A2C3B22 /* Pods-CoNETVPN1Tests.release.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
@@ -1139,7 +1131,7 @@
 		};
 		76C68C2B2CE1F7F1006E15EE /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 8DADDD3292E851A193B1DB47 /* Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig */;
+			baseConfigurationReference = 77018FF67F90807D012D76CF /* Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -1157,7 +1149,7 @@
 		};
 		76C68C2C2CE1F7F1006E15EE /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = AC447B9CF46665A6870A6FE6 /* Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig */;
+			baseConfigurationReference = 0663C630B5C9A544CFCEFFCB /* Pods-CoNETVPN1-CoNETVPN1UITests.release.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
