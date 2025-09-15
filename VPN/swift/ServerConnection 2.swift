@@ -177,6 +177,18 @@ public final class ServerConnection {
     public func markAsLayerMinusRouted() {
         self.isLayerMinusRouted = true
     }
+
+	// MARK: IP 字面量检测（IPv4 / IPv6）
+    @inline(__always)
+    private func isIPAddress(_ s: String) -> Bool {
+        // 允许形如 "[2001:db8::1]" 的 Host，先去掉方括号
+        let t = s.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        var v4 = in_addr()
+        if t.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 { return true }
+        var v6 = in6_addr()
+        if t.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 { return true }
+        return false
+    }
     
     public var onRoutingDecided: ((ServerConnection) -> Void)?
     
@@ -911,8 +923,12 @@ public final class ServerConnection {
         // 标记已移交，停止接收
         handedOff = true
         phase = .bridged
-        
-        
+
+        if isIPAddress(host) {
+            useLayerMinus = false
+            log("DIRECT (IP literal): \(host):\(port) -> bypass LayerMinus")
+        }
+
         guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
             !egressNode.isEmpty else {
 		// guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),

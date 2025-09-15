@@ -126,7 +126,28 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             forMainFrameOnly: false
         )
         userContentController.addUserScript(userScript)
-        
+
+
+		// ✅ ACK bootstrap：收到 native_VPNStatus 后把 callbackId 记到 window.__nativeAcks
+		let ackBootstrap = """
+        (function(){
+            if (window.__vpnAckBootstrap) return;
+            window.__vpnAckBootstrap = true;
+            window.__nativeAcks = window.__nativeAcks || {};
+            window.addEventListener('message', function(e){
+            try {
+                var d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+                if (d && d.event === 'native_VPNStatus' && d.callbackId) {
+                    window.__nativeAcks[d.callbackId] = Date.now();
+                }
+            } catch(_) {}
+          }, false);
+        })();
+        """
+
+        let ackScript = WKUserScript(source: ackBootstrap, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        userContentController.addUserScript(ackScript)
+
         config.userContentController = userContentController
         config.preferences.javaScriptEnabled = true
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
@@ -546,16 +567,14 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             
             for manager in managers {
                 if manager.localizedDescription == "CoNET VPN" {
-                    let status = manager.connection.status
-                    var sendStatus = status.rawValue
-                    if status.rawValue == 2 {
-                        sendStatus = 3
-                    }
-                    
-                    print("Current VPN status: \(sendStatus)")
+                    var statusToSend = manager.connection.status
+                    // 若仍需把 .connecting 当作“已连”来展示，则保留这行；不需要可删除
+                    if statusToSend == .connecting { statusToSend = .connected }
+
+                    print("Current VPN status(raw): \(statusToSend.rawValue)")
                     NotificationCenter.default.post(
                         name: Notification.Name("VPNStatusChanged"),
-                        object: sendStatus
+                        object: statusToSend   // 关键：统一用 NEVPNStatus
                     )
                     break
                 }
@@ -575,20 +594,27 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
                 if let responseData = try? JSONSerialization.data(withJSONObject: responseDict),
                    let responseString = String(data: responseData, encoding: .utf8) {
                     DispatchQueue.main.async {
-                        self.sendToWebView(responseString: responseString)
+                        self.sendToWebView(responseString: responseString, callbackId: "VPNStatusUpdate")
                     }
                 }
             }
         }
     }
-    
-    private func sendToWebView(responseString: String) {
-        // Make sure WebView is ready
-        guard webView != nil, !webView.isLoading else {
-            print("⚠️ WebView not ready, queuing message")
+
+    // 发送到 WebView；如提供 callbackId，则启用“1s 等待 ACK、未收到重发”的轻量握手
+    private func sendToWebView(responseString: String,
+                               callbackId: String? = nil,
+                               attempt: Int = 0,
+                               maxRetries: Int = 3) {
+        // WebView 未就绪则稍后再试，避免丢消息
+        guard let webView = self.webView, !webView.isLoading else {
+            print("⚠️ WebView not ready, will retry in 300ms")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.sendToWebView(responseString: responseString, callbackId: callbackId, attempt: attempt, maxRetries: maxRetries)
+            }
             return
         }
-        
+
         // Escape the JSON string properly
         let escapedString = responseString
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -608,13 +634,36 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
         """
         
         print("Sending JS: \(js)")
-        
-        self.webView?.evaluateJavaScript(js) { result, error in
+        webView.evaluateJavaScript(js) { [weak self] result, error in
+            guard let self = self else { return }
+
             if let error = error {
                 print("❌ JS execution failed: \(error)")
             } else {
                 print("✅ JS execution success: \(String(describing: result))")
             }
+
+            // 若需要 ACK：1 秒后检查 window.__nativeAcks[callbackId]
+            guard let callbackId = callbackId else { return }
+            let checkAckJS = "(()=>{try{return (window.__nativeAcks && window.__nativeAcks['\(callbackId)'])?1:0}catch(_){return 0}})();"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                webView.evaluateJavaScript(checkAckJS) { ackRes, _ in
+                    let acked = (ackRes as? Int == 1) || (ackRes as? Bool == true)
+                    if acked {
+                        print("✅ JS ACK received for \(callbackId)")
+                    } else if attempt < maxRetries {
+                        print("⏳ No JS ACK, retry \(attempt + 1)/\(maxRetries)")
+                        self.sendToWebView(responseString: responseString,
+                                           callbackId: callbackId,
+                                           attempt: attempt + 1,
+                                           maxRetries: maxRetries)
+                    } else {
+                        print("❗️ No JS ACK after \(maxRetries) attempts, giving up.")
+                    }
+                }
+            }
+
+
         }
     }
     

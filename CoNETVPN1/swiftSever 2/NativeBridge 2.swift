@@ -23,6 +23,12 @@ struct pay: Codable {
     var receipt: String?
 }
 
+// ✅ 恢复订阅时，前端只会传钱包信息，单独的输入模型即可避免解码失败
+private struct RestoreInput: Codable {
+    let publicKey: String
+    let Solana: String
+}
+
 struct postPay: Codable {
     var receipt: String
     var walletAddress: String
@@ -274,7 +280,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                     print(clearText)
                     let data = clearText.data(using: .utf8)!
                     do {
-                        let payObj = try JSONDecoder().decode(pay.self, from: data)
+                        let restore = try JSONDecoder().decode(RestoreInput.self, from: data)
 
                         if #available(iOS 15.0, *) {
                             Task {
@@ -292,13 +298,17 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                                 }
 
                                 // 组装并上报到你的后端
-                                
-                                
-                                var payload = payObj
-                                payload.receipt = jwss.joined(separator: "\n")
-                                    
-                                
-                                self.postToAPIServerForRecover(payload)
+
+								// 使用 pay 结构体，但把恢复拿不到的字段置空字符串（服务器端可忽略）
+								let payload = pay(
+									publicKey: restore.publicKey,
+									Solana: restore.Solana,
+									transactionId: "",
+									productId: "",
+									total: "",
+									receipt: jwss.joined(separator: "\n")
+								)
+								self.postToAPIServerForRecover(payload)
                             }
                         } else {
                             // iOS < 15 无法获取 JWS
