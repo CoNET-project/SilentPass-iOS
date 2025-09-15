@@ -10,19 +10,46 @@ import Foundation
 
 class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
     
-    // Track active tasks to handle cancellation
-    private var activeTasks = [URLRequest: URLSessionDataTask]()
+    // Track active tasks and their state
+    private var activeTasks = [ObjectIdentifier: URLSessionDataTask]()
+    private var taskStates = [ObjectIdentifier: TaskState]()
     private let taskQueue = DispatchQueue(label: "com.conet.schemehandler", attributes: .concurrent)
     
+    private enum TaskState {
+        case running
+        case stopping
+        case stopped
+    }
+    
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        let taskId = ObjectIdentifier(urlSchemeTask)
+        
+        // Check if task is already being handled
+        var isAlreadyHandled = false
+        taskQueue.sync {
+            if let state = taskStates[taskId] {
+                isAlreadyHandled = (state != .stopped)
+            }
+        }
+        
+        if isAlreadyHandled {
+            print("⚠️ [SchemeHandler] Task already being handled, ignoring duplicate")
+            return
+        }
+        
+        // Mark task as running
+        taskQueue.async(flags: .barrier) {
+            self.taskStates[taskId] = .running
+        }
+        
         guard let url = urlSchemeTask.request.url else {
-            urlSchemeTask.didFailWithError(URLError(.badURL))
+            completeTask(urlSchemeTask, error: URLError(.badURL))
             return
         }
         
         // Convert local-first://localhost:3001/path to http://127.0.0.1:3001/path
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            urlSchemeTask.didFailWithError(URLError(.badURL))
+            completeTask(urlSchemeTask, error: URLError(.badURL))
             return
         }
         
@@ -40,7 +67,7 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
         }
         
         guard let httpURL = components.url else {
-            urlSchemeTask.didFailWithError(URLError(.badURL))
+            completeTask(urlSchemeTask, error: URLError(.badURL))
             return
         }
         
@@ -62,9 +89,17 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
         let dataTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
             
-            // Remove from active tasks
-            self.taskQueue.async(flags: .barrier) {
-                self.activeTasks.removeValue(forKey: urlSchemeTask.request)
+            // Check if task was stopped
+            var shouldProcess = false
+            self.taskQueue.sync {
+                if let state = self.taskStates[taskId] {
+                    shouldProcess = (state == .running)
+                }
+            }
+            
+            guard shouldProcess else {
+                print("⚠️ [SchemeHandler] Task was stopped, not processing response")
+                return
             }
             
             // Handle error
@@ -72,33 +107,32 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
                 print("❌ [SchemeHandler] Failed to load: \(httpURL.absoluteString), error: \(error.localizedDescription)")
                 
                 // Check if it's a connection error and provide fallback content
-                if (error as NSError).code == NSURLErrorCannotConnectToHost ||
-                   (error as NSError).code == NSURLErrorTimedOut {
+                let nsError = error as NSError
+                if nsError.code == NSURLErrorCannotConnectToHost ||
+                   nsError.code == NSURLErrorTimedOut {
                     // Provide a fallback loading page
-                    self.provideFallbackContent(for: urlSchemeTask)
-                } else {
-                    urlSchemeTask.didFailWithError(error)
+                    self.provideFallbackContent(for: urlSchemeTask, taskId: taskId)
+                } else if nsError.code != NSURLErrorCancelled {
+                    self.completeTask(urlSchemeTask, error: error)
                 }
                 return
             }
             
             // Handle successful response
             guard let data = data, let response = response else {
-                urlSchemeTask.didFailWithError(URLError(.cannotLoadFromNetwork))
+                self.completeTask(urlSchemeTask, error: URLError(.cannotLoadFromNetwork))
                 return
             }
             
             print("✅ [SchemeHandler] Successfully loaded: \(httpURL.absoluteString)")
             
             // Send response and data to WebView
-            urlSchemeTask.didReceive(response)
-            urlSchemeTask.didReceive(data)
-            urlSchemeTask.didFinish()
+            self.completeTask(urlSchemeTask, response: response, data: data)
         }
         
         // Store task for potential cancellation
         taskQueue.async(flags: .barrier) {
-            self.activeTasks[urlSchemeTask.request] = dataTask
+            self.activeTasks[taskId] = dataTask
         }
         
         // Start the task
@@ -106,18 +140,80 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
     }
     
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        let taskId = ObjectIdentifier(urlSchemeTask)
+        
         print("🛑 [SchemeHandler] Stopping task for: \(urlSchemeTask.request.url?.absoluteString ?? "unknown")")
         
         // Cancel the corresponding URLSession task
         taskQueue.async(flags: .barrier) {
-            if let task = self.activeTasks.removeValue(forKey: urlSchemeTask.request) {
+            // Mark as stopping
+            self.taskStates[taskId] = .stopping
+            
+            // Cancel the data task
+            if let task = self.activeTasks[taskId] {
                 task.cancel()
+                self.activeTasks.removeValue(forKey: taskId)
+            }
+            
+            // Mark as stopped
+            self.taskStates[taskId] = .stopped
+        }
+    }
+    
+    private func completeTask(_ urlSchemeTask: WKURLSchemeTask, response: URLResponse? = nil, data: Data? = nil, error: Error? = nil) {
+        let taskId = ObjectIdentifier(urlSchemeTask)
+        
+        // Check if task is still running
+        var shouldComplete = false
+        taskQueue.sync {
+            if let state = taskStates[taskId] {
+                shouldComplete = (state == .running)
+            }
+        }
+        
+        guard shouldComplete else {
+            print("⚠️ [SchemeHandler] Task already stopped, not completing")
+            return
+        }
+        
+        // Complete the task
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Double-check state before completing
+            var canComplete = false
+            self.taskQueue.sync {
+                if let state = self.taskStates[taskId] {
+                    canComplete = (state == .running)
+                }
+            }
+            
+            guard canComplete else { return }
+            
+            do {
+                if let error = error {
+                    urlSchemeTask.didFailWithError(error)
+                } else if let response = response, let data = data {
+                    urlSchemeTask.didReceive(response)
+                    urlSchemeTask.didReceive(data)
+                    urlSchemeTask.didFinish()
+                } else {
+                    urlSchemeTask.didFailWithError(URLError(.unknown))
+                }
+            } catch {
+                print("⚠️ [SchemeHandler] Error completing task: \(error)")
+            }
+            
+            // Clean up
+            self.taskQueue.async(flags: .barrier) {
+                self.taskStates[taskId] = .stopped
+                self.activeTasks.removeValue(forKey: taskId)
             }
         }
     }
     
     // Provide fallback content when local server is not ready
-    private func provideFallbackContent(for urlSchemeTask: WKURLSchemeTask) {
+    private func provideFallbackContent(for urlSchemeTask: WKURLSchemeTask, taskId: ObjectIdentifier) {
         let html = """
         <!DOCTYPE html>
         <html>
@@ -182,7 +278,7 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
         """
         
         guard let data = html.data(using: .utf8) else {
-            urlSchemeTask.didFailWithError(URLError(.cannotLoadFromNetwork))
+            completeTask(urlSchemeTask, error: URLError(.cannotLoadFromNetwork))
             return
         }
         
@@ -196,8 +292,6 @@ class LocalServerFirstSchemeHandler: NSObject, WKURLSchemeHandler {
             ]
         )!
         
-        urlSchemeTask.didReceive(response)
-        urlSchemeTask.didReceive(data)
-        urlSchemeTask.didFinish()
+        completeTask(urlSchemeTask, response: response, data: data)
     }
 }

@@ -16,7 +16,7 @@ import GCDWebServer
 import ZIPFoundation
 import Swifter
 
-class ViewController: UIViewController, WKNavigationDelegate {
+class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler {
     var webView: WKWebView!
     var localServer: Server?
     var timer: Timer?
@@ -36,8 +36,10 @@ class ViewController: UIViewController, WKNavigationDelegate {
     private let schemeHandler = LocalServerFirstSchemeHandler()
     private var isStartingServer = false
     private var networkMonitor: NWPathMonitor?
+    private var isLoadingContent = false // Prevent duplicate loads
+    private var lastLoadTime: Date? // Track last load time
     
-    // 1. 在 ViewController 里加一个静态 token，保证它不会跟随 VC 释放
+    // VPN observer token
     private static var vpnObserverToken: NSObjectProtocol?
     
     override func viewDidLoad() {
@@ -77,6 +79,54 @@ class ViewController: UIViewController, WKNavigationDelegate {
         // Register custom scheme handler
         config.setURLSchemeHandler(schemeHandler, forURLScheme: "local-first")
         
+        // Add message handlers - only add if NativeBridge doesn't add them
+        userContentController.add(self, name: "rule")
+        // Comment out webviewMessage if NativeBridge adds it
+        // userContentController.add(self, name: "webviewMessage")
+        userContentController.add(self, name: "nativeHandler")
+        
+        // Inject JavaScript to ensure handlers exist
+        let jsSource = """
+        // Ensure webkit.messageHandlers exists
+        if (typeof window.webkit === 'undefined') {
+            window.webkit = {};
+        }
+        if (typeof window.webkit.messageHandlers === 'undefined') {
+            window.webkit.messageHandlers = {};
+        }
+        
+        // Create fallback handler for rule if it doesn't exist
+        if (!window.webkit.messageHandlers.rule) {
+            window.webkit.messageHandlers.rule = {
+                postMessage: function(message) {
+                    console.log('Rule message:', message);
+                    // Try to use webviewMessage if it exists (from NativeBridge)
+                    if (window.webkit.messageHandlers.webviewMessage) {
+                        window.webkit.messageHandlers.webviewMessage.postMessage({
+                            type: 'rule',
+                            data: message
+                        });
+                    } else if (window.webkit.messageHandlers.nativeHandler) {
+                        // Fallback to nativeHandler
+                        window.webkit.messageHandlers.nativeHandler.postMessage({
+                            type: 'rule',
+                            data: message
+                        });
+                    }
+                }
+            };
+        }
+        
+        console.log('Message handlers initialized');
+        """
+        
+        let userScript = WKUserScript(
+            source: jsSource,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        userContentController.addUserScript(userScript)
+        
         config.userContentController = userContentController
         config.preferences.javaScriptEnabled = true
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
@@ -115,6 +165,71 @@ class ViewController: UIViewController, WKNavigationDelegate {
         if #available(iOS 16.4, *) {
             webView.isInspectable = true
         }
+    }
+    
+    // MARK: - WKScriptMessageHandler
+    
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        print("📨 Received message from JS: \(message.name)")
+        
+        switch message.name {
+        case "rule":
+            handleRuleMessage(message.body)
+        case "webviewMessage":
+            // This might be handled by NativeBridge
+            handleWebViewMessage(message.body)
+        case "nativeHandler":
+            // Handle messages that would normally go to webviewMessage
+            if let dict = message.body as? [String: Any],
+               let type = dict["type"] as? String, type == "rule" {
+                if let data = dict["data"] {
+                    handleRuleMessage(data)
+                }
+            } else {
+                handleNativeMessage(message.body)
+            }
+        default:
+            print("Unknown message handler: \(message.name)")
+        }
+    }
+    
+    private func handleRuleMessage(_ body: Any) {
+        print("📋 Rule message received: \(body)")
+        // Handle rule messages here
+    }
+    
+    private func handleWebViewMessage(_ body: Any) {
+        print("📱 WebView message received: \(body)")
+        if let dict = body as? [String: Any] {
+            // Handle the message directly here or pass to NativeBridge if it has the right method
+            // Check if it's a wrapped rule message
+            if let type = dict["type"] as? String, type == "rule" {
+                if let data = dict["data"] {
+                    handleRuleMessage(data)
+                }
+            } else {
+                // Handle other message types directly
+                print("Processing WebView message: \(dict)")
+                // You can add specific handling based on message type here
+                // For example:
+                if let action = dict["action"] as? String {
+                    switch action {
+                    case "vpnConnect":
+                        // Handle VPN connect
+                        print("VPN connect requested")
+                    case "vpnDisconnect":
+                        // Handle VPN disconnect
+                        print("VPN disconnect requested")
+                    default:
+                        print("Unknown action: \(action)")
+                    }
+                }
+            }
+        }
+    }
+    
+    private func handleNativeMessage(_ body: Any) {
+        print("🔧 Native message received: \(body)")
     }
     
     private func setupNetworkMonitoring() {
@@ -184,22 +299,38 @@ class ViewController: UIViewController, WKNavigationDelegate {
     
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         print("✅ WebView finished loading")
+        isLoadingContent = false
+        
         if !didPerformInitialLoad {
             didPerformInitialLoad = true
             SVProgressHUD.dismiss()
         }
+        
+        // Make WebView interactive
+        webView.isUserInteractionEnabled = true
+        webView.scrollView.isScrollEnabled = true
     }
     
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        print("❌ WebView failed to load: \(error.localizedDescription)")
-        
         let nsErr = error as NSError
+        
+        // Log error details
+        print("❌ 网页加载失败 (Provisional Navigation): \(error.localizedDescription)")
+        
+        // Handle cancelled error specially
+        if nsErr.code == NSURLErrorCancelled {
+            print("⚠️ 错误代码: .cancelled - 加载被取消。")
+            isLoadingContent = false
+            return // Don't retry for cancelled requests
+        }
         
         // Handle network errors with retry
         if nsErr.domain == NSURLErrorDomain &&
            (nsErr.code == NSURLErrorTimedOut ||
             nsErr.code == NSURLErrorCannotFindHost ||
             nsErr.code == NSURLErrorCannotConnectToHost) {
+            
+            isLoadingContent = false
             
             // Allow retry
             self.didPerformInitialLoad = false
@@ -217,11 +348,14 @@ class ViewController: UIViewController, WKNavigationDelegate {
                     }
                 }
             }
+        } else {
+            isLoadingContent = false
         }
     }
     
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         print("❌ WebView navigation failed: \(error.localizedDescription)")
+        isLoadingContent = false
     }
     
     // MARK: - Server Management
@@ -237,9 +371,14 @@ class ViewController: UIViewController, WKNavigationDelegate {
         case .running:
             print("✅ Server is running")
             
-            // Only load if not already loaded
-            guard !self.didPerformInitialLoad else {
-                print("Already performed initial load, skipping")
+            // Only load if not already loaded and not currently loading
+            guard !self.didPerformInitialLoad && !self.isLoadingContent else {
+                if self.didPerformInitialLoad {
+                    print("Already performed initial load, skipping")
+                }
+                if self.isLoadingContent {
+                    print("Already loading content, skipping")
+                }
                 return
             }
             
@@ -266,6 +405,35 @@ class ViewController: UIViewController, WKNavigationDelegate {
     }
     
     private func loadInitialContent() {
+        // Prevent duplicate loads
+        guard !isLoadingContent else {
+            print("⚠️ Already loading content, skipping duplicate load")
+            return
+        }
+        
+        // Check if we just loaded recently (within 2 seconds)
+        if let lastLoad = lastLoadTime, Date().timeIntervalSince(lastLoad) < 2.0 {
+            print("⚠️ Recently loaded content, skipping duplicate load")
+            return
+        }
+        
+        // Cancel any pending loads
+        if webView.isLoading {
+            webView.stopLoading()
+            // Wait a bit before loading
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.performLoad()
+            }
+        } else {
+            performLoad()
+        }
+    }
+    
+    private func performLoad() {
+        // Set loading flag
+        isLoadingContent = true
+        lastLoadTime = Date()
+        
         // Try to load the main page
         if let url = URL(string: "local-first://localhost:3001/index.html") {
             let request = URLRequest(
@@ -275,6 +443,8 @@ class ViewController: UIViewController, WKNavigationDelegate {
             )
             print("📱 Loading initial content: \(url.absoluteString)")
             self.webView.load(request)
+        } else {
+            isLoadingContent = false
         }
     }
     
@@ -283,6 +453,12 @@ class ViewController: UIViewController, WKNavigationDelegate {
         
         if let status = notification.userInfo?["status"] as? String {
             print("Server status received: \(status)")
+            
+            // Don't reload if we're coming from background
+            if status == "running" && didPerformInitialLoad {
+                print("App returning from background, not reloading")
+                return
+            }
             
             switch self.webServer.server.state {
             case .starting:
@@ -407,6 +583,12 @@ class ViewController: UIViewController, WKNavigationDelegate {
     }
     
     private func sendToWebView(responseString: String) {
+        // Make sure WebView is ready
+        guard webView != nil, !webView.isLoading else {
+            print("⚠️ WebView not ready, queuing message")
+            return
+        }
+        
         // Escape the JSON string properly
         let escapedString = responseString
             .replacingOccurrences(of: "\\", with: "\\\\")
