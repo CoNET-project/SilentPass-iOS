@@ -25,7 +25,9 @@ enum PACBuilder {
         let resolveJS = resolveDomainsToIP ? "true" : "false"
 
         // —— 新增：静态本地直连网段 & 单 IP —— //
-        let staticLocalCIDRs = ["192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16"]
+		// 补齐 172.16.0.0/12
+		let staticLocalCIDRs = ["192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12"]
+
         let staticLocalIPs   = ["172.16.0.1", "172.16.0.2"]
         let staticLocalCIDRsJS = jsonArray(staticLocalCIDRs)
         let staticLocalIPsJS   = jsonArray(staticLocalIPs)
@@ -81,6 +83,26 @@ enum PACBuilder {
                if (!/^[0-9a-fA-F]{1,4}$/.test(parts[i])) return false;
              }
              return true;
+        }
+
+        // 仅判断“私有/本地” IPv6（回环/链路本地/ULA），其余 IPv6 不应默认 DIRECT
+        function _isPrivateIPv6(s) {
+            if (!s) return false;
+            if (s[0] === "[" && s[s.length-1] === "]") s = s.substring(1, s.length-1);
+            var low = s.toLowerCase();
+            return (
+                low === "::1" ||                 // loopback
+                low.indexOf("fe80:") === 0 ||    // link-local
+                low.indexOf("fc") === 0 ||       // ULA fc00::/7
+                low.indexOf("fd") === 0
+            );
+        }
+
+        // 假 IP 段（198.18.0.0/15），命中一律走代理
+        function _isFakeIPv4(host) {
+            if (!_isIPv4(host)) return false;
+            var a = host.split('.'); var b0=+a[0], b1=+a[1];
+            return (b0 === 198 && (b1 === 18 || b1 === 19));
         }
         
         function _parseCIDR(c) {
@@ -141,12 +163,29 @@ enum PACBuilder {
           return false;
         }
 
+        // 强制走代理域名：确保中国网络下 Telegram 等必经代理
+        var FORCE_PROXY_RULES = [
+            "telegram.org","t.me","telegram.me",
+            "web.telegram.org","api.telegram.org","core.telegram.org",
+            "telegra.ph","cdn-telegram.org","cdn.telegram.org"
+        ];
+
+        function _hostMatchesAny(h, arr) { return _hostMatches(h, arr); }
+
         function FindProxyForURL(url, host) {
           if (!host) return "DIRECT";
           if (isPlainHostName(host)) return "DIRECT";
           // —— 如果 host 是 IPv4 或 IPv6 地址，强制 DIRECT —— //
-          if (_isIPv4(host) || _isIPv6(host)) return "DIRECT";
+            // —— IPv6 仅在“私有/本地”场景下 DIRECT，其余交给规则判断 —— //
+            if (_isIPv6(host) && _isPrivateIPv6(host)) return "DIRECT";
           var h = host.toLowerCase();
+
+            // —— 假 IP 段一律走代理（配合 DNS 假 IP 策略）—— //
+            if (_isFakeIPv4(h)) return "PROXY \(proxyHost):\(proxyPort); DIRECT";
+
+            // —— 强制走代理域名（如 Telegram）—— //
+            if (_hostMatchesAny(h, FORCE_PROXY_RULES)) return "PROXY \(proxyHost):\(proxyPort); DIRECT";
+
 
           // —— 静态本地优先：命中即 DIRECT —— //
           if (_isStaticLocal(h)) return "DIRECT";
@@ -157,7 +196,7 @@ enum PACBuilder {
           // 2) Allowlist 中的 IPv4/CIDR
           if (_ipInCIDRs(h, DIRECT_IPV4_CIDRS, RESOLVE_DOMAIN)) return "DIRECT";
 
-          // 3) “NOPROXY”黑名单（与 Swift 语义对齐为直连）
+          // 3) “NOPROXY”黑名单（当前语义为直连；确认该表内不要放 Telegram）
           if (_hostMatches(h, NOPROXY_RULES)) return "DIRECT";
 
           // 4) 其余交给本地代理；失败兜底直连

@@ -38,6 +38,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
     private var networkMonitor: NWPathMonitor?
     private var isLoadingContent = false // Prevent duplicate loads
     private var lastLoadTime: Date? // Track last load time
+    // 缓存最近一次的 VPN 原始状态值（NEVPNStatus.rawValue after mapping）
+    private var lastVPNStatusRaw: Int?
     
     // VPN observer token
     private static var vpnObserverToken: NSObjectProtocol?
@@ -70,6 +72,13 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
         
         // Setup VPN status listener
         setupVPNStatusListener()
+        
+        // 将 VPN 状态提供给本地 Web 服务器，以支持 /iOSVPN 返回 { vpn: true/false }
+        webServer.vpnStatusProvider = { [weak self] in
+            guard let raw = self?.lastVPNStatusRaw else { return false }
+                // 3: connected, 4: reasserting ；你代码里把 2(Connecting) 映射成 3
+                return raw == 3 || raw == 4
+            }
     }
     
     private func setupWebView() {
@@ -281,6 +290,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             name: Notification.Name("LocalServerStarted1"),
             object: nil
         )
+
+
         
         // VPN status notification
         NotificationCenter.default.addObserver(
@@ -289,7 +300,26 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             name: Notification.Name("VPNStatusChanged"),
             object: nil
         )
+
+		// App 回到前台（focus）时，主动同步一次 VPN 状态给 WebView
+		NotificationCenter.default.addObserver(
+			self,
+			selector: #selector(appDidBecomeActive(_:)),
+			name: UIApplication.didBecomeActiveNotification,
+			object: nil
+		)
     }
+
+		@objc private func appDidBecomeActive(_ note: Notification) {
+			// 确保本地服务器在跑，避免 WebView 还没 ready
+			if self.webServer.server.state != .running {
+				Task { @MainActor in
+					await self.webServer.prepareAndStart()
+				}
+			}
+			// 主动查询并广播一次状态（触发 Sending JS）
+			self.getVPNConfigurationStatus()
+		}
     
     // MARK: - WebView Navigation Delegate
     
@@ -309,6 +339,19 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
         // Make WebView interactive
         webView.isUserInteractionEnabled = true
         webView.scrollView.isScrollEnabled = true
+        
+        // 冷启动或页面重载后，若已有缓存状态，则主动补发给前端（避免首包丢失）
+        if let raw = lastVPNStatusRaw {
+            let responseDict: [String: Any] = [
+                "event": "native_VPNStatus",
+                "data": ["VPNStatus": raw],
+                "callbackId": "VPNStatusUpdate"
+            ]
+            if let responseData = try? JSONSerialization.data(withJSONObject: responseDict),
+               let responseString = String(data: responseData, encoding: .utf8) {
+                self.sendToWebView(responseString: responseString)
+            }
+        }
     }
     
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -553,6 +596,9 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
                     }
                     
                     print("Current VPN status: \(sendStatus)")
+                    
+                    // 更新缓存，供 /iOSVPN 与 WebView 首次 didFinish 补发使用
+                    self.lastVPNStatusRaw = sendStatus
                     NotificationCenter.default.post(
                         name: Notification.Name("VPNStatusChanged"),
                         object: sendStatus
@@ -563,31 +609,41 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
         }
     }
     
-    @objc func vpnStatusChanged(_ notification: Notification) {
-        if let status = notification.object as? NEVPNStatus {
-            DispatchQueue.main.async {
-                let responseDict: [String: Any] = [
-                    "event": "native_VPNStatus",
-                    "data": ["VPNStatus": status.rawValue],
-                    "callbackId": "VPNStatusUpdate"
-                ]
-                
-                if let responseData = try? JSONSerialization.data(withJSONObject: responseDict),
-                   let responseString = String(data: responseData, encoding: .utf8) {
-                    DispatchQueue.main.async {
-                        self.sendToWebView(responseString: responseString)
-                    }
-                }
-            }
-        }
-    }
+	@objc func vpnStatusChanged(_ notification: Notification) {
+		var raw: Int?
+		if let status = notification.object as? NEVPNStatus {
+			raw = status.rawValue
+		} else if let rawInt = notification.object as? Int {
+			raw = rawInt
+		}
+		guard let vpnRaw = raw else { return }
+        
+        // 任何来源的状态变化都刷新缓存，供 /iOSVPN 读取
+        self.lastVPNStatusRaw = vpnRaw
+
+		DispatchQueue.main.async {
+			let responseDict: [String: Any] = [
+				"event": "native_VPNStatus",
+				"data": ["VPNStatus": vpnRaw],
+				"callbackId": "VPNStatusUpdate"
+			]
+			if let responseData = try? JSONSerialization.data(withJSONObject: responseDict),
+				let responseString = String(data: responseData, encoding: .utf8) {
+				self.sendToWebView(responseString: responseString)
+			}
+		}
+	}
     
     private func sendToWebView(responseString: String) {
-        // Make sure WebView is ready
-        guard webView != nil, !webView.isLoading else {
-            print("⚠️ WebView not ready, queuing message")
-            return
-        }
+
+		// WebView 未就绪时做一次性重试
+		guard webView != nil, !webView.isLoading else {
+			print("⚠️ WebView not ready, will retry in 1s")
+			DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+				self?.sendToWebView(responseString: responseString)
+			}
+			return
+		}
         
         // Escape the JSON string properly
         let escapedString = responseString
