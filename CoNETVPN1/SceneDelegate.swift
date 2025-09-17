@@ -64,22 +64,22 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Use this method to undo the changes made on entering the background.
         print("app已经进入前台")
 
-        if hasEnteredForegroundBefore {
-                    NotificationCenter.default.post(
-                        name: Notification.Name("LocalServerStarted"),
-                        object: nil,
-                        userInfo: ["status": "running"]
-                        
-                    )
-            
-            print("app已经进入前台1")
-                } else {
-                    hasEnteredForegroundBefore = true
-                    print("app已经进入前台2")
-                }
-        
-        
-        
+//        if hasEnteredForegroundBefore {
+//                    NotificationCenter.default.post(
+//                        name: Notification.Name("LocalServerStarted"),
+//                        object: nil,
+//                        userInfo: ["status": "running"]
+//                        
+//                    )
+//            
+//            print("app已经进入前台1")
+//                } else {
+//                    hasEnteredForegroundBefore = true
+//                    print("app已经进入前台2")
+//                }
+//        
+//        
+//        
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
