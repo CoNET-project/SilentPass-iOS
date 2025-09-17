@@ -63,6 +63,12 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
         
         // Setup NativeBridge
         self.nativeBridge = NativeBridge(webView: webView, viewController: self)
+
+        // 将 WebServer 与 NativeBridge 连接：接线 /startVPN 与 /stopVPN
+        self.nativeBridge.attachLocalServer(self.webServer)
+
+        // 冷启动即刻同步一次系统级 VPN 状态，初始化 lastVPNStatusRaw，便于 /iOSVPN 与前端 UI
+        self.getVPNConfigurationStatus()
         
         // Setup network monitoring
         setupNetworkMonitoring()

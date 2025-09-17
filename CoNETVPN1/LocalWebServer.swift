@@ -29,6 +29,11 @@ class LocalWebServer {
     /// 从外部（例如 ViewController）注入：返回当前 VPN 是否“已连通”
     // 建议：NEVPNStatus == .connected 或 .reasserting 视为 true
     var vpnStatusProvider: (() -> Bool)?
+	/// 从外部注入：启动/停止 VPN 的处理器
+	/// - startVPNHandler 收到 HTTP 请求体原始 Data（JSON），外层按需解码并启动，返回 true 表示成功
+	/// - stopVPNHandler 停止 VPN，返回 true 表示成功
+	var startVPNHandler: ((Data) -> Bool)?
+	var stopVPNHandler: (() -> Bool)?
     
     init(port: UInt16 = 3001) {
         self.port = port
@@ -145,17 +150,42 @@ class LocalWebServer {
         // Handle /ver endpoint
         server.get["/ver"] = { [weak self] _ in
             guard let self = self else { return .internalServerError }
+            print("local server /ver")
             return self.handleVersionRequest(rootDir: rootDir)
         }
         
         // Handle /iOSVPN endpoint: 回送 { "vpn": true/false }
         server.get["/iOSVPN"] = { [weak self] _ in
             guard let self = self else { return .internalServerError }
-                let isOn = self.vpnStatusProvider?() ?? false
-                struct VPNResp: Codable { let vpn: Bool }
-            print("/iOSVPN \(VPNResp(vpn: isOn))")
-                return self.createJsonResponse(statusCode: 200, body: VPNResp(vpn: isOn))
-            }
+            let isOn = self.vpnStatusProvider?() ?? false
+            struct VPNResp: Codable { let vpn: Bool }
+            print("local server /iOSVPN \(VPNResp(vpn: isOn))")
+            return self.createJsonResponse(statusCode: 200, body: VPNResp(vpn: isOn))
+        }
+
+		// Handle POST /startVPN：请求体为 JSON，交由外部 startVPNHandler 处理
+		server.post["/startVPN"] = { [weak self] req in
+			guard let self = self else { return .internalServerError }
+			// CORS 预设
+			var headers = [String: String]()
+			headers["Access-Control-Allow-Origin"] = "*"
+			headers["Cache-Control"] = "no-cache"
+			let bodyData = Data(req.body)
+            print("local server  /startVPN ")
+			let ok = self.startVPNHandler?(bodyData) ?? false
+			struct Resp: Codable { let ok: Bool }
+			return self.createJsonResponse(statusCode: ok ? 200 : 400, body: Resp(ok: ok))
+		}
+
+		// Handle GET /stopVPN：调用外部 stopVPNHandler
+		server.get["/stopVPN"] = { [weak self] _ in
+			guard let self = self else { return .internalServerError }
+			let ok = self.stopVPNHandler?() ?? false
+			struct Resp: Codable { let ok: Bool }
+            print("local server /stopVPN ")
+			return self.createJsonResponse(statusCode: ok ? 200 : 500, body: Resp(ok: ok))
+		}
+
         
         // Handle HEAD requests for root
         server.head["/"] = { _ in

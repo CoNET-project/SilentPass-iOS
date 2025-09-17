@@ -62,7 +62,7 @@ class NodeManager {
             }
         }
         
-    static   func newloadNodes(forKey key: String) -> [Node] {
+    static func newloadNodes(forKey key: String) -> [Node] {
             let decoder = JSONDecoder()
             guard let data = UserDefaults.standard.data(forKey: key) else {
                 print("No nodes data found in UserDefaults")

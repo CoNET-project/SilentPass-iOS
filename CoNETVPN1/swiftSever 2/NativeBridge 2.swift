@@ -46,6 +46,45 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
     private var ready = false
     private var updater = Updater()
     var viewController: ViewController!
+
+	// 注入的本地服务器引用（可选）
+	var localServer: LocalWebServer?
+
+	/// 将 LocalWebServer 注入并绑定 start/stop/vpnStatus Provider。
+	/// 最小化修改：复用已有的 startVPNFromUI 解码及 updater.runUpdater / vPNManager.refresh() / vPNManager.stopVPN()
+	func attachLocalServer(_ server: LocalWebServer) {
+		self.localServer = server
+
+        // POST /startVPN -> 解码并走现有启动流程
+        server.startVPNHandler = { [weak self] bodyData in
+        guard let self = self else { return false }
+        do {
+            let payload = try JSONDecoder().decode(startVPNFromUI.self, from: bodyData)
+            // UI 相关变化放到主线程
+            DispatchQueue.main.async {
+                self.viewController.layerMinus.entryNodes = payload.entryNodes
+                self.viewController.layerMinus.egressNodes = payload.exitNode
+                self.viewController.layerMinus.privateKeyAromed = payload.privateKey
+                self.viewController.vPNManager.refresh()
+            }
+            // 非阻塞地触发 updater（保留已有实现）
+            Task { await self.updater.runUpdater(nodes: payload.entryNodes) }
+                return true
+            } catch {
+                print("LocalServer startVPN decode error: \(error)")
+                return false
+            }
+        }
+
+        // GET /stopVPN -> 直接停止 VPN
+        server.stopVPNHandler = { [weak self] in
+            guard let self = self else { return false }
+            DispatchQueue.main.async {
+                self.viewController.vPNManager.stopVPN()
+            }
+            return true
+        }
+    }
     
     init(webView: WKWebView, viewController: ViewController) {
         super.init()
