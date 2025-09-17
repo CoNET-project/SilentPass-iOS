@@ -314,6 +314,14 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
 			name: UIApplication.didBecomeActiveNotification,
 			object: nil
 		)
+
+        NotificationCenter.default.addObserver(
+            forName: .stopVPNRequested, // 或 Notification.Name("stopVPNRequested")
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.vPNManager.stopVPN()
+        }
     }
 
 		@objc private func appDidBecomeActive(_ note: Notification) {

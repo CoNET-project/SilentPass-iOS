@@ -9,7 +9,6 @@ struct startVPNFromUI: Codable {
     var exitNode: [Node]
 }
 
-
 struct openWebview: Codable {
     var url: String
 }
@@ -35,8 +34,19 @@ struct postPay: Codable {
     var solanaWallet: String
 }
 
+// 🔥 新增：通知名称扩展，用于兜底机制
+
+
 class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLSessionTaskDelegate{
-    
+#if DEBUG
+@inline(__always)
+    private func log(_ msg: @autoclosure () -> String) {
+        NSLog("[NativeBridge] %@", msg())
+    }
+#else
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String) { }
+#endif
     private weak var webView: WKWebView?
     private var callbacks: [String: (Any?) -> Void] = [:]
     
@@ -54,37 +64,60 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
 	/// 最小化修改：复用已有的 startVPNFromUI 解码及 updater.runUpdater / vPNManager.refresh() / vPNManager.stopVPN()
 	func attachLocalServer(_ server: LocalWebServer) {
 		self.localServer = server
+        self.log("[NativeBridge] attachLocalServer: server=\(Unmanaged.passUnretained(server).toOpaque()) VC=\(Unmanaged.passUnretained(self.viewController).toOpaque())")
 
         // POST /startVPN -> 解码并走现有启动流程
+        self.log("[NativeBridge] startVPNHandler invoked")
         server.startVPNHandler = { [weak self] bodyData in
-        guard let self = self else { return false }
-        do {
-            let payload = try JSONDecoder().decode(startVPNFromUI.self, from: bodyData)
-            // UI 相关变化放到主线程
-            DispatchQueue.main.async {
-                self.viewController.layerMinus.entryNodes = payload.entryNodes
-                self.viewController.layerMinus.egressNodes = payload.exitNode
-                self.viewController.layerMinus.privateKeyAromed = payload.privateKey
-                self.viewController.vPNManager.refresh()
-            }
-            // 非阻塞地触发 updater（保留已有实现）
-            Task { await self.updater.runUpdater(nodes: payload.entryNodes) }
+            guard let self = self else { return false }
+            do {
+                let payload = try JSONDecoder().decode(startVPNFromUI.self, from: bodyData)
+                // UI 相关变化放到主线程
+                DispatchQueue.main.async {
+                    self.viewController.layerMinus.entryNodes = payload.entryNodes
+                    self.viewController.layerMinus.egressNodes = payload.exitNode
+                    self.viewController.layerMinus.privateKeyAromed = payload.privateKey
+                    self.viewController.vPNManager.refresh()
+                }
+                // 非阻塞地触发 updater（保留已有实现）
+                Task { await self.updater.runUpdater(nodes: payload.entryNodes) }
                 return true
             } catch {
-                print("LocalServer startVPN decode error: \(error)")
+                self.log("LocalServer startVPN decode error: \(error.localizedDescription)")
                 return false
             }
         }
 
-        // GET /stopVPN -> 直接停止 VPN
+        // 🔥 关键修复：GET /stopVPN -> 直接停止 VPN
+        self.log("[NativeBridge] stopVPNHandler invoked -> will call vPNManager.stopVPN()")
         server.stopVPNHandler = { [weak self] in
             guard let self = self else { return false }
-            DispatchQueue.main.async {
+            self.log("🔍 NativeBridge: stopVPNHandler called from LocalWebServer")
+            // 重要：后台队列调用，避免与 stopVPN 内部的信号量互锁
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.log("🔍 NativeBridge: On background queue, calling VPNManager.stopVPN()")
                 self.viewController.vPNManager.stopVPN()
+                self.log("✅ NativeBridge: VPNManager.stopVPN() call completed")
             }
             return true
         }
+
+        // ⛑ 兜底：如果 LocalWebServer 端点未接线或闭包失效，监听通知也能停
+        NotificationCenter.default.addObserver(forName: Notification.Name("stopVPNRequested"), object: nil, queue: .main) { [weak self] _ in
+            guard let self = self else { return }
+            self.log("[NativeBridge] received .stopVPNRequested fallback -> vPNManager.stopVPN()")
+            self.viewController.vPNManager.stopVPN()
+        }
+        
+        // 🔥 绑定VPN状态提供器
+        server.vpnStatusProvider = { [weak self] in
+            guard let self = self else { return false }
+            // 这里可以根据实际的VPN状态判断逻辑来实现
+            // 暂时返回false，你可以根据实际情况修改
+            return false
+        }
     }
+
     
     init(webView: WKWebView, viewController: ViewController) {
         super.init()
@@ -115,17 +148,17 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
     /**
      
      調用Javascript橋
-     functionName：String javaScript中的函数名字
+     functionName：String javaScript中的函數名字
      arguments: 需要帶給javaScript函數的數據
      
-     uuid:钩子名字    为什么要作为参数 因为有些固定参数的需要穿
-     *******************  uuid勾子只在NativeBridge內部管理所使用，所以無需外部提供 ***************
+     uuid:鉤子名字    为什么要作为参数 因为有些固定参数的需要穿
+     *******************  uuid勾子只在NativeBridge内部管理所使用，所以无需外部提供 ***************
      completion: 調用方等待的回調函數
      
      示例
      
      
-     解释
+     解釋
      */
     func callJavaScriptFunction(functionName: String, arguments: String, completion: @escaping (Any?) -> Void) {
         
@@ -138,7 +171,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         //呼叫js
         
         let javascript = "fromNative('\(callID),\(functionName),\(arguments)')"
-        //        print("message from JavaScript \(javascript)")
+        //        self.log("message from JavaScript \(javascript)")
         webView?.evaluateJavaScript(javascript, completionHandler: nil)
         
     }
@@ -148,17 +181,17 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
     
         // 处理来自 H5 的消息
         if message.name == "webviewMessage" {
-            print("开始 startVPN");
+            self.log("开始 startVPN");
             if let body = message.body as? String, let data = body.data(using: .utf8) {
                 // 解析 JSON 数据
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     
-                    print("webviewMessage  \(json)");
+                    self.log("webviewMessage  \(json)");
                     
                     // 如果 payload 包含 `event` 即 H5 调用 Native
                             if let event = json["event"] as? String {
                                 
-                                print("有event  \(event)");
+                                self.log("有event  \(event)");
                                 
 //                                let data = json["data"] as? [String: Any]
                                 let cbId = json["callbackId"] as? String
@@ -167,7 +200,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                                     let cbId = json["callbackId"] as? String
                                     handleEvent(event: event, data: data, callbackId: cbId)
                                 } else {
-                                    print("⚠️ data 不是字典类型")
+                                    self.log("⚠️ data 不是字典类型")
                                 }
 //                                handleEvent(event: event, data: data, callbackId: cbId)
 
@@ -195,17 +228,17 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
        
         
         if (message.name == "ReactNativeWebView") {
-            print("h5掉原生 \(message.body)")
+            self.log("h5掉原生 \(message.body)")
         }
         
-        //  聆聽 JavaScript  初始化完成信號
+        //  膦鹿 JavaScript  初始化完成信號
         if (message.name == "ready") {
-            print("初始化完成信號 ready \(message.body)")
+            self.log("初始化完成信號 ready \(message.body)")
         }
         
         //      JavaScript控制台輸出
         if (message.name == "error") {
-            print("message from JavaScript \(message.body)")
+            self.log("message from JavaScript \(message.body)")
         }
         
         if (message.name == "startCheckUpdate") {
@@ -225,7 +258,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                     
                     
                 } catch {
-                    print(error)
+                    self.log("startCheckUpdate error: \(error.localizedDescription)")
                 }
                 
             }
@@ -255,14 +288,14 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         
         //      UI JavaScript console
         if (message.name == "startVPN") {
-            print("开始 startVPN");
+            self.log("开始 startVPN");
             
             
             let base64EncodedString: String = message.body as! String
             let base64EncodedData = base64EncodedString.data(using: .utf8)!
             if let jsonText = Data(base64Encoded: base64EncodedData) {
                 let clearText = String(data: jsonText, encoding: .utf8)!
-//                print(clearText)
+//                self.log(clearText)
                 let data = clearText.data(using: .utf8)!
                 do {
                     let _data = try JSONDecoder().decode(startVPNFromUI.self, from: data)
@@ -276,31 +309,31 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                     
                     
                 } catch {
-                    print(error)
+                    self.log("startVPN error: \(error.localizedDescription)")
                 }
                 
             }
             
-            print("VPN 初始化完成 message from UI JavaScript startVPN")
+            self.log("VPN 初始化完成 message from UI JavaScript startVPN")
         }
         
         //      UI JavaScript console
         if (message.name == "pay") {
             
-            print("开始支付");
+            self.log("开始支付");
             //           return;
             
             let base64EncodedString: String = message.body as! String
             let base64EncodedData = base64EncodedString.data(using: .utf8)!
             if let jsonText = Data(base64Encoded: base64EncodedData) {
                 let clearText = String(data: jsonText, encoding: .utf8)!
-                print(clearText)
+                self.log(clearText)
                 let data = clearText.data(using: .utf8)!
                 do {
                     let _data = try JSONDecoder().decode(pay.self, from: data)
                     payWithApplePay(_data)
                 } catch {
-                    print(error)
+                    self.log("pay error: \(error.localizedDescription)")
                 }
                 
             }
@@ -310,20 +343,20 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         
         if (message.name == "restorePurchases") {
             
-            print("恢复订阅")
+            self.log("恢复订阅")
 
             let base64EncodedString: String = message.body as! String
                 let base64EncodedData = base64EncodedString.data(using: .utf8)!
                 if let jsonText = Data(base64Encoded: base64EncodedData) {
                     let clearText = String(data: jsonText, encoding: .utf8)!
-                    print(clearText)
+                    self.log(clearText)
                     let data = clearText.data(using: .utf8)!
                     do {
                         let restore = try JSONDecoder().decode(RestoreInput.self, from: data)
 
                         if #available(iOS 15.0, *) {
                             Task {
-                                // 仅在用户点击“恢复”时同步
+                                // 仅在用户点击"恢复"时同步
                                 do { try await AppStore.sync() } catch { /* 不阻塞，继续收集 JWS */ }
 
                                 var jwss: [String] = []
@@ -355,7 +388,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                             SVProgressHUD.dismiss(withDelay: 2)
                         }
                     } catch {
-                        print(error)
+                        self.log("restorePurchases error: \(error.localizedDescription)")
                         SVProgressHUD.showInfo(withStatus: "恢复失败：参数错误")
                         SVProgressHUD.dismiss(withDelay: 2)
                     }
@@ -370,7 +403,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         if (message.name == "stopVPN") {
             
             self.viewController.vPNManager.stopVPN()
-            print("message from UI JavaScript stopVPN \(message.body)")
+            self.log("message from UI JavaScript stopVPN \(message.body)")
         }
         
         if (message.name == "openUrl") {
@@ -381,9 +414,9 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                         if UIApplication.shared.canOpenURL(url) {
                             UIApplication.shared.open(url, options: [:], completionHandler: { success in
                                 if success {
-                                    print("成功打开 Safari")
+                                    self.log("成功打开 Safari")
                                 } else {
-                                    print("打开失败")
+                                    self.log("打开失败")
                                 }
                             })
                         }
@@ -412,17 +445,18 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         if let postDataString = try? encoder.encode(payObj) {
             let url = URL(string: "https://hooks.conet.network/api/applePayUser")!
             var request = URLRequest(url: url)
-            print(payObj)
+            self.log("postToAPIServer payload prepared")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpMethod = "POST"
             request.httpBody = postDataString
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                guard let self = self else { return }
                 let statusCode = (response as! HTTPURLResponse).statusCode
                 if statusCode == 200 {
-                    print("postToAPIServer SUCCESS")
+                    self.log("postToAPIServer SUCCESS")
                     
                 } else {
-                    print("postToAPIServer FAILURE")
+                    self.log("postToAPIServer FAILURE")
                     
                 }
             }
@@ -438,18 +472,19 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         if let postDataString = try? encoder.encode(payObj) {
             let url = URL(string: "https://hooks.conet.network/api/applePayUserRecover")!
             var request = URLRequest(url: url)
-            print(payObj)
+            self.log("postToAPIServerForRecover payload prepared")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpMethod = "POST"
             request.httpBody = postDataString
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                guard let self = self else { return }
                 let statusCode = (response as! HTTPURLResponse).statusCode
                 if statusCode == 200 {
-                    print("SUCCESS")
+                    self.log("SUCCESS")
                     
                     
                 } else {
-                    print("FAILURE")
+                    self.log("FAILURE")
                 
                     
                 }
@@ -468,7 +503,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         // 获取Receipt URL
         guard let receiptURL = Bundle.main.appStoreReceiptURL,
               FileManager.default.fileExists(atPath: receiptURL.path) else {
-            print("Receipt不存在")
+            self.log("Receipt不存在")
             return nil
         }
         
@@ -479,7 +514,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
             let receiptString = receiptData.base64EncodedString(options: [])
             return receiptString
         } catch {
-            print("读取Receipt失败: \(error)")
+            self.log("读取Receipt失败: \(error.localizedDescription)")
             return nil
         }
     }
@@ -491,7 +526,8 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         )
 
         let verifyBlock = {
-            SwiftyStoreKit.verifyReceipt(using: validator) { result in
+            SwiftyStoreKit.verifyReceipt(using: validator) { [weak self] result in
+                guard let self = self else { return }
                 switch result {
                 case .success(let receipt):
                     let status = SwiftyStoreKit.verifySubscriptions(
@@ -502,7 +538,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                     switch status {
                     case .purchased(let expiryDate, let items):
                         // ✅ 订阅有效
-                        print("Active until: \(expiryDate). Items: \(items.count)")
+                        self.log("Active until: \(expiryDate). Items: \(items.count)")
                         
 
                         // 3) 所有内购项（一次性购买也在这里）
@@ -530,17 +566,17 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
 
                     case .expired(let expiryDate, let items):
                         // ⏰ 已过期
-                        print("Expired at: \(expiryDate). Items: \(items.count)")
+                        self.log("Expired at: \(expiryDate). Items: \(items.count)")
                         self.handleRestoreError(nil)
 
                     case .notPurchased:
                         // 🚫 从未购买（或非当前 Apple ID）
-                        print("Not purchased")
+                        self.log("Not purchased")
                         self.handleRestoreError(nil)
                     }
 
                 case .error(let error):
-                    print("Receipt verify error: \(error)")
+                    self.log("Receipt verify error: \(error.localizedDescription)")
                     // 可能是没有收据 / 网络问题，尝试刷新收据
                     
                 }
@@ -569,7 +605,8 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
           ? "006"
           : payObj.total;
 
-        SwiftyStoreKit.purchaseProduct(product) { result in
+        SwiftyStoreKit.purchaseProduct(product) { [weak self] result in
+            guard let self = self else { return }
             switch result {
                 case .success(let purchase):
                         // Purchase was successful
@@ -591,7 +628,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                                 var updatedPayObj = payObj
                                 updatedPayObj.transactionId = transactionId
                                 updatedPayObj.productId = purchase.productId
-                                print("Purchase successful for product: \(updatedPayObj)")
+                                self.log("Purchase successful for product: \(updatedPayObj.productId)")
                                 // Now send the data to the server
                                 self.postToAPIServer(updatedPayObj)
                             }
@@ -615,14 +652,14 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         
     }
     
-    /// 统一处理“恢复/购买失败”提示，允许 error 为 nil
+    /// 统一处理"恢复/购买失败"提示，允许 error 为 nil
     func handleRestoreError(_ error: Error?) {
         // 先生成要显示/打印的文案
         let consoleMsg: String
         let hudMsg: String
 
         if let error {
-            consoleMsg = "❌ 恢复失败: \(error)"
+            consoleMsg = "❌ 恢复失败: \(error.localizedDescription)"
             hudMsg = humanReadableMessage(for: error)
         } else {
             consoleMsg = "❌ 恢复失败: (error = nil)"
@@ -630,7 +667,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         }
 
         // 控制台详细信息
-        print(consoleMsg)
+        self.log(consoleMsg)
 
         // UI 提示在主线程
         DispatchQueue.main.async {
@@ -645,35 +682,35 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
     /// 在网页开始加载但未能完成时（例如，因网络连接或服务器错误）调用
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         SVProgressHUD.dismiss()
-        print("❌ 网页加载失败 (Provisional Navigation): \(error.localizedDescription)")
+        self.log("❌ 网页加载失败 (Provisional Navigation): \(error.localizedDescription)")
         
         // 将 Error 对象向下转型为 NSError 以获取更多信息
         if let urlError = error as? URLError {
             switch urlError.code {
             case .notConnectedToInternet:
-                print("⚠️ 错误代码: .notConnectedToInternet - 请检查您的网络连接。")
+                self.log("⚠️ 错误代码: .notConnectedToInternet - 请检查您的网络连接。")
                 // 可以显示一个用户友好的提示
                 showAlert(title: "网络错误", message: "无法连接到互联网。请检查您的网络设置。")
             case .timedOut:
-                print("⚠️ 错误代码: .timedOut - 请求超时。")
+                self.log("⚠️ 错误代码: .timedOut - 请求超时。")
                 showAlert(title: "连接超时", message: "加载页面超时。请稍后再试。")
             case .cannotFindHost:
-                print("⚠️ 错误代码: .cannotFindHost - 无法找到服务器。")
+                self.log("⚠️ 错误代码: .cannotFindHost - 无法找到服务器。")
                 showAlert(title: "服务器错误", message: "无法找到指定服务器。")
             case .cannotConnectToHost:
-                print("⚠️ 错误代码: .cannotConnectToHost - 无法连接到服务器。")
+                self.log("⚠️ 错误代码: .cannotConnectToHost - 无法连接到服务器。")
                 showAlert(title: "连接错误", message: "无法连接到服务器。")
             case .badServerResponse:
-                print("⚠️ 错误代码: .badServerResponse - 服务器响应无效。")
+                self.log("⚠️ 错误代码: .badServerResponse - 服务器响应无效。")
                 showAlert(title: "服务器错误", message: "服务器响应无效。")
             case .appTransportSecurityRequiresSecureConnection:
-                print("⚠️ 错误代码: .appTransportSecurityRequiresSecureConnection - ATS 要求安全连接。")
+                self.log("⚠️ 错误代码: .appTransportSecurityRequiresSecureConnection - ATS 要求安全连接。")
                 showAlert(title: "安全连接错误", message: "此应用需要安全的网络连接。")
             case .cancelled:
-                print("⚠️ 错误代码: .cancelled - 加载被取消。")
+                self.log("⚠️ 错误代码: .cancelled - 加载被取消。")
                 // 通常发生在用户在页面完全加载前导航到另一个页面时
             default:
-                print("⚠️ 其他 URLError: \(urlError.code.rawValue) - \(urlError.localizedDescription)")
+                self.log("⚠️ 其他 URLError: \(urlError.code.rawValue) - \(urlError.localizedDescription)")
                 showAlert(title: "加载失败", message: "加载页面时发生未知错误: \(urlError.localizedDescription)")
             }
         } else {
@@ -685,7 +722,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
     /// 当导航失败时（例如，在数据加载完成后但内容无法显示时）调用
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         SVProgressHUD.dismiss()
-        print("❌ 网页导航失败: \(error.localizedDescription)")
+        self.log("❌ 网页导航失败: \(error.localizedDescription)")
         // 这个方法通常在 didFailProvisionalNavigation 之后或在其他更深层次的渲染/脚本错误时被调用
         // 你也可以在此处添加类似的错误处理逻辑
     }
@@ -737,14 +774,14 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
 //    示例 let responseDict: [String: Any] = [
 //    "event": "native_event",
 //    "data": ["a": 33333],
-//    "callbackId": "杨旭发给老杨"
+//    "callbackId": "樊旭发给老樊"
 //]
     
     func postNativeWebView(event: String ,data: NSDictionary ,completion: ((Any?) -> Void)? = nil)
     {
       
         let callbackId = "cb_\(Int(Date().timeIntervalSince1970 * 1000))_\(UUID().uuidString)"
-        print( "当前的 callid \(callbackId) ");
+        self.log( "当前的 callid \(callbackId) ");
         // 2. 如果有闭包则保存
                 if let completion = completion {
                     callbacksNative[callbackId] = completion
@@ -761,11 +798,12 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         let js = """
             window.dispatchEvent(new MessageEvent('message', { data: '\(responseString)' }));
             """
-        self.webView?.evaluateJavaScript(js, completionHandler: { result, error in
+        self.webView?.evaluateJavaScript(js, completionHandler: { [weak self] result, error in
+            guard let self = self else { return }
             if let error = error {
-                print("错误")
+                self.log("JS执行失败: \(error.localizedDescription)")
             } else {
-                print("成功")
+                self.log("JS执行成功")
             }
         })
     }
@@ -775,12 +813,13 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
         let js = """
         window.dispatchEvent(new MessageEvent('message', { data: '\(responseString)' }));
         """
-        print("发送的 js 是：\(js)")
-        self.webView?.evaluateJavaScript(js, completionHandler: { result, error in
+        self.log("发送的 js 是：\(js)")
+        self.webView?.evaluateJavaScript(js, completionHandler: { [weak self] result, error in
+            guard let self = self else { return }
             if let error = error {
-                print("✅ JS 执行失败: \(error)")
+                self.log("JS执行失败: \(error.localizedDescription)")
             } else {
-                print("✅ JS 执行成功，返回: \(String(describing: result))")
+                self.log("JS执行成功，返回: \(String(describing: result))")
             }
         })
     }
@@ -803,7 +842,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                 // 有 callbackId 时，发送回 H5
                 let response: [String: Any] = [
                     "callbackId": cbId,
-                    "response": ["msg": "我是杨旭我收到了"]
+                    "response": ["msg": "我是樊旭我收到了"]
                 ]
                 // 转换为 JSON 字符串并发送回 H5
                 if let responseData = try? JSONSerialization.data(withJSONObject: response),
@@ -814,7 +853,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                 }
             } else {
                 // 没有 callbackId 时，可以执行其他逻辑，或者只记录日志
-                print("没有 callbackId，跳过回传")
+                self.log("没有 callbackId，跳过回传")
             }
             
      
@@ -830,7 +869,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
             let base64EncodedData = base64EncodedString.data(using: .utf8)!
             if let jsonText = Data(base64Encoded: base64EncodedData) {
                 let clearText = String(data: jsonText, encoding: .utf8)!
-                print(clearText)
+                self.log(clearText)
                 let data = clearText.data(using: .utf8)!
                 do {
                     let _data = try JSONDecoder().decode(startVPNFromUI.self, from: data)
@@ -858,11 +897,11 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                         }
                     } else {
                         // 没有 callbackId 时，可以执行其他逻辑，或者只记录日志
-                        print("没有 callbackId，跳过回传")
+                        self.log("没有 callbackId，跳过回传")
                     }
                     
                 } catch {
-                    print(error)
+                    self.log("handleEvent startVPN error: \(error.localizedDescription)")
                 }
                 
             }
@@ -876,7 +915,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                 // 有 callbackId 时，发送回 H5
                 let response: [String: Any] = [
                     "callbackId": cbId,
-                    "response": ["msg": "VPN已开启"]
+                    "response": ["msg": "VPN已关闭"]
                 ]
                 // 转换为 JSON 字符串并发送回 H5
                 if let responseData = try? JSONSerialization.data(withJSONObject: response),
@@ -887,7 +926,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                 }
             } else {
                 // 没有 callbackId 时，可以执行其他逻辑，或者只记录日志
-                print("没有 callbackId，跳过回传")
+                self.log("没有 callbackId，跳过回传")
             }
             
         case "openUrl":
@@ -896,9 +935,9 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                 if UIApplication.shared.canOpenURL(url) {
                     UIApplication.shared.open(url, options: [:], completionHandler: { success in
                         if success {
-                            print("成功打开 Safari")
+                            self.log("成功打开 Safari")
                         } else {
-                            print("打开失败")
+                            self.log("打开失败")
                         }
                     })
                 }
@@ -908,7 +947,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
 
         // 可以继续添加更多 event 的处理
         default:
-            print("未知事件: \(event)")
+            self.log("未知事件: \(event)")
             
             if let cbId = callbackId {
                 // 有 callbackId 时，发送回 H5
@@ -925,7 +964,7 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
                 }
             } else {
                 // 没有 callbackId 时，可以执行其他逻辑，或者只记录日志
-                print("没有 callbackId，跳过回传")
+                self.log("没有 callbackId，跳过回传")
             }
             
         }
@@ -975,4 +1014,3 @@ class NativeBridge: NSObject, WKScriptMessageHandler ,WKNavigationDelegate, URLS
 
 
 }
-

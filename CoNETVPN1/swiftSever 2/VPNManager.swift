@@ -1,7 +1,15 @@
 import NetworkExtension
 
 class VPNManager {
-
+#if DEBUG
+@inline(__always)
+    private func log(_ msg: @autoclosure () -> String) {
+        NSLog("[VPNManager] %@", msg())
+    }
+#else
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String) { }
+#endif
     let layerMinus: LayerMinus
     private let vpnIdentifier = "com.fx168.CoNETVPN1.CoNETVPN1.VPN1"
 
@@ -14,7 +22,7 @@ class VPNManager {
             guard let self = self else { return }
 
             if let error = error {
-                NSLog("❌ Failed to load preferences: \(error.localizedDescription)")
+                self.log("❌ Failed to load preferences: \(error.localizedDescription)")
                 return
             }
 
@@ -23,10 +31,10 @@ class VPNManager {
             })
 
             if let existing = existing {
-                NSLog("✅ 已存在 VPN 配置，尝试激活")
+                self.log("✅ 已存在 VPN 配置，尝试激活")
                 self.activateTunnel(existing)
             } else {
-                NSLog("🆕 没找到 VPN 配置，准备创建")
+                self.log("🆕 没找到 VPN 配置，准备创建")
                 self.createTunnelWithRetry()
             }
         }
@@ -36,9 +44,11 @@ class VPNManager {
         let manager = makeManager()
 
         func saveAndLoad(retriesLeft: Int) {
-            manager.saveToPreferences { error in
+            manager.saveToPreferences { [weak self] error in
+                guard let self = self else { return }
+                
                 if let error = error {
-                    NSLog("❌ Failed to save VPN config: \(error.localizedDescription)")
+                    self.log("❌ Failed to save VPN config: \(error.localizedDescription)")
                     
                     if retriesLeft > 0 {
                         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
@@ -46,19 +56,21 @@ class VPNManager {
                         }
                         return
                     }
-                    print("当前 VPN 状态 为 Failed to save VPN config 发送关闭状态！")
+                    log("当前 VPN 状态 为 Failed to save VPN config 发送关闭状态！")
                     
                     return
                 }
 
-                manager.loadFromPreferences { error in
+                manager.loadFromPreferences { [weak self] error in
+                    guard let self = self else { return }
+                    
                     if let error = error {
                         
-                        NSLog("❌ Failed to load VPN config after save: \(error.localizedDescription)")
+                        self.log("❌ Failed to load VPN config after save: \(error.localizedDescription)")
                         return
                     }
 
-                    NSLog("✅ VPN 配置创建成功，准备激活")
+                    self.log("✅ VPN 配置创建成功，准备激活")
                     self.activateTunnel(manager)
                 }
             }
@@ -86,23 +98,27 @@ class VPNManager {
             try manager.connection.startVPNTunnel(options: options)
 
             
-                print("VPN 连接成功，开始清理其他 VPN 配置")
+                log("VPN 连接成功，开始清理其他 VPN 配置")
 
                 // 加载所有配置（iOS 17+ 需要权限配置）
-                NETunnelProviderManager.loadAllFromPreferences { managers, error in
+                NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
+                    guard let self = self else { return }
+                    
                     guard error == nil else {
-                        print("加载所有配置失败: \(error!.localizedDescription)")
+                        self.log("加载所有配置失败: \(error!.localizedDescription)")
                         return
                     }
 
                     for item in managers ?? [] {
                         if item != manager && item.connection.status == .disconnected {
-                            print("删除未连接的 VPN 配置: \(item.localizedDescription ?? "未知")")
-                            item.removeFromPreferences { error in
+                            self.log("删除未连接的 VPN 配置: \(item.localizedDescription ?? "未知")")
+                            item.removeFromPreferences { [weak self] error in
+                                guard let self = self else { return }
+                                
                                 if let error = error {
-                                    print("删除失败: \(error.localizedDescription)")
+                                    self.log("删除失败: \(error.localizedDescription)")
                                 } else {
-                                    print("删除成功")
+                                    self.log("删除成功")
                                 }
                             }
                         }
@@ -111,153 +127,180 @@ class VPNManager {
             
 
         } catch {
-            print("启动 VPN 失败: \(error.localizedDescription)")
+            self.log("启动 VPN 失败: \(error.localizedDescription)")
             self.createTunnelWithRetry()
         }
     }
 
-    // 🔥 激进版stopVPN - 无差别停止所有VPN
+    // 🔥 终极版stopVPN - 立即同步停止所有VPN
     func stopVPN() {
-        print("🔥 启动激进VPN停止模式 - 停止所有VPN隧道")
+        self.log("🔥 启动终极VPN停止模式 - 立即停止所有VPN隧道")
         
-        // 第一步：通过NETunnelProviderManager停止所有隧道提供商VPN
-        self.stopAllTunnelProviderVPNs()
-        
-        // 第二步：通过NEVPNManager停止系统级VPN
-        self.stopSystemVPN()
-        
-        // 第三步：额外的清理工作
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.performAdditionalCleanup()
+        // 🚨 关键修复：使用信号量确保同步执行
+        let semaphore = DispatchSemaphore(value: 0)
+        var stoppedCount = 0
+
+        // 若被主线程调用，立刻切到后台，避免与内部的信号量形成互锁
+        if Thread.isMainThread {
+            self.log("⚠️ stopVPN called on main thread, offloading to background queue")
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                self?.stopVPN()
+            }
+            return
         }
-    }
-    
-    // 停止所有隧道提供商VPN
-    private func stopAllTunnelProviderVPNs() {
-        NETunnelProviderManager.loadAllFromPreferences { managers, error in
+        
+        // 第一步：停止所有隧道提供商VPN（同步执行）
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
+            guard let self = self else { 
+                semaphore.signal()
+                return 
+            }
+            defer { semaphore.signal() } // 确保信号量被释放
+            
             if let error = error {
-                NSLog("❌ 加载VPN配置失败: \(error.localizedDescription)")
-                // 即使加载失败也要继续其他停止方法
+                self.log("❌ 加载VPN配置失败: \(error.localizedDescription)")
                 return
             }
             
             guard let managers = managers, !managers.isEmpty else {
-                print("📋 没有找到隧道提供商VPN配置")
+                self.log("📋 没有找到隧道提供商VPN配置")
                 return
             }
             
-            print("📋 找到 \(managers.count) 个VPN配置，开始无差别停止")
+            self.log("📋 找到 \(managers.count) 个VPN配置，开始立即停止")
             
             for (index, manager) in managers.enumerated() {
                 let bundleId = (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier ?? "unknown"
                 let status = manager.connection.status
                 let description = manager.localizedDescription ?? "无名VPN"
                 
-                print("🔍 处理VPN \(index+1): \(description)")
-                print("   Bundle ID: \(bundleId)")
-                print("   状态: \(self.vpnStatusString(status))")
+                self.log("🔍 处理VPN \(index+1): \(description)")
+                self.log("   Bundle ID: \(bundleId)")
+                self.log("   状态: \(self.vpnStatusString(status))")
                 
-                // 更稳顺序：先禁用 On-Demand 并保存 → 再 stop（主线程）
-                let turnOffOnDemand = {
-                    if manager.isOnDemandEnabled {
-                        manager.isOnDemandEnabled = false
-                            print("   🔧 已禁用按需连接")
-                    }
-                }
-                turnOffOnDemand()
-                manager.saveToPreferences { err in
-                    if let err = err {
-                        print("   ⚠️ 保存设置失败: \(err.localizedDescription)，仍尝试停止")
+                // 🚨 关键修复：无论什么状态都立即停止
+                self.log("🛑 立即强制停止VPN: \(description)")
+                
+                // 立即禁用On-Demand
+                manager.isOnDemandEnabled = false
+                
+                // 立即发送停止信号
+                manager.connection.stopVPNTunnel()
+                stoppedCount += 1
+                self.log("   ✅ 已立即发送停止信号")
+                
+                // 🚨 关键修复：立即保存设置，不等待回调
+                manager.saveToPreferences { [weak self] error in
+                    guard let self = self else { return }
+                    
+                    if let error = error {
+                        self.log("   ⚠️ 保存设置失败: \(error.localizedDescription)")
                     } else {
-                        print("   ✅ 设置已保存")
-                    }
-                    manager.loadFromPreferences { _ in
-                        DispatchQueue.main.async {
-                            print("🛑 强制停止VPN: \(description)")
-                            manager.connection.stopVPNTunnel()
-                            print("   ✅ 已在主线程发送停止信号")
-                        }
+                        self.log("   ✅ 设置已保存")
                     }
                 }
             }
+            
+            self.log("✅ 已向 \(stoppedCount) 个VPN发送立即停止信号")
         }
-    }
-    
-    // 停止系统VPN
-    private func stopSystemVPN() {
-        print("🔄 检查并停止系统VPN...")
         
-        NEVPNManager.shared().loadFromPreferences { error in
-            // 更稳顺序：先禁用 On-Demand 并保存 → 再 stop（主线程）
-            if systemVPN.isOnDemandEnabled {
-                systemVPN.isOnDemandEnabled = false
-                print("🔧 已禁用系统VPN按需连接")
+        // 等待第一步完成
+        _ = semaphore.wait(timeout: .now() + 3.0) // 最多等待3秒
+        
+        // 第二步：同时停止系统级VPN
+        self.log("🔄 立即检查并停止系统VPN...")
+        let systemSemaphore = DispatchSemaphore(value: 0)
+        
+        NEVPNManager.shared().loadFromPreferences { [weak self] error in
+            guard let self = self else {
+                systemSemaphore.signal()
+                return
             }
-            systemVPN.saveToPreferences { err in
-                if let err = err {
-                    print("⚠️ 保存系统VPN设置失败: \(err.localizedDescription)，仍尝试停止")
+            defer { systemSemaphore.signal() }
+            
+            if let error = error {
+                self.log("❌ 加载系统VPN配置失败: \(error.localizedDescription)")
+                return
+            }
+            
+            let systemVPN = NEVPNManager.shared()
+            let status = systemVPN.connection.status
+            
+            self.log("🔍 系统VPN状态: \(self.vpnStatusString(status))")
+            
+            // 立即停止系统VPN
+            systemVPN.isOnDemandEnabled = false
+            systemVPN.connection.stopVPNTunnel()
+            self.log("🛑 已立即发送系统VPN停止信号")
+            
+            // 立即保存系统VPN设置
+            systemVPN.saveToPreferences { [weak self] error in
+                guard let self = self else { return }
+                
+                if let error = error {
+                    self.log("⚠️ 保存系统VPN设置失败: \(error.localizedDescription)")
                 } else {
-                    print("✅ 系统VPN设置已保存")
-                }
-                NEVPNManager.shared().loadFromPreferences { _ in
-                    DispatchQueue.main.async {
-                        NEVPNManager.shared().connection.stopVPNTunnel()
-                            print("🛑 已在主线程发送系统VPN停止信号")
-                    }
+                    self.log("✅ 系统VPN设置已保存")
                 }
             }
         }
+        
+        // 等待系统VPN停止完成
+        _ = systemSemaphore.wait(timeout: .now() + 2.0)
+        
+        // 第三步：立即执行额外清理（不等待延时）
+        self.performImmediateCleanup()
+        
+        self.log("🔥 终极VPN停止流程已完成")
     }
     
-    // 执行额外的清理工作
-    private func performAdditionalCleanup() {
-        print("🧹 执行额外清理工作...")
+    // 🚨 立即执行清理，不等待延时
+    private func performImmediateCleanup() {
+        self.log("🧹 执行立即清理工作...")
         
-        // 再次检查是否还有VPN在运行
-        NETunnelProviderManager.loadAllFromPreferences { managers, error in
+        // 立即再次检查并停止所有VPN
+        let cleanupSemaphore = DispatchSemaphore(value: 0)
+        
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
+            guard let self = self else {
+                cleanupSemaphore.signal()
+                return
+            }
+            defer { cleanupSemaphore.signal() }
+            
             guard let managers = managers else { return }
             
             var stillRunning = 0
             for manager in managers {
                 let status = manager.connection.status
-                if status == .connected || status == .connecting || status == .reasserting {
+                if status != .disconnected && status != .invalid {
                     stillRunning += 1
-                    // 对仍在运行的VPN再次「保存关闭 On-Demand → 主线程 stop」
-                    if manager.isOnDemandEnabled {
-                        manager.isOnDemandEnabled = false
-                    }
-                    manager.saveToPreferences { _ in
-                        manager.loadFromPreferences { _ in
-                            DispatchQueue.main.async {
-                                manager.connection.stopVPNTunnel()
-                                    print("🔁 再次停止仍在运行的VPN（主线程）")
-                            }
-                        }
-                    }
+                    // 对所有非断开状态的VPN强制再次停止
+                    manager.connection.stopVPNTunnel()
+                    self.log("🔁 强制再次停止VPN，状态: \(self.vpnStatusString(status))")
                 }
             }
             
             if stillRunning > 0 {
-                print("⚠️ 检测到 \(stillRunning) 个VPN仍在运行，已发送额外停止信号")
+                self.log("⚠️ 检测到 \(stillRunning) 个VPN可能仍在运行，已发送额外停止信号")
             } else {
-                print("✅ 所有VPN已停止")
+                self.log("✅ 所有VPN都已处于断开状态")
             }
         }
         
-        // 检查系统VPN
-        NEVPNManager.shared().loadFromPreferences { _ in
+        // 等待清理完成
+        _ = cleanupSemaphore.wait(timeout: .now() + 2.0)
+        
+        // 最后检查系统VPN
+        NEVPNManager.shared().loadFromPreferences { [weak self] _ in
+            guard let self = self else { return }
+            
             let status = NEVPNManager.shared().connection.status
-            if status != .disconnected {
-                print("🔁 系统VPN仍在运行，再次停止（保存→主线程）")
-                let mgr = NEVPNManager.shared()
-                if mgr.isOnDemandEnabled { mgr.isOnDemandEnabled = false }
-                mgr.saveToPreferences { _ in
-                    NEVPNManager.shared().loadFromPreferences { _ in
-                        DispatchQueue.main.async {
-                            NEVPNManager.shared().connection.stopVPNTunnel()
-                        }
-                    }
-                }
+            if status != .disconnected && status != .invalid {
+                self.log("🔁 系统VPN可能仍在运行，强制再次停止")
+                NEVPNManager.shared().connection.stopVPNTunnel()
+            } else {
+                self.log("✅ 系统VPN已断开")
             }
         }
     }
@@ -275,12 +318,67 @@ class VPNManager {
         }
     }
     
+    // 🆕 新增：强制终止所有VPN进程的方法（核弹级）
+    func nuclearStopVPN() {
+        self.log("☢️ 启动核弹级VPN停止 - 强制终止所有可能的VPN连接")
+        
+        // 1. 停止所有已知的VPN配置
+        self.stopVPN()
+        
+        // 2. 尝试通过不同的API停止VPN
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 方法1：通过所有可能的Manager类型
+            self.stopAllPossibleVPNTypes()
+            
+            // 方法2：清理所有VPN相关配置
+            self.cleanupAllVPNConfigurations()
+        }
+    }
+    
+    private func stopAllPossibleVPNTypes() {
+        self.log("🔍 尝试停止所有可能的VPN类型...")
+        
+        // 停止Personal VPN
+        NEVPNManager.shared().connection.stopVPNTunnel()
+        
+        // 尝试停止所有网络扩展
+        if #available(iOS 9.0, *) {
+            // 加载所有可能的网络扩展配置
+            NEVPNManager.shared().loadFromPreferences { _ in
+                NEVPNManager.shared().connection.stopVPNTunnel()
+            }
+        }
+    }
+    
+    private func cleanupAllVPNConfigurations() {
+        self.log("🧹 清理所有VPN配置...")
+        
+        // 禁用所有VPN配置的自动连接
+        NETunnelProviderManager.loadAllFromPreferences { managers, _ in
+            managers?.forEach { manager in
+                manager.isEnabled = false
+                manager.isOnDemandEnabled = false
+                manager.saveToPreferences(completionHandler: nil)
+            }
+        }
+        
+        // 禁用系统VPN的自动连接
+        NEVPNManager.shared().loadFromPreferences { _ in
+            let systemVPN = NEVPNManager.shared()
+            systemVPN.isEnabled = false
+            systemVPN.isOnDemandEnabled = false
+            systemVPN.saveToPreferences(completionHandler: nil)
+        }
+    }
+    
     // 获取当前所有VPN状态（调试用）
     func getAllVPNStatus(completion: @escaping (String) -> Void) {
         var statusReport = "🔍 当前系统中所有VPN状态:\n\n"
         
         // 检查隧道提供商VPN
-        NETunnelProviderManager.loadAllFromPreferences { managers, error in
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
+            guard let self = self else { return }
+            
             if let error = error {
                 statusReport += "❌ 获取隧道VPN失败: \(error.localizedDescription)\n\n"
             } else if let managers = managers, !managers.isEmpty {
@@ -303,7 +401,9 @@ class VPNManager {
             }
             
             // 检查系统VPN
-            NEVPNManager.shared().loadFromPreferences { error in
+            NEVPNManager.shared().loadFromPreferences { [weak self] error in
+                guard let self = self else { return }
+                
                 if let error = error {
                     statusReport += "❌ 获取系统VPN失败: \(error.localizedDescription)\n"
                 } else {

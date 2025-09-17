@@ -5,6 +5,7 @@ import ZIPFoundation
 // MARK: - Custom Notification
 extension Notification.Name {
     static let webServerDidStart = Notification.Name("webServerDidStart")
+    static let stopVPNRequested = Notification.Name("stopVPNRequested")
 }
 
 // MARK: - Version Response for /ver endpoint
@@ -19,6 +20,15 @@ fileprivate struct LocalUpdateInfo: Codable {
 }
 
 class LocalWebServer {
+#if DEBUG
+@inline(__always)
+    private func log(_ msg: @autoclosure () -> String) {
+        NSLog("[LocalWebServer] %@", msg())
+    }
+#else
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String) { }
+#endif
     let server = HttpServer()
     private let port: UInt16
     private let fileManager = FileManager.default
@@ -46,21 +56,21 @@ class LocalWebServer {
     func prepareAndStart() async {
         // If already running, just broadcast and return
         if server.state == .running {
-            print("✅ Server already running on port \(port)")
+            log("✅ Server already running on port \(port)")
             broadcastServerStarted()
             return
         }
         
         // Prevent concurrent starts
         guard !starting else {
-            print("⏳ Server already starting, skipping duplicate request")
+            log("⏳ Server already starting, skipping duplicate request")
             return
         }
         starting = true
         defer { starting = false }
         
         do {
-            print("🚀 Preparing to start local server...")
+            log("🚀 Preparing to start local server...")
             
             // Prepare root directory
             try await prepareRootDirectory()
@@ -71,16 +81,16 @@ class LocalWebServer {
             // Start server
             try server.start(port, forceIPv4: true)
             
-            print("✅ Local server started at http://127.0.0.1:\(port)")
+            log("✅ Local server started at http://127.0.0.1:\(port)")
             if let rootPath = rootDir?.path {
-                print("📁 Serving files from: \(rootPath)")
+                log("📁 Serving files from: \(rootPath)")
             }
             
             // Broadcast server started
             broadcastServerStarted()
             
         } catch {
-            print("❌ Failed to start server: \(error.localizedDescription)")
+            log("❌ Failed to start server: \(error.localizedDescription)")
             
             // If it's a port binding error, try to stop and restart
             if (error as NSError).code == 48 { // Address already in use
@@ -96,7 +106,7 @@ class LocalWebServer {
     
     func stop() {
         server.stop()
-        print("🛑 Local server stopped.")
+        log("🛑 Local server stopped.")
     }
     
     private func broadcastServerStarted() {
@@ -116,7 +126,7 @@ class LocalWebServer {
             print("ℹ️ Found existing workers directory: \(workersDir.path)")
             self.rootDir = workersDir
         } else {
-            print("ℹ️ Workers directory not found, extracting from build3.zip...")
+            log("ℹ️ Workers directory not found, extracting from build3.zip...")
             
             // Remove old directory if exists
             if fileManager.fileExists(atPath: workersDir.path) {
@@ -137,13 +147,13 @@ class LocalWebServer {
             try fileManager.unzipItem(at: zipPath, to: workersDir)
             
             self.rootDir = workersDir
-            print("✅ Successfully extracted content to: \(workersDir.path)")
+            log("✅ Successfully extracted content to: \(workersDir.path)")
         }
     }
     
     private func configureRoutes() {
         guard let rootDir = self.rootDir else {
-            print("❌ Cannot configure routes: rootDir not set")
+            log("❌ Cannot configure routes: rootDir not set")
             return
         }
         
@@ -159,7 +169,7 @@ class LocalWebServer {
             guard let self = self else { return .internalServerError }
             let isOn = self.vpnStatusProvider?() ?? false
             struct VPNResp: Codable { let vpn: Bool }
-            print("local server /iOSVPN \(VPNResp(vpn: isOn))")
+            log("local server /iOSVPN \(VPNResp(vpn: isOn))")
             return self.createJsonResponse(statusCode: 200, body: VPNResp(vpn: isOn))
         }
 
@@ -171,7 +181,7 @@ class LocalWebServer {
 			headers["Access-Control-Allow-Origin"] = "*"
 			headers["Cache-Control"] = "no-cache"
 			let bodyData = Data(req.body)
-            print("local server  /startVPN ")
+            log("local server  /startVPN ")
 			let ok = self.startVPNHandler?(bodyData) ?? false
 			struct Resp: Codable { let ok: Bool }
 			return self.createJsonResponse(statusCode: ok ? 200 : 400, body: Resp(ok: ok))
@@ -179,10 +189,26 @@ class LocalWebServer {
 
 		// Handle GET /stopVPN：调用外部 stopVPNHandler
 		server.get["/stopVPN"] = { [weak self] _ in
+            
 			guard let self = self else { return .internalServerError }
-			let ok = self.stopVPNHandler?() ?? false
+            
+            self.log("local server /stopVPN ")
+            let hasHandler = (self.stopVPNHandler != nil)
+            self.log("local server /stopVPN (hasHandler=\(hasHandler))")
+            let ok: Bool
+            if let handler = self.stopVPNHandler {
+                ok = handler()
+                log("local server /stopVPN -> handler returned \(ok)")
+            } else {
+                log("local server /stopVPN -> handler is nil ")
+                // ⛑ 未接线：发通知兜底
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Notification.Name("stopVPNRequested"), object: nil)
+                }
+                ok = false
+            }
 			struct Resp: Codable { let ok: Bool }
-            print("local server /stopVPN ")
+            
 			return self.createJsonResponse(statusCode: ok ? 200 : 500, body: Resp(ok: ok))
 		}
 
@@ -233,7 +259,7 @@ class LocalWebServer {
             let fileURL = rootDir.appendingPathComponent(relativePath)
             
             // Log request
-            print("📄 Request: \(request.path) -> \(fileURL.lastPathComponent)")
+            log("📄 Request: \(request.path) -> \(fileURL.lastPathComponent)")
             
             return self.serveFile(at: fileURL)
         }
@@ -243,7 +269,7 @@ class LocalWebServer {
         let updateJsonURL = rootDir.appendingPathComponent("update.json")
         
         guard fileManager.fileExists(atPath: updateJsonURL.path) else {
-            print("❌ update.json not found")
+            log("❌ update.json not found")
             return createJsonResponse(statusCode: 404, body: ["error": "update.json not found"])
         }
         
@@ -252,20 +278,20 @@ class LocalWebServer {
             // Try to decode using the local struct
             if let updateInfo = try? JSONDecoder().decode(LocalUpdateInfo.self, from: data) {
                 let versionResponse = VersionResponse(ver: updateInfo.ver)
-                print("✅ Version request: \(updateInfo.ver)")
+                log("✅ Version request: \(updateInfo.ver)")
                 return createJsonResponse(statusCode: 200, body: versionResponse)
             } else {
                 // Fallback to a dictionary approach
                 if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let ver = json["ver"] as? String {
                     let versionResponse = VersionResponse(ver: ver)
-                    print("✅ Version request: \(ver)")
+                    log("✅ Version request: \(ver)")
                     return createJsonResponse(statusCode: 200, body: versionResponse)
                 }
                 throw NSError(domain: "LocalWebServerError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid update.json format"])
             }
         } catch {
-            print("❌ Failed to read update.json: \(error)")
+            log("❌ Failed to read update.json: \(error)")
             return createJsonResponse(statusCode: 500, body: ["error": error.localizedDescription])
         }
     }
@@ -274,7 +300,7 @@ class LocalWebServer {
         // Security check - ensure file is within rootDir
         guard let rootPath = self.rootDir?.path,
               absoluteURL.path.hasPrefix(rootPath) else {
-            print("❌ Security violation: attempting to access file outside root")
+            log("❌ Security violation: attempting to access file outside root")
             return .forbidden
         }
         
