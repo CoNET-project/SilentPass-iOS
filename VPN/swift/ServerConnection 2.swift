@@ -924,10 +924,10 @@ public final class ServerConnection {
         handedOff = true
         phase = .bridged
 
-        if isIPAddress(host) {
-            useLayerMinus = false
-            log("DIRECT (IP literal): \(host):\(port) -> bypass LayerMinus")
-        }
+//        if isIPAddress(host) {
+//            useLayerMinus = false
+//            log("DIRECT (IP literal): \(host):\(port) -> bypass LayerMinus")
+//        }
 
         guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
             !egressNode.isEmpty else {
