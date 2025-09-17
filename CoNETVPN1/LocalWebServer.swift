@@ -26,6 +26,9 @@ class LocalWebServer {
     private var rootDir: URL?
     private let workersDir: URL
     var index: Int = 0
+    /// 从外部（例如 ViewController）注入：返回当前 VPN 是否“已连通”
+    // 建议：NEVPNStatus == .connected 或 .reasserting 视为 true
+    var vpnStatusProvider: (() -> Bool)?
     
     init(port: UInt16 = 3001) {
         self.port = port
@@ -144,6 +147,15 @@ class LocalWebServer {
             guard let self = self else { return .internalServerError }
             return self.handleVersionRequest(rootDir: rootDir)
         }
+        
+        // Handle /iOSVPN endpoint: 回送 { "vpn": true/false }
+        server.get["/iOSVPN"] = { [weak self] _ in
+            guard let self = self else { return .internalServerError }
+                let isOn = self.vpnStatusProvider?() ?? false
+                struct VPNResp: Codable { let vpn: Bool }
+            print("/iOSVPN \(VPNResp(vpn: isOn))")
+                return self.createJsonResponse(statusCode: 200, body: VPNResp(vpn: isOn))
+            }
         
         // Handle HEAD requests for root
         server.head["/"] = { _ in
