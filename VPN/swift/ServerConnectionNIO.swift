@@ -6,6 +6,14 @@
 //
 
 // ServerConnectionNIO.swift
+//
+//  ServerConnectionNIO.swift
+//  CoNETVPN1
+//
+//  Created by peter on 2025-09-17.
+//
+
+// ServerConnectionNIO.swift
 import Foundation
 import NIO
 import NIOTransportServices
@@ -51,6 +59,74 @@ public final class ServerConnectionNIO {
 
 // MARK: - Inbound Handler：移植自 NW 版 ServerConnection 的解析 & handoff 语义
 final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHandler {
+    
+    // MARK: - Memory snapshot (device total / system free / app resident)
+    /// 返回形如："phys=3.94 GB, free=512 MB, app=123 MB"
+    private func memorySummary() -> String {
+        let phys = ProcessInfo.processInfo.physicalMemory
+        let free = systemFreeMemoryBytes()
+        let app  = appResidentMemoryBytes()
+        let memoryMB = getCurrentMemoryUsage() / (1024 * 1024)
+        return "phys=\(fmtBytes(phys)), free=\(fmtBytes(free)), app=\(fmtBytes(app)), memoryMB \(memoryMB)"
+    }
+
+    /// 进程常驻内存（bytes）
+    private func appResidentMemoryBytes() -> UInt64 {
+        #if canImport(Mach)
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+        let kr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+    if kr == KERN_SUCCESS { return UInt64(info.resident_size) }
+    #endif
+        return 0
+    }
+
+    /// 系统空闲内存（bytes）—— 如调用失败则返回 0
+    private func systemFreeMemoryBytes() -> UInt64 {
+    #if canImport(Mach)
+        var pageSize: vm_size_t = 0
+        _ = host_page_size(mach_host_self(), &pageSize)
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr: kern_return_t = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        if kr == KERN_SUCCESS {
+            return UInt64(stats.free_count) * UInt64(pageSize)
+        }
+    #endif
+    return 0
+    }
+    
+    private func getCurrentMemoryUsage() -> Int64 {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_,
+                        task_flavor_t(MACH_TASK_BASIC_INFO),
+                        $0,
+                        &count)
+            }
+        }
+        
+        return result == KERN_SUCCESS ? Int64(info.resident_size) : 0
+    }
+
+    private func fmtBytes(_ bytes: UInt64) -> String {
+        if bytes >= 1 << 30 { return String(format: "%.2f GB", Double(bytes) / 1073741824.0) }
+        if bytes >= 1 << 20 { return String(format: "%.0f MB", Double(bytes) / 1048576.0) }
+        if bytes >= 1 << 10 { return String(format: "%.0f KB", Double(bytes) / 1024.0) }
+        return "\(bytes) B"
+    }
+    
     typealias InboundIn   = ByteBuffer
     typealias OutboundIn  = ByteBuffer
     typealias OutboundOut = ByteBuffer
@@ -91,10 +167,12 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         self.verbose = verbose
         self.onClosed = onClosed
         log("🟢 CREATED ServerConnectionNIO #\(id)")
+        log("MEM  \(memorySummary())")
     }
 
     deinit {
         log("🔴 DESTROYED ServerConnectionNIO #\(id)")
+        log("MEM  \(memorySummary())")
     }
 
     // MARK: - Channel events
@@ -190,8 +268,8 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         // 回复 NO-AUTH
         var out = context.channel.allocator.buffer(capacity: 2)
         out.writeBytes([0x05, 0x00])
-        // 直接写 ByteBuffer，避免 NIOAny 的弃用告警
-        context.writeAndFlush(out, promise: nil)
+        // Wrap ByteBuffer in NIOAny for writeAndFlush
+        context.writeAndFlush(wrapOutboundOut(out), promise: nil)
         return true
     }
 
@@ -255,7 +333,7 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         // 发送成功
         var out = ctx.channel.allocator.buffer(capacity: 10)
         out.writeBytes([0x05,0x00,0x00,0x01,0,0,0,0,0,0])
-        ctx.writeAndFlush(out, promise: nil)
+        ctx.writeAndFlush(wrapOutboundOut(out), promise: nil)
         phase = .connected(host: host, port: port)
         parseBuffer(ctx) // 若已有首包立即处理
         return true
@@ -438,18 +516,18 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
     private func writeString(_ ctx: ChannelHandlerContext, _ s: String) {
         var b = ctx.channel.allocator.buffer(capacity: s.utf8.count)
         b.writeString(s)
-        ctx.writeAndFlush(b, promise: nil)
+        ctx.writeAndFlush(wrapOutboundOut(b), promise: nil)
     }
     private func writeData(_ ctx: ChannelHandlerContext, _ d: Data) {
         var b = ctx.channel.allocator.buffer(capacity: d.count)
         b.writeBytes(d)
-        ctx.writeAndFlush(b, promise: nil)
+        ctx.writeAndFlush(wrapOutboundOut(b), promise: nil)
     }
 
     private func sendSocksReply(_ ctx: ChannelHandlerContext, _ rep: UInt8) {
         var b = ctx.channel.allocator.buffer(capacity: 10)
         b.writeBytes([0x05, rep, 0x00, 0x01, 0,0,0,0, 0,0])
-        ctx.writeAndFlush(b, promise: nil)
+        ctx.writeAndFlush(wrapOutboundOut(b), promise: nil)
     }
 
     private func blockHTTPAndClose(_ ctx: ChannelHandlerContext, status: String, reason: String) {
@@ -467,7 +545,7 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
     private func blockSocksAndClose(_ ctx: ChannelHandlerContext, reason: String) {
         var b = ctx.channel.allocator.buffer(capacity: 10)
         b.writeBytes([0x05, 0x02, 0x00, 0x01, 0,0,0,0, 0,0])
-        ctx.writeAndFlush(b, promise: nil)
+        ctx.writeAndFlush(wrapOutboundOut(b), promise: nil)
         close(context: ctx, reason: "blocked: \(reason)")
     }
 

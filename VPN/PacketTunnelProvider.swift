@@ -128,13 +128,13 @@ func orderedUniqueConcat(front: [String], back: [String]) -> [String] {
 
 
 class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
-    private var socksServer: ServerNIO?
+    private var socksServer: Server?
     let port = 8888
     
 
     override init() {
         super.init()
-        let s = ServerNIO(port: 8888)
+        let s = Server(port: 8888)
         self.socksServer = s
         do {
             try self.socksServer?.start()
