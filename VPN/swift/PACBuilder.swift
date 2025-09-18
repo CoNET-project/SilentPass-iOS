@@ -25,7 +25,7 @@ enum PACBuilder {
         let resolveJS = resolveDomainsToIP ? "true" : "false"
 
         // —— 新增：静态本地直连网段 & 单 IP —— //
-        let staticLocalCIDRs = ["192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16"]
+        let staticLocalCIDRs = ["192.168.0.0/16","10.0.0.0/8","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","100.64.0.0/10"]
         let staticLocalIPs   = ["172.16.0.1", "172.16.0.2"]
         let staticLocalCIDRsJS = jsonArray(staticLocalCIDRs)
         let staticLocalIPsJS   = jsonArray(staticLocalIPs)

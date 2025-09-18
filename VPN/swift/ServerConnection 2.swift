@@ -389,7 +389,7 @@ public final class ServerConnection {
                     if !advanced {
                         // 还不足以解析 HTTP 首部，继续等待更多数据
                         // 避免误关连接
-                        log("methodSelect: waiting for more bytes (maybe HTTP proxy)")
+                        log("🔴🔴🔴methodSelect: waiting for more bytes (maybe HTTP proxy)")
                     }
                 }
                 
@@ -926,10 +926,15 @@ public final class ServerConnection {
         handedOff = true
         phase = .bridged
 
-//        if isIPAddress(host) {
-//            useLayerMinus = false
-//            log("DIRECT (IP literal): \(host):\(port) -> bypass LayerMinus")
-//        }
+        if isIPAddress(host) {
+            if isTelegramIP(host) {
+                useLayerMinus = true
+                log("🔵 TELEGRAM IP detected: \(host):\(port) -> force LayerMinus")
+            } else {
+                useLayerMinus = false
+                log("🟢🟢 DIRECT (IP literal): \(host):\(port) -> bypass LayerMinus")
+            }
+        }
 
         guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
             !egressNode.isEmpty else {
@@ -1076,6 +1081,30 @@ public final class ServerConnection {
         
         return (method, path, version, hostHeader)
     }
+    
+    // 判断是否为 Telegram 的 IP 段
+    private func isTelegramIP(_ ip: String) -> Bool {
+        let telegramCIDRs = [
+            "149.154.160.0/20",
+            "91.108.4.0/22"
+        ]
+        for cidr in telegramCIDRs {
+            if ipInCIDR(ip: ip, cidr: cidr) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func ipInCIDR(ip: String, cidr: String) -> Bool {
+        let parts = cidr.split(separator: "/")
+        guard parts.count == 2,
+              let baseAddr = IPv4Address(String(parts[0])),
+              let ipAddr = IPv4Address(ip),
+              let prefix = Int(parts[1]) else { return false }
+
+        return ipAddr.inRange(of: baseAddr, prefix: prefix)
+    }
 
     // MARK: HTTP 启发式检测
     private func isLikelyHTTP(_ data: Data) -> Bool {
@@ -1102,5 +1131,14 @@ public final class ServerConnection {
                 self?.log("send reply err: \(err)")
             }
         }))
+    }
+}
+
+extension IPv4Address {
+    func inRange(of network: IPv4Address, prefix: Int) -> Bool {
+        let mask: UInt32 = prefix == 0 ? 0 : ~UInt32(0) << (32 - prefix)
+        let selfInt = self.rawValue.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        let netInt = network.rawValue.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        return (selfInt & mask) == (netInt & mask)
     }
 }

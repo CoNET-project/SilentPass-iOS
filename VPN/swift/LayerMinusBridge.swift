@@ -622,7 +622,7 @@ struct NWReceiveSequence: AsyncSequence {
 		
 		// 缓冲区配置
 		private let minBuffer = 16 * 1024
-		private let maxBuffer = 1024 * 1024
+		private let maxBuffer = GLOBAL_MAX_BUFFER
 		private let growthStep = 32 * 1024
 		private let memoryWarningThreshold = 38 * 1024 * 1024
 		
@@ -817,7 +817,7 @@ struct NWReceiveSequence: AsyncSequence {
     }
 }
 
-private let GLOBAL_MAX_BUFFER = 1024 * 1024
+private let GLOBAL_MAX_BUFFER = 2 * 1024 * 1024
 extension NWConnection {
     
     /// Pull-driven stream: next() triggers exactly one receive
