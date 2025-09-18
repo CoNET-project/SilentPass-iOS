@@ -60,7 +60,7 @@ func getIPAddress() -> String? {
     return address
 }
 
-class LayerMinus {
+public final class LayerMinus {
     
     @inline(__always)
     

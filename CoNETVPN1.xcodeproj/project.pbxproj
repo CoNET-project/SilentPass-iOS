@@ -51,6 +51,11 @@
 		76AD2D2C2D11BE2C00CAB2B7 /* ObjectivePGP in Frameworks */ = {isa = PBXBuildFile; productRef = 76AD2D2B2D11BE2C00CAB2B7 /* ObjectivePGP */; };
 		76EC53462E1CD1ED0020670C /* icon.png in Resources */ = {isa = PBXBuildFile; fileRef = 76EC53452E1CD1ED0020670C /* icon.png */; };
 		D0064CEF2E5B8D74003FBD9D /* CountryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0064CEE2E5B8D74003FBD9D /* CountryManager.swift */; };
+		D00CF7772E7B9E6D00A1F368 /* ServerConnectionNIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00CF7762E7B9E6300A1F368 /* ServerConnectionNIO.swift */; };
+		D00CF77A2E7B9F5300A1F368 /* NIO in Frameworks */ = {isa = PBXBuildFile; productRef = D00CF7792E7B9F5300A1F368 /* NIO */; };
+		D00CF77D2E7B9F7800A1F368 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = D00CF77C2E7B9F7800A1F368 /* NIOTransportServices */; };
+		D00CF77F2E7BA01D00A1F368 /* LayerMinusBridgeNIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00CF77E2E7BA01B00A1F368 /* LayerMinusBridgeNIO.swift */; };
+		D00CF7812E7BA59500A1F368 /* ServerNIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00CF7802E7BA59400A1F368 /* ServerNIO.swift */; };
 		D04D4DF42E593DFD0083DD23 /* LayerMinusBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */; };
 		D04D4E1B2E59908B0083DD23 /* LayerMinus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */; };
 		D04D4E1D2E5990FF0083DD23 /* NodeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */; };
@@ -163,6 +168,9 @@
 		86D47A7E46BED605A8A02F5A /* Pods_VPN.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_VPN.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		CE8F553C7E0B8D63B02DA08A /* Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig"; path = "Target Support Files/Pods-CoNETVPN1-CoNETVPN1UITests/Pods-CoNETVPN1-CoNETVPN1UITests.debug.xcconfig"; sourceTree = "<group>"; };
 		D0064CEE2E5B8D74003FBD9D /* CountryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CountryManager.swift; sourceTree = "<group>"; };
+		D00CF7762E7B9E6300A1F368 /* ServerConnectionNIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConnectionNIO.swift; sourceTree = "<group>"; };
+		D00CF77E2E7BA01B00A1F368 /* LayerMinusBridgeNIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinusBridgeNIO.swift; sourceTree = "<group>"; };
+		D00CF7802E7BA59400A1F368 /* ServerNIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerNIO.swift; sourceTree = "<group>"; };
 		D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinusBridge.swift; sourceTree = "<group>"; };
 		D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinus.swift; sourceTree = "<group>"; };
 		D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeManager.swift; sourceTree = "<group>"; };
@@ -184,10 +192,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				D0850B2E2E52CC4C00BC1BF4 /* vpn2socks in Frameworks */,
+				D00CF77A2E7B9F5300A1F368 /* NIO in Frameworks */,
 				765B0EAE2CE47577007ACC57 /* NetworkExtension.framework in Frameworks */,
 				D0E605702E56DA2300167745 /* vpn2socks in Frameworks */,
 				D0850B2A2E52C1D700BC1BF4 /* vpn2socks in Frameworks */,
 				761109802D19862C00B7677B /* ObjectivePGP in Frameworks */,
+				D00CF77D2E7B9F7800A1F368 /* NIOTransportServices in Frameworks */,
 				7611097E2D19862800B7677B /* web3swift in Frameworks */,
 				1182E220933E9DFFD7F7C2B9 /* Pods_VPN.framework in Frameworks */,
 			);
@@ -254,9 +264,12 @@
 			children = (
 				7606D7042D2EC5A000224EC8 /* CONET_Guardian_NodeInfo_ABI.text */,
 				7606D70A2D2EC5A000224EC8 /* Server 2.swift */,
+				D00CF7802E7BA59400A1F368 /* ServerNIO.swift */,
 				D0D00E5F2E6AEF8700E76945 /* PACBuilder.swift */,
 				7606D70C2D2EC5A000224EC8 /* ServerConnection 2.swift */,
 				D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */,
+				D00CF7762E7B9E6300A1F368 /* ServerConnectionNIO.swift */,
+				D00CF77E2E7BA01B00A1F368 /* LayerMinusBridgeNIO.swift */,
 				D0D00E5D2E6AED6E00E76945 /* Allowlist.swift */,
 				D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */,
 				D0064CEE2E5B8D74003FBD9D /* CountryManager.swift */,
@@ -495,6 +508,8 @@
 				7648A4392E1E4F0600B38E11 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 				D06663F72E284A9C007D010D /* XCRemoteSwiftPackageReference "swifter" */,
 				D0850B282E52C1D700BC1BF4 /* XCLocalSwiftPackageReference "vpn2socks" */,
+				D00CF7782E7B9F5300A1F368 /* XCRemoteSwiftPackageReference "swift-nio" */,
+				D00CF77B2E7B9F7800A1F368 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */,
 			);
 			productRefGroup = 76C68BFA2CE1F7EE006E15EE /* Products */;
 			projectDirPath = "";
@@ -686,8 +701,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				D04D4DF42E593DFD0083DD23 /* LayerMinusBridge.swift in Sources */,
+				D00CF7772E7B9E6D00A1F368 /* ServerConnectionNIO.swift in Sources */,
 				7606D7142D2EC5A000224EC8 /* WebViewManager.swift in Sources */,
+				D00CF7812E7BA59500A1F368 /* ServerNIO.swift in Sources */,
 				7606D7172D2EC5A000224EC8 /* VPNManager.swift in Sources */,
+				D00CF77F2E7BA01D00A1F368 /* LayerMinusBridgeNIO.swift in Sources */,
 				7606D71B2D2EC5A000224EC8 /* ServerConnection 2.swift in Sources */,
 				D04D4E1B2E59908B0083DD23 /* LayerMinus.swift in Sources */,
 				D0064CEF2E5B8D74003FBD9D /* CountryManager.swift in Sources */,
@@ -1263,6 +1281,22 @@
 				minimumVersion = 1.0.0;
 			};
 		};
+		D00CF7782E7B9F5300A1F368 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.86.0;
+			};
+		};
+		D00CF77B2E7B9F7800A1F368 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio-transport-services.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.25.1;
+			};
+		};
 		D06663F72E284A9C007D010D /* XCRemoteSwiftPackageReference "swifter" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/httpswift/swifter.git";
@@ -1303,6 +1337,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 76AD2D2A2D11BE2C00CAB2B7 /* XCRemoteSwiftPackageReference "ObjectivePGP" */;
 			productName = ObjectivePGP;
+		};
+		D00CF7792E7B9F5300A1F368 /* NIO */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D00CF7782E7B9F5300A1F368 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIO;
+		};
+		D00CF77C2E7B9F7800A1F368 /* NIOTransportServices */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D00CF77B2E7B9F7800A1F368 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */;
+			productName = NIOTransportServices;
 		};
 		D06663F82E284A9C007D010D /* Swifter */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -92,27 +92,29 @@ public actor LayerMinusBridge {
 	}
 
 	private func setupFirstByteWatchdog() {
-		 // 取消旧的
-		cancelWatchdog()
+        cancelWatchdog()
+        let watchdog = DispatchSource.makeTimerSource(queue: eventQueue)
 
-		// ✅ 创建新的 timer（使用 actor 的 eventQueue）
-		let watchdog = DispatchSource.makeTimerSource(queue: eventQueue)
+        var timeoutSec = ProcessInfo.processInfo.environment["VPN_FIRST_BYTE_TIMEOUT"]
+            .flatMap(Double.init) ?? 60.0
 
-		let timeoutSec = ProcessInfo.processInfo.environment["VPN_FIRST_BYTE_TIMEOUT"]
-			.flatMap(Double.init) ?? 15.0
-		let timeoutMs = Int(timeoutSec * 1000)
+        // 针对 Telegram 目的端放宽
+        if targetHost.hasSuffix("telegram.org") || targetHost.hasPrefix("149.154.") {
+            timeoutSec = 90.0  // 介于 75–90s
+        }
 
-		watchdog.schedule(deadline: .now() + .milliseconds(timeoutMs))
-		watchdog.setEventHandler { [weak self] in
-			Task { [weak self] in
-				guard let self else { return }
-				if await self.checkShouldCancelForTimeout() {
-					await self.cancel(reason: "first_byte_timeout after \(timeoutSec)s")
-				}
-			}
-		}
-		firstByteWatchdog = watchdog
-		watchdog.resume()
+        let timeoutMs = Int(timeoutSec * 1000)
+        watchdog.schedule(deadline: .now() + .milliseconds(timeoutMs))
+        watchdog.setEventHandler { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
+                if await self.checkShouldCancelForTimeout() {
+                    await self.cancel(reason: "first_byte_timeout after \(timeoutSec)s")
+                }
+            }
+        }
+        firstByteWatchdog = watchdog
+        watchdog.resume()
 	}
 
 	private func checkShouldCancelForTimeout() -> Bool {
@@ -370,18 +372,16 @@ public actor LayerMinusBridge {
     // MARK: Pipe bridge (true backpressure)
     private func bridgeConnections(client: NWConnection, remote: NWConnection) async {
        
-		var c2sHadError = false
-    	var s2cHadError = false
-		await withTaskGroup(of: Void.self) { group in
-			var c2sHadError = false
-			var s2cHadError = false
+        var c2sHadError = false
+        var s2cHadError = false
+        await withTaskGroup(of: Void.self) { group in
 			group.addTask { [weak self] in
 				guard let self = self else { return }
 				do {
 					var chunkCount = 0
 					// 传递 bridgeId 和 connectInfo
 					for try await data in client.receiveStream(
-						maxLength: 512 * 1024,
+						maxLength: 128 * 1024,
 						bridgeId: self.id,
 						connectInfo: self.connectInfo
 					) {
@@ -407,7 +407,7 @@ public actor LayerMinusBridge {
 				do {
 					// 同样传递 bridgeId 和 connectInfo
 					for try await data in remote.receiveStream(
-						maxLength: 512 * 1024,
+						maxLength: 128 * 1024,
 						bridgeId: self.id,
 						connectInfo: self.connectInfo
 					) {
@@ -423,14 +423,22 @@ public actor LayerMinusBridge {
 			}
 		}
 
-		// 统一收尾：给在途 completion 一个“极小宽限期”再 cancel
-		if !closed {
-			let reason = (c2sHadError || s2cHadError)
-				? "bridge completed (had half-side error)"
-				: "bridge completed"
-			await delayMs(150)       // ← 关键：避免 89 号错误后的过早 cancel
-			if !closed { cancel(reason: reason) }
-		}
+        // 统一收尾：不再固定 500ms cancel，改为“等待另一侧结束或空闲超时”
+        if !closed {
+            let bothOk = !(c2sHadError || s2cHadError)
+            let reason = bothOk ? "bridge completed" : "bridge half-close"
+
+            // 等待对端在短期内自然结束（尤其是大图/视频上行完成）
+            var waited = 0
+            while !closed && waited < 20_000 { // 20s 上限
+                await delayMs(200)
+                waited += 200
+                // 如果真的都空了，跳出
+                // （这里保持简单：由对端 EOF 驱动结束；无额外探针）
+            }
+
+            if !closed { cancel(reason: reason + " waited_ms=\(waited)") }
+        }
     
 	}
 
@@ -509,7 +517,13 @@ public actor LayerMinusBridge {
     private func kpiLog(reason: String) {
         let now = DispatchTime.now()
         let durMs = Double(now.uptimeNanoseconds - tStart.uptimeNanoseconds) / 1e6
-        log("KPI host=\(targetHost):\(targetPort) reason=\(reason) up_bytes=\(bytesUp) down_bytes=\(bytesDown) dur_ms=\(String(format: "%.1f", durMs))")
+        var extra = ""
+        if let fb = tFirstByte {
+            let fbMs = Double(fb.uptimeNanoseconds - tStart.uptimeNanoseconds) / 1e6
+            extra += String(format: " first_byte_ms=%.1f", fbMs)
+        }
+        extra += " half_close_events=\(closed ? 1 : 0)"
+        log("KPI host=\(targetHost):\(targetPort) reason=\(reason) up_bytes=\(bytesUp) down_bytes=\(bytesDown) dur_ms=\(String(format: "%.1f", durMs))\(extra)")
     }
 
     deinit {
@@ -554,7 +568,7 @@ struct NWReceiveSequence: AsyncSequence {
 		
 		// 缓冲区配置
 		private let minBuffer = 4 * 1024
-		private let maxBuffer = 512 * 1024
+		private let maxBuffer = 128 * 1024
 		private let growthStep = 16 * 1024
 		private let memoryWarningThreshold = 38 * 1024 * 1024
 		
@@ -631,7 +645,7 @@ struct NWReceiveSequence: AsyncSequence {
 			if currentMemory >= memoryWarningThreshold {
 				// 达到警戒线：仅在当前缓冲 > 128KB 时减半；<=128KB 保持不变
 				if currentBufferSize > 128 * 1024 {
-					let newSize = Swift.max(currentBufferSize / 4, minBuffer)
+					let newSize = Swift.max(currentBufferSize / 2, minBuffer)
 					#if DEBUG
 					NSLog("\(makeLogTag()) 🔵🔵🔵 Memory pressure \(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
 						+ "shrink \(currentBufferSize/1024)KB → \(newSize/1024)KB")
@@ -718,10 +732,12 @@ struct NWReceiveSequence: AsyncSequence {
     }
 }
 
+private let GLOBAL_MAX_BUFFER = 128 * 1024
 extension NWConnection {
+    
     /// Pull-driven stream: next() triggers exactly one receive
     func receiveStream(maxLength: Int, bridgeId: UInt64 = 0, connectInfo: String? = nil) -> NWReceiveSequence {
-        NWReceiveSequence(conn: self, max: maxLength, bridgeId: bridgeId, connectInfo: connectInfo)
+        NWReceiveSequence(conn: self, max: GLOBAL_MAX_BUFFER, bridgeId: bridgeId, connectInfo: connectInfo)
     }
 }
 

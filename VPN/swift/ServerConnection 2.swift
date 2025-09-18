@@ -315,7 +315,7 @@ public final class ServerConnection {
                     self.log("recvBuffer exceeded soft limit (\(self.recvBuffer.count)B) -> close to protect memory")
 
                     // 仅保留最新 1MB，避免 OOM 同时不中断连接
-                    let KEEP = 512 * 1024
+                    let KEEP = 64 * 1024
                     if self.recvBuffer.count > KEEP {
                         self.recvBuffer = self.recvBuffer.suffix(KEEP)
                     }
