@@ -928,7 +928,7 @@ public final class ServerConnection {
 
         if isIPAddress(host) {
             if isTelegramIP(host) {
-                useLayerMinus = true
+                useLayerMinus = false
                 log("🔵 TELEGRAM IP detected: \(host):\(port) -> force LayerMinus")
             } else {
                 useLayerMinus = false

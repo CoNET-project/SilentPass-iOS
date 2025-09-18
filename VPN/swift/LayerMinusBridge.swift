@@ -121,7 +121,13 @@ public actor LayerMinusBridge {
             .flatMap(Double.init) ?? 60.0
 
         // 针对 Telegram 目的端放宽
-        if targetHost.hasSuffix("telegram.org") || targetHost.hasPrefix("149.154.") {
+        
+        // 识别 Instagram 流量
+        let isInstagram = targetHost.contains("instagram") ||
+                          targetHost.contains("fbcdn") ||
+                          targetHost.contains("facebook")
+        
+        if targetHost.hasSuffix("telegram.org") || targetHost.hasPrefix("149.154.") || isInstagram {
             timeoutSec = 90.0  // 介于 75–90s
         }
 
@@ -385,9 +391,20 @@ public actor LayerMinusBridge {
 					log("Connection reset detected (ECONNRESET), no retry in DIRECT mode")
 				case .ENETDOWN:
                     // 标记路径处于抖动期：1.2s 退避窗口，并以 path_down 原因收尾
-                    let until = DispatchTime.now().uptimeNanoseconds &+ 1_200_000_000
-                    BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil = max(BridgeGlobals.pathDownUntil, until) }
-                    log("Network down detected (ENETDOWN) → set backoff 1200ms; cause=path_down")
+//                    let until = DispatchTime.now().uptimeNanoseconds &+ 1_200_000_000
+//                    BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil = max(BridgeGlobals.pathDownUntil, until) }
+//                    log("Network down detected (ENETDOWN) → set backoff 1200ms; cause=path_down")
+                    
+                        // 400–900ms 抖动退避，并设置 3s 冷却窗口避免频繁刷新
+                        let jitterMs = 400 + Int(arc4random_uniform(500)) // [400,900)
+                        let now = DispatchTime.now().uptimeNanoseconds
+                        let currentUntil = BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil }
+                        // 若已设置且距离现在 < 3s，则不刷新，避免持续粘滞
+                        let newUntil: UInt64 = (currentUntil > now && currentUntil - now < 3_000_000_000)
+                            ? currentUntil
+                            : now &+ UInt64(jitterMs) * 1_000_000
+                        BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil = newUntil }
+                        log("Network down (ENETDOWN) → backoff \(jitterMs)ms (cooldown 3s); cause=path_down")
                     await delayMs(50)
                     if !closed { cancel(reason: "path_down(enetdown)") }
                     return
@@ -602,7 +619,6 @@ public actor LayerMinusBridge {
 }
 
 
-
 // MARK: - Async wrappers & pull-driven receive (no prefetch → true backpressure)
 
 
@@ -613,7 +629,11 @@ struct NWReceiveSequence: AsyncSequence {
 		private let baseMax: Int
 		private var consecutiveEmptyReads = 0
 		private var consecutiveDataReads = 0
-		private var currentBufferSize = 16 * 1024
+		private var currentBufferSize = 64 * 1024
+        
+        // 统计小块累计量，辅助触发增长
+        private var accumBytes: Int = 0
+        
 		private let bridgeId: UInt64
 		private let connectInfo: String?
         
@@ -621,16 +641,19 @@ struct NWReceiveSequence: AsyncSequence {
         private var firstByteAt: UInt64? = nil
 		
 		// 缓冲区配置
-		private let minBuffer = 16 * 1024
+        // 允许更低的最小缓冲以发挥“暖机跳变”的作用
+        private let minBuffer = 64 * 1024
+        
 		private let maxBuffer = GLOBAL_MAX_BUFFER
-		private let growthStep = 32 * 1024
-		private let memoryWarningThreshold = 38 * 1024 * 1024
+		private let growthStep = 256 * 1024
+		private let memoryWarningThreshold = 48 * 1024 * 1024
 		
 		init(conn: NWConnection, max: Int, bridgeId: UInt64, connectInfo: String?) {
 			self.conn = conn
 			self.baseMax = max
 			self.bridgeId = bridgeId
 			self.connectInfo = connectInfo
+            
 		}
 		
 		private func makeLogTag() -> String {
@@ -679,12 +702,17 @@ struct NWReceiveSequence: AsyncSequence {
                                 NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Warmup jump: \(currentBufferSize/1024)KB → 64KB after first byte")
                         #endif
                         currentBufferSize = 64 * 1024
+
                         }
                     }
 
                     
 					consecutiveEmptyReads = 0
 					consecutiveDataReads += 1
+                    
+                    
+                    // 统计小块总量 —— 为累计触发增长做准备
+                    accumBytes &+= d.count
 					
                     // 放宽额外计数触发：由 3/4 改为 1/2
 					if d.count >= currentBufferSize * 1 / 2 {
@@ -718,7 +746,8 @@ struct NWReceiveSequence: AsyncSequence {
                 return false
             }()
             
-            let warmupMin = 32 * 1024
+            // 暖机期希望维持更高的下限（避免首屏被过度收缩）
+            let warmupMin = 128 * 1024
 			
 			// 内存压力检查
 			if currentMemory >= memoryWarningThreshold {
@@ -742,8 +771,9 @@ struct NWReceiveSequence: AsyncSequence {
 				return
 			}
 			
-			// 增长逻辑：仅在内存充足时
-			if consecutiveDataReads >= 3 && currentBufferSize < maxBuffer {
+            // 增长逻辑：仅在内存充足时；支持“小块累计触发”
+            if currentBufferSize < maxBuffer &&
+                (consecutiveDataReads >= 3 || accumBytes >= currentBufferSize * 2) {
 				let projectedMemory = currentMemory + Int64(growthStep)
 				if projectedMemory < memoryWarningThreshold {
 					let newSize = Swift.min(currentBufferSize + growthStep, maxBuffer)
@@ -752,6 +782,9 @@ struct NWReceiveSequence: AsyncSequence {
 						NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Buffer growing: \(currentBufferSize/1024)KB → \(newSize/1024)KB (RSS: \(currentMemory/(1024*1024))MB)")
 						#endif
 						currentBufferSize = newSize
+                        
+                        // 增长后清理一部分累计，避免连锁暴涨
+                        accumBytes = accumBytes / 2
 					}
 				} else {
 					#if DEBUG
@@ -760,27 +793,45 @@ struct NWReceiveSequence: AsyncSequence {
 				}
 			}
 			// 缩减逻辑
-			else if consecutiveEmptyReads >= 3 && currentBufferSize > minBuffer {
-                // 暖机期将收缩下限提升到 32KB，避免网页型小包在首屏阶段被过度收缩
-                let floor = inWarmup ? Swift.max(minBuffer, warmupMin) : minBuffer
+            // 收缩逻辑：暖机期禁收缩；非暖机更温和且提高空读阈值
+            else if !inWarmup && consecutiveEmptyReads >= 4 && currentBufferSize > minBuffer {
+                let floor = minBuffer
+                // 采用 3/4、2/3、1/2 的柔性阶梯，避免抖动
                 let targetSize: Int
-                
-				switch consecutiveEmptyReads {
-				case 3...5:
-                    targetSize = Swift.max(currentBufferSize / 2, floor)
-				case 6...10:
-                    targetSize = Swift.max(currentBufferSize / 4, floor)
-				default:
-                    targetSize = floor
-				}
-				
-				if targetSize != currentBufferSize {
-					#if DEBUG
-					NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Buffer shrinking: \(currentBufferSize/1024)KB → \(targetSize/1024)KB")
-					#endif
-					currentBufferSize = targetSize
-				}
-			}
+                switch consecutiveEmptyReads {
+                case 6...8:   targetSize = Swift.max(currentBufferSize * 3 / 4, floor)
+                case 9...12:  targetSize = Swift.max(currentBufferSize * 2 / 3, floor)
+                default:      targetSize = Swift.max(currentBufferSize / 2, floor)
+                }
+                if targetSize != currentBufferSize {
+            #if DEBUG
+                    NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Buffer shrinking: \(currentBufferSize/1024)KB → \(targetSize/1024)KB (idle reads \(consecutiveEmptyReads))")
+            #endif
+                    currentBufferSize = targetSize
+                }
+            }
+            
+            #if DEBUG
+                if inWarmup && consecutiveEmptyReads >= 6 {
+                    NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Warmup(no-shrink): empty=\(consecutiveEmptyReads) keep=\(currentBufferSize/1024)KB")
+                }
+            #endif
+            
+            // ⏫ 时间边界保障：首包后 0.6s/1.2s 内至少拉到 256/512KB
+            if let t0 = firstByteAt {
+                    let elapsed = nowNs &- t0
+                if elapsed > 600_000_000 && currentBufferSize < 256 * 1024 {
+                    currentBufferSize = 256 * 1024
+                #if DEBUG
+                        NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Warmup time-guard: bump → 256KB")
+                #endif
+                } else if elapsed > 1_200_000_000 && currentBufferSize < 512 * 1024 {
+                        currentBufferSize = 512 * 1024
+                #if DEBUG
+                        NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Warmup time-guard: bump → 512KB")
+                #endif
+                }
+            }
 		}
 	}
 
@@ -817,7 +868,7 @@ struct NWReceiveSequence: AsyncSequence {
     }
 }
 
-private let GLOBAL_MAX_BUFFER = 2 * 1024 * 1024
+private let GLOBAL_MAX_BUFFER = 3 * 1024 * 1024
 extension NWConnection {
     
     /// Pull-driven stream: next() triggers exactly one receive
