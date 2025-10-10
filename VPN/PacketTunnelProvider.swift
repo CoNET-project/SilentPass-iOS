@@ -4,85 +4,8 @@
 //  Created by peter xie on 2021-10-18.
 //
 
-
 import NetworkExtension
 import os.log
-import vpn2socks
-
-
-// —— Helpers ——
-
-// 轻量 IPv4 校验
-private func isValidIPv4(_ s: String) -> Bool {
-    let parts = s.split(separator: ".")
-    guard parts.count == 4 else { return false }
-    for p in parts {
-        guard let v = Int(p), (0...255).contains(v) else { return false }
-        // 允许 "0"；不做严格前导零限制，真实环境更宽容
-    }
-    return true
-}
-
-
-
-// 为了 JSON 解码写个局部 Node（避免与你项目里已有 Node 重名冲突）
-private struct _Node: Codable {
-    let ip_addr: String
-}
-
-// 同时兼容三种放法：
-// 1) JSON 字符串（[Node]）或 Data
-// 2) NSArray<[NSDictionary]>（键含 "ip_addr"）
-// 3) NSArray<[String]>（元素可能是 "IP" 或 "IP:port"）
-private func decodeNodeIPs(from any: NSObject?) -> [String] {
-    guard let any else { return [] }
-
-    // NSData（JSON）
-    if let data = any as? NSData {
-        if let nodes = try? JSONDecoder().decode([_Node].self, from: data as Data) {
-            return nodes.map(\.ip_addr)
-        }
-    }
-
-    // NSString（JSON 文本 或 单个 "IP[:port]"）
-    if let s = any as? NSString {
-        let str = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let data = str.data(using: .utf8),
-           let nodes = try? JSONDecoder().decode([_Node].self, from: data) {
-            return nodes.map(\.ip_addr)
-        }
-        // 非 JSON：当作 "IP[:port]"
-        let head = str.split(separator: ":").first.map(String.init) ?? str
-        return [head]
-    }
-
-    // NSArray
-    if let arr = any as? NSArray {
-        var out: [String] = []
-        for e in arr {
-            if let d = e as? NSDictionary, let ip = d["ip_addr"] as? String {
-                out.append(ip)
-            } else if let s = e as? NSString {
-                let head = s.components(separatedBy: [":","/"]).first ?? (s as String)
-                out.append(head)
-            }
-        }
-        return out
-    }
-
-    return []
-}
-
-// 从 options 里抓两组节点的 IPv4，转成 /32
-private func collectNodeCIDRs(options: [String: NSObject]?) -> [String] {
-    var ips = Set<String>()
-    for key in ["entryNodes", "egressNodes"] {
-        for ip in decodeNodeIPs(from: options?[key]) where isValidIPv4(ip) {
-            ips.insert(ip)
-        }
-    }
-    return ips.map { "\($0)/32" }
-}
 
 
 func nodeJSON (nodeJsonStr: String) -> [Node] {
@@ -96,81 +19,152 @@ func nodeJSON (nodeJsonStr: String) -> [Node] {
     
 }
 
-// --- 有序收集节点 /32 CIDR：entry 在前，egress 在后 ---
-func collectNodeCIDRsInOrder(_ options: [String: NSObject]?) -> [String] {
-    // 你之前已经有 decodeNodeIPs/isValidIPv4 等工具；这里复用
-    func cidrs(from any: NSObject?) -> [String] {
-        let ips = decodeNodeIPs(from: any)  // -> [String]，提取 ip_addr
-        return ips.filter { isValidIPv4($0) }.map { "\($0)/32" }
-    }
-    let entry = cidrs(from: options?["entryNodes"])
-    let egress = cidrs(from: options?["egressNodes"])
-    // 按 entry→egress 的顺序返回（此处不去重，统一在下面做“有序去重拼接”）
-    return entry + egress
-}
 
-@inline(__always)
-func orderedUniqueConcat(front: [String], back: [String]) -> [String] {
-    var seen = Set<String>()
-    var out: [String] = []
-    out.reserveCapacity(front.count + back.count)
-
-    for s in front {
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !t.isEmpty, seen.insert(t).inserted { out.append(t) }
-    }
-    for s in back {
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !t.isEmpty, seen.insert(t).inserted { out.append(t) }
-    }
-    return out
-}
-
-
-class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
-    private var socksServer: Server?
+class PacketTunnelProvider: NEPacketTunnelProvider {
+    var socksServer: Server
     let port = 8888
-    
+    let localhost = "127.0.0.1"
+    let VirtualIP = "10.222.222.222"
 
     override init() {
-        super.init()
-        let s = Server(port: 8888)
-        self.socksServer = s
+        self.socksServer = Server(port:8888)
         do {
-            try self.socksServer?.start()
+            try socksServer.start()
             NSLog("PacketTunnelProvider SOCKS server started.")
         } catch {
             NSLog("Failed to start SOCKS server: \(error)")
         }
+        
+    }
+    
+    public static func createPACSettings() -> NEProxySettings {
+        let proxySettings = NEProxySettings()
+        
+        // 启用PAC自动配置
+        proxySettings.autoProxyConfigurationEnabled = true
+        proxySettings.proxyAutoConfigurationURL = URL(string: "http://127.0.0.1:8888/pac")
+        proxySettings.httpEnabled = false
+        proxySettings.httpsEnabled = false
+        // 排除简单主机名
+        proxySettings.excludeSimpleHostnames = true
+        
+        // 设置例外列表（直接连接）
+        proxySettings.exceptionList = [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "*.local",
+            "169.254/16",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16"
+        ]
+        
+        
+        // 匹配所有域名
+        proxySettings.matchDomains = [""]
+        
+        return proxySettings
     }
 
     override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         
-        // 先拷贝一份可变 options
-        var opts: [String: NSObject] = options ?? [:]
-        let nodeCIDRs = collectNodeCIDRsInOrder(options)
-        let allowlistCIDRs = Allowlist.ipv4CIDRsRaw
-        let merged = orderedUniqueConcat(front: nodeCIDRs, back: allowlistCIDRs)
-
-        // 传给 vpn2socks 的扩展键（保持既有 Key）
-        opts["LM.extraExcludedCIDRs"] = (merged as NSArray)
-
-        // （可选）打印前几项确认顺序：节点 /32 应该出现在最前面
-        NSLog("[PTP] LM.extraExcludedCIDRs (head) %@", Array(merged.prefix(30)) as NSArray)
+        NSLog("[PacketTunnelProvider] Starting tunnel...")
+        
+        guard let options = options else {
+            completionHandler(NSError(domain: "NEPacketTunnelProviderError", code: -1,
+                                      userInfo: [NSLocalizedDescriptionKey: "No options provided"]))
+            return
+        }
+        
+    
+        
+        // Configure TUN settings with APNs exclusions
+        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
+        let ip = "172.16.0.1"
+        let mask = "255.255.255.0"
+        
+        let v4 = NEIPv4Settings(addresses: [ip], subnetMasks: [mask])
+        
+        // ✅ 修改路由配置：默认走隧道，后续通过 excludedRoutes 进行精确绕行
+        v4.includedRoutes = [
+            NEIPv4Route.default()
+        ]
+        
+        // ✅ 新增：排除苹果推送网段和其他本地网络
+        v4.excludedRoutes = [
+            // 苹果推送服务网段 (17.0.0.0/8) - 核心APNs网段
+            NEIPv4Route(destinationAddress: "17.0.0.0", subnetMask: "255.0.0.0"),
+            
+            // 本地网络
+            NEIPv4Route(destinationAddress: "192.168.0.0", subnetMask: "255.255.0.0"),
+            NEIPv4Route(destinationAddress: "10.0.0.0", subnetMask: "255.0.0.0"),
+            NEIPv4Route(destinationAddress: "127.0.0.0", subnetMask: "255.0.0.0"),
+            NEIPv4Route(destinationAddress: "169.254.0.0", subnetMask: "255.255.0.0"),
+            // 其他苹果服务网段
+            NEIPv4Route(destinationAddress: "23.0.0.0", subnetMask: "255.0.0.0"),        // Apple CDN
+            NEIPv4Route(destinationAddress: "143.224.0.0", subnetMask: "255.240.0.0"),   // Apple 服务
+            NEIPv4Route(destinationAddress: "144.178.0.0", subnetMask: "255.254.0.0"),   // Apple 服务备用
+            NEIPv4Route(destinationAddress: "199.47.192.0", subnetMask: "255.255.224.0"), // Apple 推送备用
+            NEIPv4Route(destinationAddress: "38.102.126.50", subnetMask: "255.0.0.0"),
+            NEIPv4Route(destinationAddress: "172.67.215.169", subnetMask: "255.255.255.0"),
+            NEIPv4Route(destinationAddress: "1.1.1.1", subnetMask: "255.255.255.0"),
+            NEIPv4Route(destinationAddress: "8.8.8.8", subnetMask: "255.255.255.0"),
+            NEIPv4Route(destinationAddress: "208.67.222.222", subnetMask: "255.255.255.0"),
+            // 🔥 腾讯/微信 IP 段
+                NEIPv4Route(destinationAddress: "101.32.0.0", subnetMask: "255.255.0.0"),     // 腾讯云
+                NEIPv4Route(destinationAddress: "101.33.0.0", subnetMask: "255.255.0.0"),     // 腾讯云
+                NEIPv4Route(destinationAddress: "101.89.0.0", subnetMask: "255.255.0.0"),     // 微信
+                NEIPv4Route(destinationAddress: "101.91.0.0", subnetMask: "255.255.0.0"),     // 微信
+                NEIPv4Route(destinationAddress: "101.226.0.0", subnetMask: "255.255.0.0"),    // 微信
+                NEIPv4Route(destinationAddress: "101.227.0.0", subnetMask: "255.255.0.0"),    // 微信
+                NEIPv4Route(destinationAddress: "103.7.28.0", subnetMask: "255.255.252.0"),   // 微信海外
+                NEIPv4Route(destinationAddress: "109.244.0.0", subnetMask: "255.255.0.0"),    // 腾讯云
+                NEIPv4Route(destinationAddress: "110.52.193.0", subnetMask: "255.255.255.0"), // 微信
+                NEIPv4Route(destinationAddress: "110.53.0.0", subnetMask: "255.255.0.0"),     // 微信
+                NEIPv4Route(destinationAddress: "111.30.0.0", subnetMask: "255.254.0.0"),     // 腾讯
+                NEIPv4Route(destinationAddress: "112.53.0.0", subnetMask: "255.255.0.0"),     // 微信
+                NEIPv4Route(destinationAddress: "112.60.0.0", subnetMask: "255.252.0.0"),     // 微信
+                NEIPv4Route(destinationAddress: "112.64.0.0", subnetMask: "255.192.0.0"),     // 微信
+                NEIPv4Route(destinationAddress: "112.90.0.0", subnetMask: "255.254.0.0"),     // 腾讯
+                NEIPv4Route(destinationAddress: "113.96.0.0", subnetMask: "255.224.0.0"),     // 腾讯
+                NEIPv4Route(destinationAddress: "115.159.0.0", subnetMask: "255.255.0.0"),    // 腾讯云
+                NEIPv4Route(destinationAddress: "117.184.0.0", subnetMask: "255.248.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "119.28.0.0", subnetMask: "255.255.0.0"),     // 腾讯云
+                NEIPv4Route(destinationAddress: "119.29.0.0", subnetMask: "255.255.0.0"),     // 腾讯云
+                NEIPv4Route(destinationAddress: "119.147.0.0", subnetMask: "255.255.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "120.198.0.0", subnetMask: "255.255.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "120.232.0.0", subnetMask: "255.252.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "121.51.0.0", subnetMask: "255.255.0.0"),     // 腾讯
+                NEIPv4Route(destinationAddress: "129.226.0.0", subnetMask: "255.255.0.0"),    // 腾讯云国际
+                NEIPv4Route(destinationAddress: "140.206.0.0", subnetMask: "255.255.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "140.207.0.0", subnetMask: "255.255.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "150.109.0.0", subnetMask: "255.255.0.0"),    // 腾讯云
+                NEIPv4Route(destinationAddress: "162.62.0.0", subnetMask: "255.255.0.0"),     // 腾讯云海外
+                NEIPv4Route(destinationAddress: "180.96.0.0", subnetMask: "255.254.0.0"),     // 腾讯
+                NEIPv4Route(destinationAddress: "180.163.0.0", subnetMask: "255.255.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "182.254.0.0", subnetMask: "255.255.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "183.192.0.0", subnetMask: "255.192.0.0"),    // 腾讯
+                NEIPv4Route(destinationAddress: "203.205.128.0", subnetMask: "255.255.128.0"), // 腾讯
+                NEIPv4Route(destinationAddress: "211.95.0.0", subnetMask: "255.255.0.0"),     // 腾讯
+                NEIPv4Route(destinationAddress: "220.196.0.0", subnetMask: "255.252.0.0"),    // 腾讯
+                
+        ]
+        
+        settings.ipv4Settings = v4
+        settings.proxySettings = PacketTunnelProvider.createPACSettings()
+        settings.mtu = 1400
+    
+        
 
         
-        super.startTunnel(options: opts) { error in
-            // 5. 在核心逻辑完成后，你可以执行后续的自定义操作
-            if let _ = error {
-                NSLog("PacketTunnelProvider Target: Core logic failed. Cleaning up.")
-                // 处理错误
+        setTunnelNetworkSettings(settings) { error in
+            if let error = error {
+                NSLog("❌ PacketTunnelProvider.setTunnelNetworkSettings error: \(error)")
+                completionHandler(error)
             } else {
-                NSLog("PacketTunnelProvider Target: Core logic succeeded. Tunnel is up.")
-                guard let options = options else {
-                    completionHandler(NSError(domain: "NEPacketTunnelProviderError", code: -1,
-                                              userInfo: [NSLocalizedDescriptionKey: "No options provided"]))
-                    return
-                }
+                NSLog("✅ PacketTunnelProvider.setTunnelNetworkSettings succeeded, calling completionHandler(nil)")
+                
                 
                 let entryNodesStr = options["entryNodes"] as? String ?? ""
                 let egressNodesStr = options["egressNodes"] as? String ?? ""
@@ -178,35 +172,32 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
                 let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
                 
-                
                 do {
-                    try self.socksServer?.start()
-                    self.socksServer?.layerMinusInit(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
-                    NSLog("PacketTunnelProvider SOCKS server started.")
+                    try self.socksServer.start()
+                    self.socksServer.layerMinusInit(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
+                    NSLog("PacketTunnelProvider SOCKS server started with entryNodes \(entryNodes.count) egressNodes \(egressNodes.count).")
                 } catch {
-                    NSLog("Failed to start SOCKS server: \(error)")
+                    NSLog("Failed to start SOCKS server: \(error) entryNodes \(entryNodes.count) egressNodes \(egressNodes.count)")
                 }
                 
-                // 最后，调用 completionHandler 通知系统
-                completionHandler(error)
                 
+                completionHandler(nil)
             }
-            
-            
         }
+        
+
+
+        
         
     }
 
+    private func setup(entryNodes: [String], egressNodes: [String], completionHandler: @escaping (Error?) -> Void) {
+    }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         NSLog("🛑 PacketTunnelProvider.stopTunnel called, reason: \(reason.rawValue)")
-        socksServer?.stop()
-        socksServer = nil
-        super.stopTunnel(with: reason) {
-            NSLog("PacketTunnelProvider: Core tunnel stopped. Finalizing cleanup.")
-            // 核心隧道停止后的最终清理
-            completionHandler()
-        }
+        socksServer.stop()
+        completionHandler()
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
@@ -222,7 +213,4 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     override func wake() {
         NSLog("🔔 PacketTunnelProvider.wake called")
     }
-}
-extension Notification.Name {
-    static let didUpdateConnectionNodes = Notification.Name("didUpdateConnectionNodes")
 }

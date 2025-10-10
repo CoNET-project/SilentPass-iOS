@@ -594,3 +594,7 @@ extension Node {
                nftNumber.isEmpty
     }
 }
+
+extension Notification.Name {
+    static let didUpdateConnectionNodes = Notification.Name("didUpdateConnectionNodes")
+}
