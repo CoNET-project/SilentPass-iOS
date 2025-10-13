@@ -1,66 +1,181 @@
-Sep 10 19:48:27 ubuntu conet-si[9100]: worker : 1  [19:48:27:786] getAllNodes success! Guardian_Nodes = 0
-Sep 10 19:48:27 ubuntu conet-si[9100]: (node:9100) ExperimentalWarning: The Ed25519 Web Crypto API algorithm is an experimental feature and might change at any time
-Sep 10 19:48:27 ubuntu conet-si[9100]: (Use `node --trace-warnings ...` to show where the warning was created)
-Sep 10 19:48:27 ubuntu conet-si[9100]: (node:9100) ExperimentalWarning: The X25519 Web Crypto API algorithm is an experimental feature and might change at any time
-Sep 10 19:48:27 ubuntu conet-si[9100]: worker : 1  [19:48:27:856] getFaucet for 0x90a5bF9A75cCea40Af8E5171916a6b1b3d244521
-Sep 10 19:48:28 ubuntu conet-si[9100]: worker : 1  [19:48:28:926] startEPOCH_EventListeningForMining START
-Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] cancun Result(4) [ 6720n, 1757603399n, 1n, false ]
-Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] Result(4) [ 6720n, 1757603399n, 1n, false ]
-Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] Result(4) [ 0n, 0n, 0n, false ]
-Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] cancun Result(4) [ 6720n, 1757603399n, 1n, false ]
-Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] Result(4) [ 6720n, 1757603399n, 1n, false ]
-Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:545] Result(4) [ 0n, 0n, 0n, false ]
-Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:546] SaaS_Sock5_v2 ==========> can not found peer with Securitykey {
-Sep 10 19:48:31 ubuntu conet-si[9100]:   Securitykey: '620144D25E0644F68F0A078E0834B1DD',
-Sep 10 19:48:31 ubuntu conet-si[9100]:   socket: '216.225.198.118'
-Sep 10 19:48:31 ubuntu conet-si[9100]: } add to peerPool and wait another connection
-Sep 10 19:48:31 ubuntu conet-si[9100]: worker : 1  [19:48:31:546] SaaS_Sock5_v2 ==========> found peer with Securitykey 620144D25E0644F68F0A078E0834B1DD ! start resConnect
-Sep 10 19:48:32 ubuntu conet-si[9100]: worker : 1  [19:48:32:962] startEPOCH_EventListeningForMining on Block 3039617 START!
-Sep 10 19:48:32 ubuntu conet-si[9100]: worker : 1  [19:48:32:962]
-Sep 10 19:48:32 ubuntu conet-si[9100]: 
-Sep 10 19:48:35 ubuntu conet-si[9100]: worker : 1  [19:48:35:605] SaaS_Sock5_v2 ==========> can not found peer with Securitykey {
-Sep 10 19:48:35 ubuntu conet-si[9100]:   Securitykey: 'A9DE4043AC7D4869BC5D45FDA2E3B292',
-Sep 10 19:48:35 ubuntu conet-si[9100]:   socket: '216.225.198.118'
-Sep 10 19:48:35 ubuntu conet-si[9100]: } add to peerPool and wait another connection
-Sep 10 19:48:35 ubuntu conet-si[9100]: worker : 1  [19:48:35:632] SaaS_Sock5_v2 ==========> found peer with Securitykey A9DE4043AC7D4869BC5D45FDA2E3B292 ! start resConnect
-Sep 10 19:48:36 ubuntu conet-si[9100]: worker : 1  [19:48:36:999] startEPOCH_EventListeningForMining on Block 3039618 START!
-Sep 10 19:48:36 ubuntu conet-si[9100]: worker : 1  [19:48:36:999]
-Sep 10 19:48:36 ubuntu conet-si[9100]: 
-Sep 10 19:48:37 ubuntu conet-si[9100]: worker : 1  [19:48:36:999] moveData doing 3039618 validatorPool.get (5)
-Sep 10 19:48:37 ubuntu conet-si[9100]: worker : 1  [19:48:37:0] gossipStart sendEpoch 3039618 totalMiners 5 total Users 0
-Sep 10 19:48:37 ubuntu conet-si[9100]: worker : 1  [19:48:37:0] stratliveness EPOCH 3039618 starting! 0x90a5bF9A75cCea40Af8E5171916a6b1b3d244521 Pool length = [11]
-Sep 10 19:48:39 ubuntu conet-si[9100]: Client disconnected.
-Sep 10 19:48:39 ubuntu conet-si[9100]: Client disconnected.
-Sep 10 19:48:43 ubuntu conet-si[9100]: worker : 1  [19:48:43:466] SaaS_Sock5_v2 ==========> can not found peer with Securitykey {
-Sep 10 19:48:43 ubuntu conet-si[9100]:   Securitykey: 'F993A006F3FF434CAB1BDF1AD052B85C',
-Sep 10 19:48:43 ubuntu conet-si[9100]:   socket: '216.225.198.118'
-Sep 10 19:48:43 ubuntu conet-si[9100]: } add to peerPool and wait another connection
-Sep 10 19:48:43 ubuntu conet-si[9100]: worker : 1  [19:48:43:493] SaaS_Sock5_v2 ==========> found peer with Securitykey F993A006F3FF434CAB1BDF1AD052B85C ! start resConnect
-Sep 10 19:48:43 ubuntu conet-si[9100]: Client disconnected.
-Sep 10 19:48:43 ubuntu conet-si[9100]: Client disconnected.
-Sep 10 19:48:45 ubuntu conet-si[9100]: worker : 1  [19:48:45:75] startEPOCH_EventListeningForMining on Block 3039619 START!
-Sep 10 19:48:45 ubuntu conet-si[9100]: worker : 1  [19:48:45:75]
-Sep 10 19:48:45 ubuntu conet-si[9100]: 
-Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:109] startEPOCH_EventListeningForMining on Block 3039620 START!
-Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:109]
-Sep 10 19:48:49 ubuntu conet-si[9100]: 
-Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:110] moveData doing 3039620 validatorPool.get (7)
-Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:110] gossipStart sendEpoch 3039620 totalMiners 7 total Users 0
-Sep 10 19:48:49 ubuntu conet-si[9100]: worker : 1  [19:48:49:110] stratliveness EPOCH 3039620 starting! 0x90a5bF9A75cCea40Af8E5171916a6b1b3d244521 Pool length = [11]
-Sep 10 19:48:51 ubuntu conet-si[9100]: Client disconnected.
-Sep 10 19:48:51 ubuntu conet-si[9100]: Client disconnected.
-Sep 10 19:48:55 ubuntu conet-si[9100]: worker : 1  [19:48:55:412] SaaS_Sock5_v2 ==========> can not found peer with Securitykey {
-Sep 10 19:48:55 ubuntu conet-si[9100]:   Securitykey: 'E962D125BB604771985031EB0F3EE147',
-Sep 10 19:48:55 ubuntu conet-si[9100]:   socket: '74.208.184.207'
-Sep 10 19:48:55 ubuntu conet-si[9100]: } add to peerPool and wait another connection
-Sep 10 19:48:55 ubuntu conet-si[9100]: worker : 1  [19:48:55:419] SaaS_Sock5_v2 ==========> found peer with Securitykey E962D125BB604771985031EB0F3EE147 ! start resConnect
-Sep 10 19:48:57 ubuntu conet-si[9100]: worker : 1  [19:48:57:186] startEPOCH_EventListeningForMining on Block 3039621 START!
-Sep 10 19:48:57 ubuntu conet-si[9100]: worker : 1  [19:48:57:186]
-Sep 10 19:48:57 ubuntu conet-si[9100]: 
-Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:219] startEPOCH_EventListeningForMining on Block 3039622 START!
-Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:219]
-Sep 10 19:49:01 ubuntu conet-si[9100]: 
-Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:220] moveData doing 3039622 validatorPool.get (7)
-Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:220] gossipStart sendEpoch 3039622 totalMiners 7 total Users 0
-Sep 10 19:49:01 ubuntu conet-si[9100]: worker : 1  [19:49:1:220] stratliveness EPOCH 3039622 starting! 0x90a5bF9A75cCea40Af8E5171916a6b1b3d244521 Pool length = [11]
-Sep 10 19:49:03 ubuntu conet-si[9100]: Clie
+11.12.0 - [FirebaseAnalytics][I-ACS023007] Analytics v.11.12.0 started
+11.12.0 - [FirebaseAnalytics][I-ACS023008] To enable debug logging set the following application argument: -FIRAnalyticsDebugEnabled (see http://goo.gl/RfcP7r)
+11.12.0 - [FirebaseAnalytics][I-ACS044002] The AdSupport Framework is not currently linked. Some features will not function properly. Learn more at http://goo.gl/9vSsPb
+11.12.0 - [FirebaseAnalytics][I-ACS800023] No pending snapshot to activate. SDK name: app_measurement
+11.12.0 - [FirebaseAnalytics][I-ACS023012] Analytics collection enabled
+11.12.0 - [FirebaseAnalytics][I-ACS023220] Analytics screen reporting is enabled. Call Analytics.logEvent(AnalyticsEventScreenView, parameters: [...]) to log a screen view event. To disable automatic screen reporting, set the flag FirebaseAutomaticScreenReportingEnabled to NO (boolean) in the Info.plist
+[NativeBridge] [NativeBridge] attachLocalServer: server=0x000000010346d540 VC=0x000000010372ca00
+[NativeBridge] [NativeBridge] startVPNHandler invoked
+[NativeBridge] [NativeBridge] stopVPNHandler invoked -> will call vPNManager.stopVPN()
+✅ Network available
+app已经进入前台
+CoreUI: CUIThemeStore: No theme registered with id=0
+CoreUI: CUIThemeStore: No theme registered with id=0
+{"msg":"#Warning Error reading file", "file":"\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist", "error":"Error Domain=NSCocoaErrorDomain Code=257 \"The file “com.apple.CoreMotion.plist” couldn’t be opened because you don’t have permission to view it.\" UserInfo={NSFilePath=\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist, NSURL=file:\/\/\/\/private\/var\/Managed%20Preferences\/mobile\/com.apple.CoreMotion.plist, NSUnderlyingError=0x1065ca9d0 {Error Domain=NSPOSIXErrorDomain Code=1 \"Operation not permitted\"}}"}
+[LocalWebServer] 🚀 Preparing to start local server...
+ℹ️ Found existing workers directory: /var/mobile/Containers/Data/Application/D3453ACC-5D22-4A6D-8571-35B449D212D8/Documents/workers
+GPU process (0x10f1001e0) took 1.537787 seconds to launch
+WebContent process (0x10f0d4100) took 1.772439 seconds to launch
+Could not create a sandbox extension for '/var/containers/Bundle/Application/34F9F69A-A40C-498D-A446-F33281D67381/CoNETVPN1.app'
+[LocalWebServer] ✅ Local server started at http://127.0.0.1:3001
+[LocalWebServer] 📁 Serving files from: /var/mobile/Containers/Data/Application/D3453ACC-5D22-4A6D-8571-35B449D212D8/Documents/workers
+[LocalWebServer] ✅ Server already running on port 3001
+📢 Web server started notification received
+✅ Server is running
+Current VPN status: 1
+📢 Web server started notification received
+✅ Server is running
+📱 Loading initial content: local-first://localhost:3001/index.html
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ Already loading content, skipping duplicate load
+⚠️ WebView not ready, will retry in 1s
+Current VPN status: 1
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+Current VPN status: 1
+⚠️ WebView not ready, will retry in 1s
+Current VPN status: 1
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+📱 [SchemeHandler] Converting: local-first://localhost:3001/index.html -> http://127.0.0.1:3001/index.html
+[LocalWebServer] 📄 Request: /index.html -> index.html
+✅ Serving: index.html
+nw_protocol_socket_set_no_wake_from_sleep [C1:2] setsockopt SO_NOWAKEFROMSLEEP failed [22: Invalid argument]
+nw_protocol_socket_set_no_wake_from_sleep setsockopt SO_NOWAKEFROMSLEEP failed [22: Invalid argument]
+✅ [SchemeHandler] Successfully loaded: http://127.0.0.1:3001/index.html
+WebContent[63738] Unable to hide query parameters from script (missing data)
+📱 [SchemeHandler] Converting: local-first://localhost:3001/manifest.json -> http://127.0.0.1:3001/manifest.json
+📱 [SchemeHandler] Converting: local-first://localhost:3001/static/js/main.87286793.js -> http://127.0.0.1:3001/static/js/main.87286793.js
+📱 [SchemeHandler] Converting: local-first://localhost:3001/static/css/main.b44a48cb.css -> http://127.0.0.1:3001/static/css/main.b44a48cb.css
+[LocalWebServer] 📄 Request: /manifest.json -> manifest.json
+[LocalWebServer] 📄 Request: /static/js/main.87286793.js -> main.87286793.js
+✅ Serving: manifest.json
+[LocalWebServer] 📄 Request: /static/css/main.b44a48cb.css -> main.b44a48cb.css
+nw_protocol_socket_set_no_wake_from_sleep [C2:2] setsockopt SO_NOWAKEFROMSLEEP failed [22: Invalid argument]
+nw_protocol_socket_set_no_wake_from_sleep setsockopt SO_NOWAKEFROMSLEEP failed [22: Invalid argument]
+✅ [SchemeHandler] Successfully loaded: http://127.0.0.1:3001/manifest.json
+✅ Serving: main.87286793.js
+✅ Serving: main.b44a48cb.css
+✅ [SchemeHandler] Successfully loaded: http://127.0.0.1:3001/static/css/main.b44a48cb.css
+nw_protocol_socket_set_no_wake_from_sleep [C4:2] setsockopt SO_NOWAKEFROMSLEEP failed [22: Invalid argument]
+nw_protocol_socket_set_no_wake_from_sleep setsockopt SO_NOWAKEFROMSLEEP failed [22: Invalid argument]
+nw_protocol_socket_set_no_wake_from_sleep [C3:2] setsockopt SO_NOWAKEFROMSLEEP failed [22: Invalid argument]
+nw_protocol_socket_set_no_wake_from_sleep setsockopt SO_NOWAKEFROMSLEEP failed [22: Invalid argument]
+✅ [SchemeHandler] Successfully loaded: http://127.0.0.1:3001/static/js/main.87286793.js
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+⚠️ WebView not ready, will retry in 1s
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"event":"native_VPNStatus","data":{"VPNStatus":1},"callbackId":"VPNStatusUpdate"}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"event":"native_VPNStatus","data":{"VPNStatus":1},"callbackId":"VPNStatusUpdate"}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"event":"native_VPNStatus","data":{"VPNStatus":1},"callbackId":"VPNStatusUpdate"}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"event":"native_VPNStatus","data":{"VPNStatus":1},"callbackId":"VPNStatusUpdate"}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"event":"native_VPNStatus","data":{"VPNStatus":1},"callbackId":"VPNStatusUpdate"}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"event":"native_VPNStatus","data":{"VPNStatus":1},"callbackId":"VPNStatusUpdate"}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"event":"native_VPNStatus","data":{"VPNStatus":1},"callbackId":"VPNStatusUpdate"}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"event":"native_VPNStatus","data":{"VPNStatus":1},"callbackId":"VPNStatusUpdate"}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+✅ JS execution success: Optional(success)
+✅ JS execution success: Optional(success)
+✅ JS execution success: Optional(success)
+✅ JS execution success: Optional(success)
+✅ JS execution success: Optional(success)
+✅ JS execution success: Optional(success)
+✅ JS execution success: Optional(success)
+✅ JS execution success: Optional(success)
+📨 Received message from JS: rule
+📋 Rule message received: eyJET01BSU4iOltdLCJJUCI6W119
+local server /ver
+[LocalWebServer] ✅ Version request: 0.34.0
+[LocalWebServer] local server /iOSVPN VPNResp(vpn: false)
+Server status received: running
+Local server running
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"callbackId":"VPNStatusUpdate","event":"native_VPNStatus","data":{"VPNStatus":1}}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+Current VPN status: 1
+Sending JS: (function() {
+    try {
+        window.dispatchEvent(new MessageEvent('message', { data: '{"callbackId":"VPNStatusUpdate","event":"native_VPNStatus","data":{"VPNStatus":1}}' }));
+        return 'success';
+    } catch (e) {
+        return 'error: ' + e.message;
+    }
+})();
+✅ JS execution success: Optional(success)
+✅ JS execution success: Optional(success)
+[LocalWebServer] 📄 Request: /ipaddress -> ipaddress
+❌ File not found: ipaddress
