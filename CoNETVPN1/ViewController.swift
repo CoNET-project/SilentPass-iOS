@@ -18,6 +18,7 @@ import Swifter
 
 class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler {
     var webView: WKWebView!
+    private var didFetchNodesOnce = false
     var localServer: Server?
     var timer: Timer?
     var egressNodes: [String] = []
@@ -87,6 +88,17 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             }
     }
     
+    @MainActor
+    func reloadNodesFromChain(pageSize: UInt = 200) async {
+        do {
+            let nodes = try await fetchAllNodesViaWeb3swift(pageSize: pageSize)
+            NodeStore.allNodes = nodes
+            print("✅ fetched \(nodes.count) nodes")
+        } catch {
+            print("❌ fetch nodes failed:", error)
+        }
+    }
+    
     private func setupWebView() {
         let config = WKWebViewConfiguration()
         let userContentController = WKUserContentController()
@@ -140,10 +152,17 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         )
+        
         userContentController.addUserScript(userScript)
         
         config.userContentController = userContentController
-        config.preferences.javaScriptEnabled = true
+        if #available(iOS 14.0, *) {
+            // iOS 14+：用默认网页首选项启用 JS
+            config.defaultWebpagePreferences.allowsContentJavaScript = true
+        } else {
+            // iOS 13 及更早：仍用旧属性
+            config.preferences.javaScriptEnabled = true
+        }
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         
         // Create WebView
@@ -366,6 +385,9 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
                 self.sendToWebView(responseString: responseString)
             }
         }
+        
+        // ✅ WebView 首次加载完成后，尝试在“成功执行一次 JS”后触发 Updater（仅一次）
+        
     }
     
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -425,8 +447,17 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
         switch self.webServer.server.state {
         case .starting:
             print("Server is starting...")
+            
         case .running:
             print("✅ Server is running")
+            
+            // ⬇️ 新增：只拉取一次链上节点
+           if !didFetchNodesOnce {
+               didFetchNodesOnce = true
+               Task { @MainActor in
+                   await self.reloadNodesFromChain(pageSize: 200)
+               }
+           }
             
             // Only load if not already loaded and not currently loading
             guard !self.didPerformInitialLoad && !self.isLoadingContent else {
@@ -442,6 +473,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             // Load initial content
             DispatchQueue.main.async { [weak self] in
                 self?.loadInitialContent()
+                
             }
             
         case .stopping:
@@ -456,8 +488,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
                 await self.webServer.prepareAndStart()
             }
             
-        default:
-            break
+        // no default — all cases handled
         }
     }
     
@@ -480,11 +511,15 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             // Wait a bit before loading
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 self?.performLoad()
+                
             }
         } else {
             performLoad()
         }
     }
+    
+    private var updaterDidRunOnce = false
+
     
     private func performLoad() {
         // Set loading flag
@@ -532,8 +567,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
                 Task { @MainActor in
                     await self.webServer.prepareAndStart()
                 }
-            default:
-                break
+            // no default — all cases handled
             }
         }
     }

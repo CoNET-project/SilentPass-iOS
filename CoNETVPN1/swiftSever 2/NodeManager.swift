@@ -1,21 +1,5 @@
 import Foundation
 
-struct Node: Codable {
-    var country: String
-    var ip_addr: String
-    var region: String
-    var armoredPublicKey: String
-    var nftNumber: String
-    
-    enum CodingKeys: String, CodingKey {
-        case country = "country"
-        case ip_addr = "ip_addr"
-        case region = "region"
-        case armoredPublicKey = "armoredPublicKey"
-        case nftNumber = "nftNumber"
-    }
-}
-
 class NodeManager {
     static var allNodes: [Node] = []
     

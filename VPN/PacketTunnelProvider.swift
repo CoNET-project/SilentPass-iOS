@@ -22,7 +22,16 @@ private func isValidIPv4(_ s: String) -> Bool {
     }
     return true
 }
-
+#if DEBUG
+private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "Server")
+@inline(__always)
+private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
+    os_log("%{public}@", log: vpnLog, type: type, msg())
+}
+#else
+@inline(__always)
+private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
+#endif
 
 
 // 为了 JSON 解码写个局部 Node（避免与你项目里已有 Node 重名冲突）
@@ -128,20 +137,23 @@ func orderedUniqueConcat(front: [String], back: [String]) -> [String] {
 
 
 class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
-    private var socksServer: Server?
+    private var socksServer: ServerNIO?
     let port = 8888
     
 
     override init() {
         super.init()
-        let s = Server(port: 8888)
-        self.socksServer = s
-        do {
-            try self.socksServer?.start()
-            NSLog("PacketTunnelProvider SOCKS server started.")
-        } catch {
-            NSLog("Failed to start SOCKS server: \(error)")
-        }
+        self.socksServer = ServerNIO(port: 8888)
+        self.socksServer?.start()
+//        do {
+//            try self.socksServer?.start()
+//            log("PacketTunnelProvider SOCKS server started.")
+//        } catch {
+//            log("PacketTunnelProvider SOCKS server Error!")
+//        }
+        
+        
+        
     }
 
     override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -156,16 +168,16 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
         opts["LM.extraExcludedCIDRs"] = (merged as NSArray)
 
         // （可选）打印前几项确认顺序：节点 /32 应该出现在最前面
-        NSLog("[PTP] LM.extraExcludedCIDRs (head) %@", Array(merged.prefix(30)) as NSArray)
+    
 
         
         super.startTunnel(options: opts) { error in
             // 5. 在核心逻辑完成后，你可以执行后续的自定义操作
             if let _ = error {
-                NSLog("PacketTunnelProvider Target: Core logic failed. Cleaning up.")
+                log("PacketTunnelProvider Target: Core logic failed. Cleaning up.")
                 // 处理错误
             } else {
-                NSLog("PacketTunnelProvider Target: Core logic succeeded. Tunnel is up.")
+                log("PacketTunnelProvider Target: Core logic succeeded. Tunnel is up.")
                 guard let options = options else {
                     completionHandler(NSError(domain: "NEPacketTunnelProviderError", code: -1,
                                               userInfo: [NSLocalizedDescriptionKey: "No options provided"]))
@@ -178,14 +190,17 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
                 let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
                 
+                self.socksServer?.start()
+//                do {
+//                    try self.socksServer?.start()
+//                    log("PacketTunnelProvider SOCKS server started.")
+//                } catch {
+//                    log("PacketTunnelProvider SOCKS server Error!")
+//                }
                 
-                do {
-                    try self.socksServer?.start()
-                    self.socksServer?.layerMinusInit(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
-                    NSLog("PacketTunnelProvider SOCKS server started.")
-                } catch {
-                    NSLog("Failed to start SOCKS server: \(error)")
-                }
+                self.socksServer?.layerMinusInit(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
+                log("PacketTunnelProvider SOCKS server started.")
+                
                 
                 // 最后，调用 completionHandler 通知系统
                 completionHandler(error)
@@ -199,28 +214,28 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
 
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
-        NSLog("🛑 PacketTunnelProvider.stopTunnel called, reason: \(reason.rawValue)")
+        log("🛑 PacketTunnelProvider.stopTunnel called, reason: \(reason.rawValue)")
         socksServer?.stop()
         socksServer = nil
         super.stopTunnel(with: reason) {
-            NSLog("PacketTunnelProvider: Core tunnel stopped. Finalizing cleanup.")
+            log("PacketTunnelProvider: Core tunnel stopped. Finalizing cleanup.")
             // 核心隧道停止后的最终清理
             completionHandler()
         }
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
-        NSLog("📩 PacketTunnelProvider.handleAppMessage called")
+        log("📩 PacketTunnelProvider.handleAppMessage called")
         completionHandler?(messageData)
     }
 
     override func sleep(completionHandler: @escaping () -> Void) {
-        NSLog("💤 PacketTunnelProvider.sleep called")
+        log("💤 PacketTunnelProvider.sleep called")
         completionHandler()
     }
 
     override func wake() {
-        NSLog("🔔 PacketTunnelProvider.wake called")
+        log("🔔 PacketTunnelProvider.wake called")
     }
 }
 extension Notification.Name {

@@ -17,6 +17,7 @@
 import Foundation
 import NIO
 import NIOTransportServices
+import os.log
 
 /// NIO 版本的本地代理连接：解析 SOCKS5 / HTTP 代理首包，决定直连/LayerMinus，
 /// 然后把下游 Channel 交给 LayerMinusBridgeNIO 承载自动背压与双向转发。
@@ -147,9 +148,11 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
     }
     private var phase: Phase = .methodSelect
     private var httpConnect: Bool = true
+    private var socksVer: Int? = nil  // 4 or 5
     private var useLayerMinus: Bool = true
     private var closed = false
     private var handedOff = false
+    private var activeBridge: LayerMinusBridgeNIO?
 
     // —— 缓冲与阈值（与旧类一致）
     private let HTTP_HDR_MAX  = 31 * 1024
@@ -171,6 +174,7 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
     }
 
     deinit {
+        
         log("🔴 DESTROYED ServerConnectionNIO #\(id)")
         log("MEM  \(memorySummary())")
     }
@@ -187,14 +191,28 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        guard !closed, !handedOff else { return }
+        // If the connection has been handed off to the bridge,
+            // this handler's job is done. Forward all subsequent data
+            // to the next handler in the pipeline (which is the DuplexPipe).
+        
+        guard !closed else { return }
+        
+        if handedOff {
+            context.fireChannelRead(data)
+            return
+        }
+
+        
+        // Guard against a closed state before handoff.
+        
+
+        // Original logic for parsing the initial request.
         var buf = unwrapInboundIn(data)
         if let bytes = buf.readBytes(length: buf.readableBytes) {
             recvBuffer.append(contentsOf: bytes)
         }
 
         if recvBuffer.count > RECV_BUFFER_SOFT_LIMIT {
-            // 限制缓冲，避免 OOM
             let KEEP = 64 * 1024
             if recvBuffer.count > KEEP {
                 recvBuffer = recvBuffer.suffix(KEEP)
@@ -204,6 +222,21 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
 
         parseBuffer(context)
         if !closed, !handedOff { context.read() }
+    }
+    
+    // 背压事件：务必转发（否则事件链会断，DuplexPipe 的逻辑也可能收不到）
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        context.fireChannelWritabilityChanged()
+    }
+    
+    // 批次读取完成：也要透传，便于后续 handler 在需要时 flush
+    func channelReadComplete(context: ChannelHandlerContext) {
+        context.fireChannelReadComplete()
+    }
+    
+    // 其它 inbound 事件同理透传，避免交接期间事件被吃掉
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        context.fireUserInboundEventTriggered(event)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
@@ -217,6 +250,8 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         closed = true
         phase = .closed
         log("close: \(reason)")
+        // 释放 Bridge 引用（让其在关闭后正确析构）
+        activeBridge = nil
         context.close(promise: nil)
         onClosed?(id)
     }
@@ -228,12 +263,22 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
             advanced = false
             switch phase {
             case .methodSelect:
-                if let first = recvBuffer.first, first == 0x05 {
-                    advanced = parseMethodSelect(context)
-                    httpConnect = false
-                } else {
-                    advanced = tryParseHTTPProxyRequest(context)
-                    if !advanced { log("methodSelect: waiting (HTTP?)") }
+                if let first = recvBuffer.first {
+                    if first == 0x05 {
+                        // SOCKS5
+                        socksVer = 5
+                        httpConnect = false
+                        advanced = parseMethodSelect(context)
+                    } else if first == 0x04 {
+                        // SOCKS4/4a
+                        socksVer = 4
+                        httpConnect = false
+                        advanced = parseSocks4(context)
+                    } else {
+                        // 尝试当作 HTTP 代理
+                        advanced = tryParseHTTPProxyRequest(context)
+                        if !advanced { log("methodSelect: waiting (HTTP/SOCKS?)") }
+                    }
                 }
             case .requestHead:
                 advanced = parseRequestHead(context)
@@ -251,6 +296,69 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
             }
         }
     }
+    
+      // 结构：VN(0x04) CD(0x01=CONNECT) DSTPORT(2) DSTIP(4) USERID(NUL) [DOMAIN(NUL) 当 DSTIP=0.0.0.x 时=SOCKS4a]
+      private func parseSocks4(_ ctx: ChannelHandlerContext) -> Bool {
+          // 至少需要 8 字节头
+          guard recvBuffer.count >= 8 else { return false }
+          let ver = recvBuffer[recvBuffer.startIndex]        // 0x04
+          let cmd = recvBuffer[recvBuffer.startIndex + 1]    // 0x01 CONNECT
+          guard ver == 0x04, cmd == 0x01 else {
+              sendSocks4Reply(ctx, 0x5B) // request rejected or failed
+              close(context: ctx, reason: "SOCKS4 bad ver/cmd")
+              return true
+          }
+          // 端口
+          let p1 = Int(recvBuffer[recvBuffer.startIndex + 2])
+          let p2 = Int(recvBuffer[recvBuffer.startIndex + 3])
+          let port = (p1 << 8) | p2
+          // IP
+          let ip0 = recvBuffer[recvBuffer.startIndex + 4]
+          let ip1 = recvBuffer[recvBuffer.startIndex + 5]
+          let ip2 = recvBuffer[recvBuffer.startIndex + 6]
+          let ip3 = recvBuffer[recvBuffer.startIndex + 7]
+    
+          // 继续等待直到拿到 USERID 的 NUL 结尾
+          // 从第 8 字节开始找第一个 0x00
+          guard let uidEnd = recvBuffer.dropFirst(8).firstIndex(of: 0x00) else { return false }
+          let afterUID = recvBuffer.index(after: uidEnd)
+    
+          var host: String
+          // SOCKS4a：IP=0.0.0.x（前三个为 0），则在 USERID 后面有 NUL 结尾的域名
+          if ip0 == 0, ip1 == 0, ip2 == 0, ip3 != 0 {
+              // 需要再等域名的 NUL
+              guard let dnEnd = recvBuffer[afterUID...].firstIndex(of: 0x00) else { return false }
+              let domainData = recvBuffer[afterUID..<dnEnd]
+              host = String(data: domainData, encoding: .utf8) ?? ""
+              recvBuffer.removeSubrange(..<recvBuffer.index(after: dnEnd))
+          } else {
+              host = "\(ip0).\(ip1).\(ip2).\(ip3)"
+              recvBuffer.removeSubrange(..<afterUID) // 丢掉到 USERID 末尾（含 NUL）
+          }
+    
+          if shouldBlock(host: host) {
+              sendSocks4Reply(ctx, 0x5B)
+              close(context: ctx, reason: "SOCKS4 blocked \(host)")
+              return true
+          }
+          if shouldDirect(host: host) {
+              useLayerMinus = false
+              log("SOCKS4 \(host):\(port) allowlist -> DIRECT")
+          }
+    
+          // 回复“请求已接受”（SOCKS4 8字节）
+          sendSocks4Reply(ctx, 0x5A)
+          phase = .connected(host: host, port: port)
+          // SOCKS4 客户端会在收到 0x5A 后才发送 TLS ClientHello；此处没有 firstBody，留待后续 read
+          return true
+      }
+    
+      private func sendSocks4Reply(_ ctx: ChannelHandlerContext, _ rep: UInt8) {
+          var b = ctx.channel.allocator.buffer(capacity: 8)
+          // VN=0x00, REP=0x5A(accept)/0x5B(reject)，后跟 BINDPORT/BINDIP（此处置 0）
+          b.writeBytes([0x00, rep, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+          ctx.writeAndFlush(wrapOutboundOut(b), promise: nil)
+      }
 
     // MARK: - SOCKS5: method select
     private func parseMethodSelect(_ context: ChannelHandlerContext) -> Bool {
@@ -370,6 +478,8 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
             recvBuffer.removeSubrange(..<headerEnd.upperBound)
             writeString(ctx, "HTTP/1.1 200 Connection Established\r\nProxy-Agent: vpn2socks\r\n\r\n")
             phase = .connected(host: tgt.host, port: tgt.port)
+            // 关键：若 TLS ClientHello 已与 CONNECT 同包到达，立刻继续解析并移交
+            parseBuffer(ctx)
             return true
         }
 
@@ -431,8 +541,12 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
 
     // MARK: - 一步移交到 NIO Bridge
     private func handoffToBridge(_ ctx: ChannelHandlerContext, host: String, port: Int, firstBody: Data) {
-        if httpConnect { log("🟢 HTTP/HTTPS proxy #\(id) \(host):\(port)") }
-        else           { log("🟢 SOCKS v5 proxy #\(id) \(host):\(port)") }
+        if httpConnect {
+            log("🟢 HTTP/HTTPS proxy #\(id) \(host):\(port)")
+        } else {
+            let v = socksVer ?? 5
+            log("🟢 SOCKS v\(v) proxy #\(id) \(host):\(port)")
+        }
         processFirstBody(ctx, host: host, port: port, firstBody: firstBody)
     }
 
@@ -440,6 +554,7 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         guard !handedOff else { return }
         handedOff = true
         phase = .bridged
+        let ch = ctx.channel
 
         // —— 直连（或失败时）路径：直接把下游交给 Bridge，目标 host:port
         func startDirectBridge(connectInfo: String, targetHost: String, targetPort: Int, firstBody: Data) {
@@ -451,64 +566,90 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
                 verbose: verbose,
                 connectInfo: connectInfo,
                 onClosed: { [weak self] _ in
+                    // Bridge 完全结束时，移除 Retainer（若仍在），再回调上层
+                    ch.pipeline.context(handlerType: BridgeRetainerHandler.self).whenSuccess { ctxRet in
+                        if ch.eventLoop.inEventLoop {
+                            _ = ch.pipeline.syncOperations.removeHandler(context: ctxRet)
+                        } else {
+                            ch.eventLoop.execute {
+                                _ = ch.pipeline.syncOperations.removeHandler(context: ctxRet)
+                            }
+                        }
+                    }
                     self?.onClosed?(self?.id ?? 0)
                 }
             )
+            // ★ 保存强引用，避免异步 connect 完成前被 ARC 回收
+//            self.activeBridge = bridge
+//            bridge.attachDownstream(ctx.channel)
+//            bridge.markHandoffNow()
+//            bridge.start(withFirstBody: b64)
+            
+            //ctx.pipeline.removeHandler(self, promise: nil)
+            
+            // 将下游通道交给 Bridge
             bridge.attachDownstream(ctx.channel)
             bridge.markHandoffNow()
-            bridge.start(withFirstBody: b64)
-            // 移除自己，让 bridge 接管 pipeline
-            ctx.pipeline.removeHandler(self, promise: nil)
+            // ★ 关键：把 Bridge 装进 Retainer（强引用转交给 pipeline）
+            ctx.pipeline.addHandler(BridgeRetainerHandler(bridge: bridge), position: .last).whenComplete { _ in
+                // 启动 Bridge
+                bridge.start(withFirstBody: b64)
+                // ★ 现在可安全移除解析 handler，避免后续吞事件/断背压链
+                ctx.pipeline.removeHandler(self, promise: nil)
+            }
+                
+            
         }
 
+        
         // 如果不走 LayerMinus，或者拿不到 egress/entry 节点，就直接连接目标
-        guard useLayerMinus, let egress = layerMinus.getRandomEgressNodes(), !egress.isEmpty else {
+//        guard useLayerMinus, let egress = layerMinus.getRandomEgressNodes(), !egress.isEmpty else {
             let info = "origin=\(host):\(port) DIRECT (LM disabled or no node)"
             startDirectBridge(connectInfo: info, targetHost: host, targetPort: port, firstBody: firstBody)
             return
-        }
+//        }
 
         // —— LayerMinus 路径：构造签名请求，目的连 entry(或 egress) 80 端口，首包为 JSON 请求
-        let entryHost = layerMinus.getRandomEntryNodes()?.ip_addr ?? egress.ip_addr
-        let message = layerMinus.makeSocksRequest(host: host, port: port, body: firstBody.base64EncodedString(), command: "CONNECT")
-        let messageData = message.data(using: .utf8)!
-        let account = layerMinus.keystoreManager.addresses![0]
-
-        Task.detached { [weak self] in
-            guard let self = self else { return }
-            do {
-                let sig = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
-                if let fn = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message"),
-                   let ret = fn.call(withArguments: [message, "0x\(sig.toHexString())"]) {
-                    let cmd = ret.toString()!
-                    let pre = self.layerMinus.createValidatorData(node: egress, responseData: cmd)
-                    let request = self.layerMinus.makeRequest(host: entryHost, data: pre)
-                    let b64 = request.data(using: .utf8)!.base64EncodedString()
-
-                    let connectInfo = "origin=\(host):\(port) entry=\(entryHost) egress=\(egress.ip_addr)"
-                    let bridge = LayerMinusBridgeNIO(
-                        id: self.id,
-                        targetHost: entryHost,
-                        targetPort: 80,
-                        verbose: self.verbose,
-                        connectInfo: connectInfo,
-                        onClosed: { [weak self] _ in self?.onClosed?(self?.id ?? 0) }
-                    )
-                    bridge.attachDownstream(ctx.channel)
-                    bridge.markHandoffNow()
-                    bridge.start(withFirstBody: b64)
-
-                    // 交给 Bridge 管道后移除自身
-                    ctx.pipeline.removeHandler(self, promise: nil)
-                } else {
-                    self.log("LM sign js bridge failed, fallback DIRECT")
-                    startDirectBridge(connectInfo: "LM sign/js failed -> DIRECT", targetHost: host, targetPort: port, firstBody: firstBody)
-                }
-            } catch {
-                self.log("LM sign error: \(error), fallback DIRECT")
-                startDirectBridge(connectInfo: "LM sign error -> DIRECT", targetHost: host, targetPort: port, firstBody: firstBody)
-            }
-        }
+//        let entryHost = layerMinus.getRandomEntryNodes()?.ip_addr ?? egress.ip_addr
+//        let message = layerMinus.makeSocksRequest(host: host, port: port, body: firstBody.base64EncodedString(), command: "CONNECT")
+//        let messageData = message.data(using: .utf8)!
+//        let account = layerMinus.keystoreManager.addresses![0]
+//
+//        Task.detached { [weak self] in
+//            guard let self = self else { return }
+//            do {
+//                let sig = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
+//                if let fn = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message"),
+//                   let ret = fn.call(withArguments: [message, "0x\(sig.toHexString())"]) {
+//                    let cmd = ret.toString()!
+//                    let pre = self.layerMinus.createValidatorData(node: egress, responseData: cmd)
+//                    let request = self.layerMinus.makeRequest(host: entryHost, data: pre)
+//                    let b64 = request.data(using: .utf8)!.base64EncodedString()
+//
+//                    let connectInfo = "origin=\(host):\(port) entry=\(entryHost) egress=\(egress.ip_addr)"
+//                    let bridge = LayerMinusBridgeNIO(
+//                        id: self.id,
+//                        targetHost: entryHost,
+//                        targetPort: 80,
+//                        verbose: self.verbose,
+//                        connectInfo: connectInfo,
+//                        onClosed: { [weak self] _ in self?.onClosed?(self?.id ?? 0) }
+//                    )
+//                    bridge.attachDownstream(ctx.channel)
+//                    bridge.markHandoffNow()
+//                    bridge.start(withFirstBody: b64)
+//
+//                    // 交给 Bridge 管道后移除自身
+//                    ctx.pipeline.removeHandler(self, promise: nil)
+//                } else {
+//                    self.log("LM sign js bridge failed, fallback DIRECT")
+//                    startDirectBridge(connectInfo: "LM sign/js failed -> DIRECT", targetHost: host, targetPort: port, firstBody: firstBody)
+//                }
+//            } catch {
+//                self.log("LM sign error: \(error), fallback DIRECT")
+//                startDirectBridge(connectInfo: "LM sign error -> DIRECT", targetHost: host, targetPort: port, firstBody: firstBody)
+//            }
+//        }
     }
 
     // MARK: - 小工具（HTTP/SOCKS 回复、规则、URL 处理）
@@ -607,10 +748,33 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         return String(cString: buf)
     }
 
-    // MARK: - Log
-    private func log(_ s: @autoclosure () -> String) {
-        #if DEBUG
-        NSLog("[ServerConnectionNIO] #\(id) %@", s())
-        #endif
+    #if DEBUG
+    private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "ServerConnectionNIO")
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
+        os_log("%{public}@", log: vpnLog, type: type, msg())
+    }
+    #else
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
+    #endif
+}
+
+final class BridgeRetainerHandler: ChannelInboundHandler {
+    typealias InboundIn = ByteBuffer
+    private var bridge: LayerMinusBridgeNIO?
+    init(bridge: LayerMinusBridgeNIO) { self.bridge = bridge }
+    deinit { bridge = nil }
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        context.fireChannelRead(data)
+    }
+    func channelReadComplete(context: ChannelHandlerContext) {
+        context.fireChannelReadComplete()
+    }
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        context.fireChannelWritabilityChanged()
+    }
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        context.fireUserInboundEventTriggered(event)
     }
 }

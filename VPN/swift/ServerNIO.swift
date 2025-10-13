@@ -4,12 +4,13 @@
 //
 //  Created by peter on 2025-09-17.
 //
-
+//      idevicesyslog | egrep --color -E "ServerNIO|LayerMinusBridgeNIO|PacketTunnelProvider|ServerConnectionNIO"
 // ServerNIO.swift
 import Foundation
 import NIO
 import NIOCore
 import NIOTransportServices
+import os.log
 
 /// 纯 NIO 版本的本地代理服务器：
 /// - 127.0.0.1:port 上监听
@@ -39,7 +40,7 @@ final class ServerNIO {
     private var statTimer: DispatchSourceTimer?
 
     // MARK: Init
-    init(bindHost: String = "127.0.0.1",
+    init(bindHost: String = "0.0.0.0",
          port: Int = 8888,
          maxActiveConnections: Int = 1024,
          verbose: Bool = true) {
@@ -55,6 +56,8 @@ final class ServerNIO {
 
     // MARK: Public
     func start() {
+        
+        log("NIO server starting .... \(bindHost):\(port)")
         // 幂等防护
         if serverChannel != nil { log("NIO server already running on \(bindHost):\(port)"); return }
 
@@ -175,10 +178,14 @@ final class ServerNIO {
         self.statTimer = t
     }
 
+    #if DEBUG
+    private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "ServerConnectionNIO")
     @inline(__always)
-    private func log(_ s: @autoclosure () -> String) {
-        #if DEBUG
-        NSLog("[ServerNIO] %@", s())
-        #endif
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
+        os_log("%{public}@", log: vpnLog, type: type, msg())
     }
+    #else
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
+    #endif
 }

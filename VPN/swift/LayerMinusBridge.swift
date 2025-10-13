@@ -27,6 +27,9 @@ private func rssMB() -> Int {
 
 // MARK: - LayerMinusBridge as an Actor
 public actor LayerMinusBridge {
+    
+    
+    
 	// 小工具：毫秒级延迟
 	@inline(__always)
 	private func delayMs(_ ms: Int) async {
@@ -242,18 +245,22 @@ public actor LayerMinusBridge {
         let info = connectInfo.map { " [\($0)]" } ?? ""
         // 活动连接 +1 并打印 RSS
         BridgeGlobals.q.sync { BridgeGlobals.activeConns &+= 1 }
-        NSLog("🟢 CREATED LayerMinusBridge #\(id) for \(targetHost):\(targetPort)\(info) | active_conns=\(BridgeGlobals.q.sync { BridgeGlobals.activeConns }) rss_mb=\(rssMB())")
-
+        let active = BridgeGlobals.q.sync { BridgeGlobals.activeConns }
+        let msg = "🟢 CREATED LayerMinusBridge #\(id)\(info) | active_conns=\(active) rss_mb=\(rssMB())"
+        // os_log 的格式串必须是 StaticString；动态内容通过占位符传入
+        os_log("%{public}@", msg)
 		
     }
 
-    // MARK: Logging
     #if DEBUG
-    private func log(_ msg: String) {
-        NSLog("[LayerMinusBridge \(id)\(infoTag())] %@", msg)
+    private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "LayerMinusBridge")
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
+        os_log("%{public}@", log: vpnLog, type: type, msg())
     }
     #else
-    private func log(_ msg: @autoclosure () -> String) { }
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
     #endif
 
     // Called by ServerConnection at handoff moment
@@ -279,28 +286,39 @@ public actor LayerMinusBridge {
             cancel(reason: "Invalid Base64")
             return
         }
+        
+        
 
         if firstBody.count > 0 {
             let preview = firstBody.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
             log("firstBody decoded bytes=\(firstBody.count), preview: \(preview)")
         }
-
-        // 如果此前检测到 ENETDOWN，则在退避窗口内延后发起连接，避免级联失败
-        let nowNs = DispatchTime.now().uptimeNanoseconds
-        let delayNs: UInt64 = BridgeGlobals.q.sync {
-            nowNs < BridgeGlobals.pathDownUntil ? (BridgeGlobals.pathDownUntil - nowNs) : 0
-        }
-        if delayNs > 0 {
-            let ms = Int(Double(delayNs) / 1e6)
-            log("path_down backoff: delay \(ms)ms before connect")
-            eventQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) { [weak self] in
-                Task { [weak self] in
-                    await self?.connectUpstreamAndRun(firstBody: firstBody)
-                }
+        
+        
+        Task { [weak self] in
+            guard let self = self else { return }
+            if !(await self.clientWritableQuickCheck()) {
+                await self.cancel(reason: "client not writable (pre-connect)")
+                return
             }
-        } else {
-            connectUpstreamAndRun(firstBody: firstBody)
+            // 如果此前检测到 ENETDOWN，则延迟；否则直接连接
+            let nowNs = DispatchTime.now().uptimeNanoseconds
+            let delayNs: UInt64 = BridgeGlobals.q.sync {
+                nowNs < BridgeGlobals.pathDownUntil ? (BridgeGlobals.pathDownUntil - nowNs) : 0
+            }
+            if delayNs > 0 {
+                let ms = Int(Double(delayNs) / 1e6)
+                await self.log("path_down backoff: delay \(ms)ms before connect")
+                self.eventQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) { [weak self] in
+                    Task { [weak self] in
+                        await self?.connectUpstreamAndRun(firstBody: firstBody)
+                    }
+                }
+            } else {
+                await self.connectUpstreamAndRun(firstBody: firstBody)
+            }
         }
+        
     }
 
     // MARK: Upstream connect
@@ -310,6 +328,16 @@ public actor LayerMinusBridge {
 			log("skip connect: upstream=\(upstream != nil) usingBridge=\(usingBridge) closed=\(closed)")
 			return
 		}
+        
+            // 再次确认客户端仍可写（极端竞态下的二次保护）
+            eventQueue.async { [weak self] in
+                guard let self = self else { return }
+                Task {
+                    if !(await self.clientWritableQuickCheck()) {
+                        await self.cancel(reason: "client not writable (pre-upstream)")
+                    }
+                }
+            }
 
         guard let port = NWEndpoint.Port(rawValue: UInt16(targetPort)) else {
             log("invalid port \(targetPort)")
@@ -332,6 +360,17 @@ public actor LayerMinusBridge {
         }
 
         up.start(queue: eventQueue)
+    }
+    
+    private func clientWritableQuickCheck() async -> Bool {
+        if closed { return false }
+        do {
+            try await client.sendAsync(Data())   // 零长度写：仅用于探测
+            return true
+        } catch {
+            log("probe: client not writable in Bridge (\(error))")
+            return false
+        }
     }
 
     private func handleUpstreamState(_ st: NWConnection.State, up: NWConnection?, firstBody: Data) async {
@@ -496,6 +535,11 @@ public actor LayerMinusBridge {
             while !closed && waited < 20_000 { // 20s 上限
                 await delayMs(200)
                 waited += 200
+                // 探測 client 是否可寫；若不可寫，提早退出
+                    if !(await clientWritableQuickCheck()) {
+                        cancel(reason: "client gone during idle wait (\(waited)ms)")
+                        break
+                    }
                 // 如果真的都空了，跳出
                 // （这里保持简单：由对端 EOF 驱动结束；无额外探针）
             }

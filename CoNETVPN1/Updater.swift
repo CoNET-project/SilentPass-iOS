@@ -13,10 +13,6 @@ struct AssetManifest: Codable {
     let files: [String: String]
 }
 
-// 假设 Node 结构体已在别处定义
-// struct Node: Codable {
-//     let ip_addr: String
-// }
 
 class Updater {
 

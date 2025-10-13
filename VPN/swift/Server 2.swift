@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import os.log
 
 final class Server {
     // Public config
@@ -189,10 +190,16 @@ final class Server {
         tickUp &+= up;  tickDown &+= down
     }
 
-    // Logging & Error
-    func log(_ s: String) {
-        //NSLog("[ServerConnection] %@", s)
+    #if DEBUG
+    private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "Server Connection")
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
+        os_log("%{public}@", log: vpnLog, type: type, msg())
     }
+    #else
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
+    #endif
     
     static func describe(_ err: Error) -> String {
         if let ne = err as? NWError {

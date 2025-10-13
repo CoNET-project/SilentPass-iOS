@@ -19,7 +19,7 @@ fileprivate struct LocalUpdateInfo: Codable {
     let ver: String
 }
 
-class LocalWebServer {
+final class LocalWebServer: @unchecked Sendable {
 #if DEBUG
 @inline(__always)
     private func log(_ msg: @autoclosure () -> String) {
@@ -52,6 +52,12 @@ class LocalWebServer {
         }
         self.workersDir = documentsDirectory.appendingPathComponent("workers")
     }
+    
+    // MARK: - Updater throttle state
+    private var lastUpdaterRunAt: Date?
+    private var updaterRunning: Bool = false
+    private let updaterQueue = DispatchQueue(label: "LocalWebServer.updater", qos: .utility)
+
     
     func prepareAndStart() async {
         // If already running, just broadcast and return
@@ -170,6 +176,8 @@ class LocalWebServer {
             let isOn = self.vpnStatusProvider?() ?? false
             struct VPNResp: Codable { let vpn: Bool }
             log("local server /iOSVPN \(VPNResp(vpn: isOn))")
+            // ⬇️ 在响应生成时，尝试触发一次 Updater（唯一 + 10分钟节流）
+            self.maybeKickUpdater()
             return self.createJsonResponse(statusCode: 200, body: VPNResp(vpn: isOn))
         }
 
@@ -262,6 +270,42 @@ class LocalWebServer {
             log("📄 Request: \(request.path) -> \(fileURL.lastPathComponent)")
             
             return self.serveFile(at: fileURL)
+        }
+    }
+    
+    // MARK: - Updater trigger (unique + 10min throttle)
+    private func maybeKickUpdater() {
+        updaterQueue.async { [weak self] in
+            guard let self = self else { return }
+            let now = Date()
+            // 节流：10 分钟内只允一次
+            if let last = self.lastUpdaterRunAt, now.timeIntervalSince(last) < 600 {
+                return
+            }
+            // 互斥：已有运行中则跳过
+            if self.updaterRunning { return }
+            self.updaterRunning = true
+    
+            Task {
+                defer {
+                    // 记录“完成时间”并释放运行标志
+                    self.updaterQueue.async {
+                        self.lastUpdaterRunAt = Date()
+                        self.updaterRunning = false
+                    }
+                }
+    
+                // 准备节点：若列表为空，先链上拉取一次
+                if NodeStore.allNodes.isEmpty {
+                    await reloadNodesFromChain(pageSize: 200)
+                }
+                // 选一个可达节点
+                if let node = await NodeStore.getRandom(timeout: 3.0, maxProbe: 10) {
+                    _ = await Updater().runUpdater(nodes: [node])
+                } else {
+                    // 未找到可达节点，结束（仍会记录完成时间以免频繁重试）
+                }
+            }
         }
     }
     

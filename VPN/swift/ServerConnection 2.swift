@@ -2,7 +2,7 @@ import Foundation
 import Network
 import os
 import Darwin
-
+import os.log
 
 
 
@@ -26,6 +26,9 @@ public final class ServerConnection {
 			self.close(reason: "http_block: \(reason)")
 		})
 	}
+    
+    // 客户端活性/可写状态（由 stateUpdateHandler 维护）
+    private var clientIsReady: Bool = false
 
     // MARK: - Static→Instance 日志桥
     private static weak var _logTarget: ServerConnection?
@@ -140,13 +143,7 @@ public final class ServerConnection {
     private func shouldDirect(host: String) -> Bool {
         // 1) 先按域名规则（保持现有语义）
 		if Allowlist.matches(host) { return true }
-		// 若你之前把 AdBlacklist 也当成直连，这里保留：
-		// if AdBlacklist.matches(host) { return true }
-
-		// 2) 未命中时，解析一次 IPv4 再跑 CIDR
-		if let ip = resolveFirstIPv4(host), Allowlist.matches(ip) {
-			return true
-		}
+		
 		return false
     }
 
@@ -223,13 +220,14 @@ public final class ServerConnection {
     }
 
     #if DEBUG
+    private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "ServerConnection")
     @inline(__always)
-        private func log(_ msg: @autoclosure () -> String) {
-            NSLog("[ServerConnection] #\(id) %@", msg())
-        }
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
+        os_log("%{public}@", log: vpnLog, type: type, msg())
+    }
     #else
-        @inline(__always)
-        private func log(_ msg: @autoclosure () -> String) { }
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
     #endif
 
     public func start() {
@@ -239,12 +237,15 @@ public final class ServerConnection {
             guard let self = self else { return }
             switch state {
             case .ready:
+                self.clientIsReady = true
                 self.log("client ready; enter recv loop")
                 self.recvLoop()
             case .failed(let e):
+                self.clientIsReady = false
                 self.log("client failed: \(e)")
                 self.close(reason: "client failed")
             case .cancelled:
+                self.clientIsReady = false
                 self.log("client cancelled")
                 self.close(reason: "client cancelled")
             default:
@@ -345,6 +346,7 @@ public final class ServerConnection {
             }
 
             if self.handedOff || self.closed { return }
+            
             self.recvLoop()
         }
     }
@@ -574,12 +576,10 @@ public final class ServerConnection {
 		)
 
 		if method.uppercased() == "GET",
-			(targetHost == "127.0.0.1" || targetHost == "localhost"),
-			(targetPort == 8888),
-			(originPath == "/pac" || originPath == "/pac.js") {
+			(targetPort == 8888), (originPath == "/pac") {
 
 			// 回送 PAC
-			let body = PACBuilder.buildPAC()
+            let body = PACBuilder.buildPAC(proxyHost: targetHost)
 			var headers = "HTTP/1.1 200 OK\r\n"
 			headers += "Content-Type: application/x-ns-proxy-autoconfig; charset=utf-8\r\n"
 			headers += "Cache-Control: no-store, max-age=0\r\n"
@@ -869,10 +869,33 @@ public final class ServerConnection {
         parseBuffer()
         return true
     }
+    
+    private func isClientAliveAndWritable() async -> Bool {
+        if closed || !clientIsReady { return false }
+        // 避免在 @Sendable 闭包里捕获 self
+        let c = client
+        return await withCheckedContinuation { cont in
+            c.send(content: Data(), completion: .contentProcessed { err in
+                cont.resume(returning: (err == nil))
+            })
+        }
+    }
 
     // MARK: 首包处理（智能区分 SSL / 非 SSL）
     private func processFirstBody(host: String, port: Int, firstBody: Data) {
         guard !handedOff else { return }
+        
+        let fb = firstBody   // 捕获值，供异步块使用
+        
+        Task { [weak self] in
+            guard let self = self else { return }
+            // ⛳️ 移交/打包 LM 之前先探测客户端是否还活着/可写
+            if !(await self.isClientAliveAndWritable()) {
+                self.log("drop before LM: client already gone or not writable")
+                self.close(reason: "client gone (pre-LM probe)")
+                return
+            }
+        }
         
         var detectedInfo = ""
         var isSSL = false
@@ -935,14 +958,26 @@ public final class ServerConnection {
                 log("🟢🟢 DIRECT (IP literal): \(host):\(port) -> bypass LayerMinus")
             }
         }
+            
+        Task { [weak self] in
+            guard let self = self else { return }
+            // ⛳️ 移交/打包 LM 之前先探测客户端是否还活着/可写
+            if !(await self.isClientAliveAndWritable()) {
+                self.log("drop before LM: client already gone or not writable")
+                self.close(reason: "client gone (pre-LM probe)")
+                return
+            }
+        }
 
         guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
             !egressNode.isEmpty else {
 		// guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
         //     egressNode.isEmpty else {
-            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) or layerMinus node isEmpty, layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
+            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) useLayerMinus=\(useLayerMinus), layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
             
             // 创建并启动 LayerMinusBridge，保存引用
+            
+            log("🟢  \(connectInfo)")
             let newBridge = LayerMinusBridge(
                 id: self.id,
                 client: self.client,
@@ -989,8 +1024,17 @@ public final class ServerConnection {
         let messageData = message.data(using: .utf8)!
         let account = self.layerMinus.keystoreManager.addresses![0]
 
-
         Task{
+            // 极端情况下，在 LM 消息签名/组包前也再探测一次
+            if !(await self.isClientAliveAndWritable()) {
+                self.log("drop before LM pack: client not writable (third probe)")
+                self.close(reason: "client gone (pre-pack)")
+                return
+            }
+        }
+            
+        Task{
+            
             let signMessage = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
             if let callFun2 = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message") {
                 if let ret2 = callFun2.call(withArguments: [message, "0x\(signMessage.toHexString())"]) {
@@ -1000,6 +1044,8 @@ public final class ServerConnection {
                     
                     self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)")
                     let connectInfo = "origin=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)"
+                    log("🟢🟢🟢  \(connectInfo)")
+                    
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,

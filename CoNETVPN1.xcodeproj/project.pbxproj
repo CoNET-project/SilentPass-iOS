@@ -56,6 +56,7 @@
 		D00CF77D2E7B9F7800A1F368 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = D00CF77C2E7B9F7800A1F368 /* NIOTransportServices */; };
 		D00CF77F2E7BA01D00A1F368 /* LayerMinusBridgeNIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00CF77E2E7BA01B00A1F368 /* LayerMinusBridgeNIO.swift */; };
 		D00CF7812E7BA59500A1F368 /* ServerNIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00CF7802E7BA59400A1F368 /* ServerNIO.swift */; };
+		D0487B722E9C6A85004A1245 /* NodeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0487B712E9C6A7E004A1245 /* NodeStore.swift */; };
 		D04D4DF42E593DFD0083DD23 /* LayerMinusBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */; };
 		D04D4E1B2E59908B0083DD23 /* LayerMinus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */; };
 		D04D4E1D2E5990FF0083DD23 /* NodeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */; };
@@ -171,6 +172,7 @@
 		D00CF7762E7B9E6300A1F368 /* ServerConnectionNIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConnectionNIO.swift; sourceTree = "<group>"; };
 		D00CF77E2E7BA01B00A1F368 /* LayerMinusBridgeNIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinusBridgeNIO.swift; sourceTree = "<group>"; };
 		D00CF7802E7BA59400A1F368 /* ServerNIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerNIO.swift; sourceTree = "<group>"; };
+		D0487B712E9C6A7E004A1245 /* NodeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeStore.swift; sourceTree = "<group>"; };
 		D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinusBridge.swift; sourceTree = "<group>"; };
 		D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayerMinus.swift; sourceTree = "<group>"; };
 		D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeManager.swift; sourceTree = "<group>"; };
@@ -240,7 +242,6 @@
 			isa = PBXGroup;
 			children = (
 				7606D7012D2EC1F600224EC8 /* NativeBridge 2.swift */,
-				D06663FA2E284BC0007D010D /* Updater.swift */,
 				765250482D967AB500F34CA1 /* appPay.swift */,
 				7606D6E62D2EBC7700224EC8 /* CONET_Guardian_NodeInfo_ABI.text */,
 				7606D6E72D2EBC7700224EC8 /* MiningProcess.swift */,
@@ -263,6 +264,7 @@
 			isa = PBXGroup;
 			children = (
 				7606D7042D2EC5A000224EC8 /* CONET_Guardian_NodeInfo_ABI.text */,
+				D0487B712E9C6A7E004A1245 /* NodeStore.swift */,
 				7606D70A2D2EC5A000224EC8 /* Server 2.swift */,
 				D00CF7802E7BA59400A1F368 /* ServerNIO.swift */,
 				D0D00E5F2E6AEF8700E76945 /* PACBuilder.swift */,
@@ -304,6 +306,7 @@
 				765B0EC32CE476E1007ACC57 /* Main.storyboard */,
 				765717FC2DCB112A00A40770 /* GoogleService-Info.plist */,
 				D06663F52E28443F007D010D /* LocalWebServer.swift */,
+				D06663FA2E284BC0007D010D /* Updater.swift */,
 				765B0EC42CE476E1007ACC57 /* SceneDelegate.swift */,
 				D0D33D5E2E298A8E00E849BC /* LocalServerFirstSchemeHandler.swift */,
 				D0D33D622E298BCD00E849BC /* CodableCachedData.swift */,
@@ -721,6 +724,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D0487B722E9C6A85004A1245 /* NodeStore.swift in Sources */,
 				7606D6F42D2EBC7700224EC8 /* Rfc1928.swift in Sources */,
 				7678A40C2DADED4900A7C16C /* Constants.swift in Sources */,
 				7606D6F52D2EBC7700224EC8 /* MiningProcess.swift in Sources */,

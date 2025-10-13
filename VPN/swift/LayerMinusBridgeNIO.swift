@@ -4,18 +4,19 @@
 //
 //  Created by peter on 2025-09-17.
 //
-
+//  idevicesyslog | egrep --color -E "ServerConnection|LayerMinusBridge|PacketTunnelProvider"
 import Foundation
 import NIO
 import NIOCore
 import NIOTransportServices
 import NIOConcurrencyHelpers
+import os.log
 
 // MARK: - Piping handler (inbound only) with automatic backpressure
 final class DuplexPipe: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
-
+    
     private weak var peer: Channel?
     private let name: String
     private let onFirstDownBytes: ((Int) -> Void)?
@@ -38,29 +39,48 @@ final class DuplexPipe: ChannelInboundHandler {
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         guard let peer = peer else { return }
-        var buf = unwrapInboundIn(data)
+        let buf = unwrapInboundIn(data)
         let readable = buf.readableBytes
         if readable > 0, let onFirstDownBytes {
             onFirstDownBytes(readable) // 用于下行首字节 KPI
         }
-        peer.writeAndFlush(buf, promise: nil)
+        // ★ 关键：跨 EventLoop 写，必须 hop 到 peer 的 eventLoop
+        if peer.eventLoop.inEventLoop {
+            peer.writeAndFlush(buf, promise: nil)
+        } else {
+            let copy = buf // ByteBuffer 值类型，拷贝安全
+            peer.eventLoop.execute {
+                peer.writeAndFlush(copy, promise: nil)
+            }
+        }
     }
 
     // 自动背压：对端不可写 -> 暂停我方读；恢复可写 -> 继续读
     // 直接实现专用回调，避免依赖事件类型名（各 NIO 版本通用）
     func channelWritabilityChanged(context: ChannelHandlerContext) {
+        // 关键：用“我是否可写”去控制“对端是否继续读”
         let writable = context.channel.isWritable
-        _ = context.channel.setOption(.autoRead, value: writable)
+        if let peer = peer {
+            let action = { _ = peer.setOption(.autoRead, value: writable) }
+            if peer.eventLoop.inEventLoop { action() }
+                else { peer.eventLoop.execute(action) }
+            }
         context.fireChannelWritabilityChanged()
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        peer?.close(promise: nil)
+        if let peer = peer {
+            if peer.eventLoop.inEventLoop { peer.close(promise: nil) }
+            else { peer.eventLoop.execute { peer.close(promise: nil) } }
+        }
         context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        peer?.close(promise: nil)
+        if let peer = peer {
+            if peer.eventLoop.inEventLoop { peer.close(promise: nil) }
+            else { peer.eventLoop.execute { peer.close(promise: nil) } }
+        }
         context.close(promise: nil)
     }
 }
@@ -74,9 +94,9 @@ public final class LayerMinusBridgeNIO {
     public let verbose: Bool
     public let connectInfo: String?
     public let onClosed: ((UInt64) -> Void)?
-
+    private static let sharedGroup = NIOTSEventLoopGroup()  // 进程级共享
     // NIO
-    private let group = NIOTSEventLoopGroup()
+    private let group = LayerMinusBridgeNIO.sharedGroup
     private var downCh: Channel?   // 下游（客户端）NIO Channel
     private var upCh: Channel?     // 上游（远端）NIO Channel
 
@@ -116,7 +136,7 @@ public final class LayerMinusBridgeNIO {
     }
 
     deinit {
-        try? group.syncShutdownGracefully()
+        //try? group.syncShutdownGracefully()
         log("🔵 DEINIT LayerMinusBridgeNIO #\(id)")
     }
 
@@ -279,6 +299,8 @@ public final class LayerMinusBridgeNIO {
                     let seg = Int(((self.tFirstByte ?? .now()) - ts).nanoseconds / 1_000_000)
                     self.log("KPI firstSend_to_firstRecv_ms=\(seg)")
                 }
+                // ★ 视频/下载类：一旦收到下行首字节，立即把 role 切到“下行重”
+                self.switchRole(.downstreamHeavy)
             }
             self.bytesDown &+= n
         }
@@ -293,11 +315,18 @@ public final class LayerMinusBridgeNIO {
         let f2 = up.pipeline.addHandlers([b], position: .last)
 
         _ = f1.and(f2).map { _ in
+            // 关键：装好后手动触发一轮 read，避免等待事件风暴
+            down.read()
+            up.read()
             self.log("pipes installed")
         }
 
         // 在下游通道末尾追加一个简单的出站统计处理器
-        down.pipeline.addHandler(ByteCountOutbound(selfRef: self), position: .last).whenComplete { _ in }
+        down.pipeline.addHandler(ByteCountOutbound(selfRef: self), position: .last).whenComplete { _ in
+            // 再次保险：kick 一次
+            down.read()
+            up.read()
+        }
 
     }
 
@@ -322,10 +351,14 @@ public final class LayerMinusBridgeNIO {
         return " [\(s)]"
     }
 
+    #if DEBUG
+    private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "LayerMinusBridgeNIO")
     @inline(__always)
-    private func log(_ msg: @autoclosure () -> String) {
-        #if DEBUG
-        NSLog("[LayerMinusBridgeNIO \(id)\(infoTag())] %@", msg())
-        #endif
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
+        os_log("%{public}@", log: vpnLog, type: type, msg())
     }
+    #else
+    @inline(__always)
+    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
+    #endif
 }
