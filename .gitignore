@@ -51,4 +51,4 @@ Thumbs.db
 /build
 *.txt
 
-SendablePacketFlow.*
+SendablePacketFlow*.*

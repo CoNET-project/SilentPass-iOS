@@ -4,6 +4,41 @@ import os
 import Darwin
 
 
+enum MemoryGauge {
+    private static let q = DispatchQueue(label: "com.silentpass.vpn.memgauge")
+    private static var timer: DispatchSourceTimer?
+    private static var _rssBytes: Int64 = 0
+    
+    private static func readPhysFootprintBytes() -> Int64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
+        let kr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return _rssBytes } // 失败时沿用上次
+        return Int64(info.phys_footprint)
+    }
+    
+    static func start() {
+        guard timer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: q)
+        t.schedule(deadline: .now(), repeating: .seconds(1))
+        t.setEventHandler {
+            _rssBytes = readPhysFootprintBytes()
+        }
+        timer = t
+        t.resume()
+    }
+    @inline(__always) static func rssMB() -> Int { Int(_rssBytes / 1024 / 1024) }
+    @inline(__always) static func rssBytes() -> Int64 { _rssBytes }
+    /// 需要“这一刻”的数值时调用（例如 CREATED/DESTROYED 立即刷一次）
+    @inline(__always) static func forceRefresh() {
+        q.sync { _rssBytes = readPhysFootprintBytes() }
+    }
+}
+
 // MARK: - Global metrics & path state (very small footprint)
 private enum BridgeGlobals {
     // 串行队列保护全局状态（避免额外依赖 atomics）
@@ -246,9 +281,11 @@ public actor LayerMinusBridge {
         // 活动连接 +1 并打印 RSS
         BridgeGlobals.q.sync { BridgeGlobals.activeConns &+= 1 }
         let active = BridgeGlobals.q.sync { BridgeGlobals.activeConns }
-        let msg = "🟢 CREATED LayerMinusBridge #\(id)\(info) | active_conns=\(active) rss_mb=\(rssMB())"
+        let msg = "🟢 CREATED LayerMinusBridge #\(id)\(info) | active_conns=\(active) rss_mb=\(rssMB()) new RSS=\(MemoryGauge.rssMB())"
         // os_log 的格式串必须是 StaticString；动态内容通过占位符传入
         os_log("%{public}@", msg)
+        // 启动统一内存计量器（只会启动一次）
+        MemoryGauge.start()
 		
     }
 
@@ -620,7 +657,7 @@ public actor LayerMinusBridge {
 			onClosed?(id)
             // 活动连接 -1 并打印 RSS
             let left = BridgeGlobals.q.sync { BridgeGlobals.activeConns &-= 1; return BridgeGlobals.activeConns }
-            log("CANCEL trigger id=\(id) reason=\(reason) | active_conns=\(left) rss_mb=\(rssMB())")
+            log("CANCEL trigger id=\(id) reason=\(reason) | active_conns=\(left) rss_mb=\(rssMB()) RSS=\(MemoryGauge.rssMB())")
 
     }
 
@@ -656,7 +693,7 @@ public actor LayerMinusBridge {
 			}
 		}
         // 这里不再做 activeConns--（由 cancel 统一扣减），仅打印当前 RSS/活动数
-        log("🔵 DEINIT LayerMinusBridge #\(id), cleanup needed: \(needsCleanup) | active_conns=\(BridgeGlobals.q.sync { BridgeGlobals.activeConns }) rss_mb=\(rssMB())")
+        log("🔵 DEINIT LayerMinusBridge #\(id), cleanup needed: \(needsCleanup) | active_conns=\(BridgeGlobals.q.sync { BridgeGlobals.activeConns }) rss_mb=\(rssMB()) RSS=\(MemoryGauge.rssMB())")
 
     }
 
@@ -668,7 +705,19 @@ public actor LayerMinusBridge {
 
 struct NWReceiveSequence: AsyncSequence {
     typealias Element = Data
+    
 	struct Iterator: AsyncIteratorProtocol {
+        // MARK: - Local static logger just for Iterator
+        #if DEBUG
+            private static let logger = OSLog(subsystem: "com.silentpass.vpn", category: "NWReceive")
+            @inline(__always)
+            private static func slog(_ msg: @autoclosure () -> String, type: OSLogType = .debug) {
+                os_log("%{public}@", log: logger, type: type, msg())
+            }
+        #else
+            @inline(__always) private static func slog(_ msg: @autoclosure () -> String, type: OSLogType = .debug) { }
+        #endif
+        
 		let conn: NWConnection
 		private let baseMax: Int
 		private var consecutiveEmptyReads = 0
@@ -689,8 +738,8 @@ struct NWReceiveSequence: AsyncSequence {
         private let minBuffer = 64 * 1024
         
 		private let maxBuffer = GLOBAL_MAX_BUFFER
-		private let growthStep = 256 * 1024
-		private let memoryWarningThreshold = 48 * 1024 * 1024
+		private let growthStep = 512 * 1024
+		private let memoryWarningThreshold = 45 * 1024 * 1024
 		
 		init(conn: NWConnection, max: Int, bridgeId: UInt64, connectInfo: String?) {
 			self.conn = conn
@@ -705,36 +754,11 @@ struct NWReceiveSequence: AsyncSequence {
 			return "[LayerMinusBridge \(bridgeId)\(info)]"
 		}
 		
-		// 获取当前内存使用量（定义在 Iterator 内部）
-		private func getCurrentMemoryUsage() -> Int64 {
-			var info = mach_task_basic_info()
-			var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
-			
-			let result = withUnsafeMutablePointer(to: &info) {
-				$0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-					task_info(mach_task_self_,
-							task_flavor_t(MACH_TASK_BASIC_INFO),
-							$0,
-							&count)
-				}
-			}
-			
-			return result == KERN_SUCCESS ? Int64(info.resident_size) : 0
-		}
 		
 		mutating func next() async throws -> Data? {
 			// 动态调整缓冲区大小
 			adjustBufferSize()
-			
-			#if DEBUG
-			if currentBufferSize == minBuffer || 
-			currentBufferSize == maxBuffer ||
-			(consecutiveDataReads > 0 && consecutiveDataReads % 10 == 0) {
-				let memoryMB = getCurrentMemoryUsage() / (1024 * 1024)
-				NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Buffer: \(currentBufferSize/1024)KB (RSS: \(memoryMB)MB, data:\(consecutiveDataReads) empty:\(consecutiveEmptyReads))")
-			}
-			#endif
-			
+
 			while let d = try await conn.recv(max: Swift.min(currentBufferSize, baseMax)) {
 				if !d.isEmpty {
                     
@@ -742,10 +766,10 @@ struct NWReceiveSequence: AsyncSequence {
                     if firstByteAt == nil {
                         firstByteAt = DispatchTime.now().uptimeNanoseconds
                         if currentBufferSize < 64 * 1024 {
-                        #if DEBUG
-                                NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Warmup jump: \(currentBufferSize/1024)KB → 64KB after first byte")
-                        #endif
-                        currentBufferSize = 64 * 1024
+                        
+                            Self.slog("\(makeLogTag()) 🔵🔵🔵 Warmup jump: \(currentBufferSize/1024)KB → 64KB after first byte")
+                            
+                            currentBufferSize = 64 * 1024
 
                         }
                     }
@@ -779,7 +803,8 @@ struct NWReceiveSequence: AsyncSequence {
 		
 		private mutating func adjustBufferSize() {
 			// 获取当前内存使用量
-			let currentMemory = getCurrentMemoryUsage()
+            MemoryGauge.forceRefresh()
+            let currentMemory = MemoryGauge.rssBytes()   // bytes（phys_footprint）
             
             // 暖机窗口：首包后 2 秒内提高收缩下限到 32KB
             let nowNs = DispatchTime.now().uptimeNanoseconds
@@ -801,16 +826,16 @@ struct NWReceiveSequence: AsyncSequence {
                     let floor = inWarmup ? Swift.max(minBuffer, warmupMin) : minBuffer
                     let newSize = Swift.max(currentBufferSize / 2, floor)
                     
-					#if DEBUG
-					NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Memory pressure \(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
+					
+                    Self.slog("\(makeLogTag()) 🔵🔵🔵 currentMemory Memory pressure RSS \(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
 						+ "shrink \(currentBufferSize/1024)KB → \(newSize/1024)KB")
-					#endif
+					
 					currentBufferSize = newSize
 				} else {
-					#if DEBUG
-					NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Memory pressure \(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
+					
+                    Self.slog("\(makeLogTag()) 🔵🔵🔵 currentMemory Memory pressure RSS\(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
 						+ "buffer kept \(currentBufferSize/1024)KB (≤128KB)")
-					#endif
+					
 				}
 				return
 			}
@@ -822,78 +847,70 @@ struct NWReceiveSequence: AsyncSequence {
 				if projectedMemory < memoryWarningThreshold {
 					let newSize = Swift.min(currentBufferSize + growthStep, maxBuffer)
 					if newSize != currentBufferSize {
-						#if DEBUG
-						NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Buffer growing: \(currentBufferSize/1024)KB → \(newSize/1024)KB (RSS: \(currentMemory/(1024*1024))MB)")
-						#endif
+						
+                        Self.slog("\(makeLogTag()) 🔵🔵🔵 Buffer growing: \(currentBufferSize/1024)KB → \(newSize/1024)KB (currentMemory RSS: \(currentMemory/(1024*1024))MB)")
+						
 						currentBufferSize = newSize
                         
                         // 增长后清理一部分累计，避免连锁暴涨
                         accumBytes = accumBytes / 2
 					}
 				} else {
-					#if DEBUG
-					NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Growth blocked: would exceed memory threshold (current: \(currentMemory/(1024*1024))MB)")
-					#endif
+                    Self.slog("\(makeLogTag()) 🔵🔵🔵 Growth blocked: would exceed memory threshold (current RSS: \(currentMemory/(1024*1024))MB)")
+					
 				}
 			}
 			// 缩减逻辑
             // 收缩逻辑：暖机期禁收缩；非暖机更温和且提高空读阈值
             else if !inWarmup && consecutiveEmptyReads >= 4 && currentBufferSize > minBuffer {
                 let floor = minBuffer
-                // 采用 3/4、2/3、1/2 的柔性阶梯，避免抖动
                 let targetSize: Int
-                switch consecutiveEmptyReads {
-                case 6...8:   targetSize = Swift.max(currentBufferSize * 3 / 4, floor)
-                case 9...12:  targetSize = Swift.max(currentBufferSize * 2 / 3, floor)
-                default:      targetSize = Swift.max(currentBufferSize / 2, floor)
+                
+                if currentBufferSize > 256 * 1024 {
+                    // >256KB：改为陡降 1/2
+                    targetSize = Swift.max(currentBufferSize / 2, floor)
+                } else {
+                    // ≤256KB：沿用旧策略（6~8→3/4，9~12→2/3，其它→1/2）
+                    switch consecutiveEmptyReads {
+                        case 6...8:
+                        targetSize = Swift.max(currentBufferSize * 3 / 4, floor)
+                        case 9...12:
+                        targetSize = Swift.max(currentBufferSize * 2 / 3, floor)
+                        default:
+                        targetSize = Swift.max(currentBufferSize / 2, floor)
+                    }
                 }
+                
                 if targetSize != currentBufferSize {
-            #if DEBUG
-                    NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Buffer shrinking: \(currentBufferSize/1024)KB → \(targetSize/1024)KB (idle reads \(consecutiveEmptyReads))")
-            #endif
+                    Self.slog("\(makeLogTag()) 🔵🔵🔵 Buffer shrinking: \(currentBufferSize/1024)KB → \(targetSize/1024)KB (idle reads \(consecutiveEmptyReads))")
                     currentBufferSize = targetSize
                 }
             }
             
-            #if DEBUG
-                if inWarmup && consecutiveEmptyReads >= 6 {
-                    NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Warmup(no-shrink): empty=\(consecutiveEmptyReads) keep=\(currentBufferSize/1024)KB")
-                }
-            #endif
+            
+            if inWarmup && consecutiveEmptyReads >= 6 {
+                Self.slog("\(makeLogTag()) 🔵🔵🔵 Warmup(no-shrink): empty=\(consecutiveEmptyReads) keep=\(currentBufferSize/1024)KB")
+            }
+            
             
             // ⏫ 时间边界保障：首包后 0.6s/1.2s 内至少拉到 256/512KB
             if let t0 = firstByteAt {
                     let elapsed = nowNs &- t0
                 if elapsed > 600_000_000 && currentBufferSize < 256 * 1024 {
                     currentBufferSize = 256 * 1024
-                #if DEBUG
-                        NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Warmup time-guard: bump → 256KB")
-                #endif
+               
+                    Self.slog("\(makeLogTag()) 🔵🔵🔵 Warmup time-guard: bump → 256KB")
+                
                 } else if elapsed > 1_200_000_000 && currentBufferSize < 512 * 1024 {
-                        currentBufferSize = 512 * 1024
-                #if DEBUG
-                        NSLog("LayerMinusBridge \(makeLogTag()) 🔵🔵🔵 Warmup time-guard: bump → 512KB")
-                #endif
+                    currentBufferSize = 512 * 1024
+                
+                    Self.slog("\(makeLogTag()) 🔵🔵🔵 Warmup time-guard: bump → 512KB")
+                
                 }
             }
 		}
 	}
-
-	private func getCurrentMemoryUsage() -> Int64 {
-		var info = mach_task_basic_info()
-		var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
-		
-		let result = withUnsafeMutablePointer(to: &info) {
-			$0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-				task_info(mach_task_self_,
-						task_flavor_t(MACH_TASK_BASIC_INFO),
-						$0,
-						&count)
-			}
-		}
-		
-		return result == KERN_SUCCESS ? Int64(info.resident_size) : 0
-	}
+    
     
     let conn: NWConnection
     let max: Int

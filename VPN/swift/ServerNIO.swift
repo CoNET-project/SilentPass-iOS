@@ -17,6 +17,27 @@ import os.log
 /// - 每个下游 Channel -> 交给 ServerConnectionNIO
 /// - ServerConnectionNIO 再对接 LayerMinusBridgeNIO 完成自动背压的上下游 pipe
 final class ServerNIO {
+    
+    @inline(__always)
+    public func rssMB_NIO() -> Int {
+        #if canImport(Darwin)
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        if kr == KERN_SUCCESS { return Int(info.phys_footprint / 1024 / 1024) }
+        #endif
+        return -1
+    }
+
+    @inline(__always)
+    public func memPressureFlag(_ rssMB: Int, softLimitMB: Int = 48) -> String {
+        guard rssMB >= 0 else { return "unknown" }
+        return rssMB >= softLimitMB ? "ON" : "OFF"
+    }
 
     // MARK: Config
     private let bindHost: String
@@ -117,6 +138,8 @@ final class ServerNIO {
         }
     }
     
+    
+    
     func layerMinusInit (
         privateKey: String, entryNodes: [Node], egressNodes: [Node]
     ) {
@@ -172,7 +195,11 @@ final class ServerNIO {
             self.lock.lock()
             let active = self.conns.count
             self.lock.unlock()
-            if self.verbose { self.log("stats: active=\(active)") }
+            if self.verbose {
+                let rss = rssMB_NIO()
+                let pressure = memPressureFlag(rss)
+                if self.verbose { self.log("stats: active=\(active) rss_mb=\(rss) pressure=\(pressure)") }
+            }
         }
         t.resume()
         self.statTimer = t

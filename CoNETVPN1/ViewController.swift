@@ -88,17 +88,6 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             }
     }
     
-    @MainActor
-    func reloadNodesFromChain(pageSize: UInt = 200) async {
-        do {
-            let nodes = try await fetchAllNodesViaWeb3swift(pageSize: pageSize)
-            NodeStore.allNodes = nodes
-            print("✅ fetched \(nodes.count) nodes")
-        } catch {
-            print("❌ fetch nodes failed:", error)
-        }
-    }
-    
     private func setupWebView() {
         let config = WKWebViewConfiguration()
         let userContentController = WKUserContentController()
@@ -451,14 +440,6 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
         case .running:
             print("✅ Server is running")
             
-            // ⬇️ 新增：只拉取一次链上节点
-           if !didFetchNodesOnce {
-               didFetchNodesOnce = true
-               Task { @MainActor in
-                   await self.reloadNodesFromChain(pageSize: 200)
-               }
-           }
-            
             // Only load if not already loaded and not currently loading
             guard !self.didPerformInitialLoad && !self.isLoadingContent else {
                 if self.didPerformInitialLoad {
@@ -480,6 +461,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHan
             print("Server is stopping, will restart")
             Task { @MainActor in
                 await self.webServer.prepareAndStart()
+                
             }
             
         case .stopped:

@@ -94,7 +94,7 @@ final class LocalWebServer: @unchecked Sendable {
             
             // Broadcast server started
             broadcastServerStarted()
-            
+            await NodeStore.initialize()
         } catch {
             log("❌ Failed to start server: \(error.localizedDescription)")
             
@@ -297,7 +297,7 @@ final class LocalWebServer: @unchecked Sendable {
     
                 // 准备节点：若列表为空，先链上拉取一次
                 if NodeStore.allNodes.isEmpty {
-                    await reloadNodesFromChain(pageSize: 200)
+                    await NodeStore.initialize()
                 }
                 // 选一个可达节点
                 if let node = await NodeStore.getRandom(timeout: 3.0, maxProbe: 10) {

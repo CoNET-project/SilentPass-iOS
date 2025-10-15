@@ -445,6 +445,7 @@ class VPNManager {
         manager.localizedDescription = "CoNET VPN"
         let proto = NETunnelProviderProtocol()
         proto.serverAddress = "127.0.0.1:8888"
+        proto.disconnectOnSleep = false   // ← 禁用“睡眠断开”
         proto.providerBundleIdentifier = vpnIdentifier
         if #available(iOS 14.2, *) {
             proto.includeAllNetworks = false

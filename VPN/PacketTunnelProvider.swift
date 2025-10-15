@@ -137,20 +137,20 @@ func orderedUniqueConcat(front: [String], back: [String]) -> [String] {
 
 
 class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
-    private var socksServer: ServerNIO?
+    private var socksServer: Server?
     let port = 8888
     
 
     override init() {
         super.init()
-        self.socksServer = ServerNIO(port: 8888)
-        self.socksServer?.start()
-//        do {
-//            try self.socksServer?.start()
-//            log("PacketTunnelProvider SOCKS server started.")
-//        } catch {
-//            log("PacketTunnelProvider SOCKS server Error!")
-//        }
+        self.socksServer = Server(port: 8888)
+//        self.socksServer?.start()
+        do {
+            try self.socksServer?.start()
+            log("PacketTunnelProvider SOCKS server started.")
+        } catch {
+            log("PacketTunnelProvider SOCKS server Error!")
+        }
         
         
         
@@ -190,13 +190,13 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
                 let entryNodes = nodeJSON(nodeJsonStr: entryNodesStr)
                 let egressNodes = nodeJSON(nodeJsonStr: egressNodesStr)
                 
-                self.socksServer?.start()
-//                do {
-//                    try self.socksServer?.start()
-//                    log("PacketTunnelProvider SOCKS server started.")
-//                } catch {
-//                    log("PacketTunnelProvider SOCKS server Error!")
-//                }
+//                self.socksServer?.start()
+                do {
+                    try self.socksServer?.start()
+                    log("PacketTunnelProvider SOCKS server started.")
+                } catch {
+                    log("PacketTunnelProvider SOCKS server Error!")
+                }
                 
                 self.socksServer?.layerMinusInit(privateKey: privateKey, entryNodes: entryNodes, egressNodes: egressNodes)
                 log("PacketTunnelProvider SOCKS server started.")

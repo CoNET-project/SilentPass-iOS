@@ -12,6 +12,28 @@ import NIOTransportServices
 import NIOConcurrencyHelpers
 import os.log
 
+
+@inline(__always)
+private func rssMB_NIO() -> Int {
+    #if canImport(Darwin)
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
+    let kr = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    if kr == KERN_SUCCESS { return Int(info.phys_footprint / 1024 / 1024) }
+    #endif
+    return -1
+}
+
+@inline(__always)
+private func memPressureFlag(_ rssMB: Int, softLimitMB: Int = 48) -> String {
+    guard rssMB >= 0 else { return "unknown" }
+    return rssMB >= softLimitMB ? "ON" : "OFF"
+}
+
 // MARK: - Piping handler (inbound only) with automatic backpressure
 final class DuplexPipe: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
@@ -132,12 +154,14 @@ public final class LayerMinusBridgeNIO {
         self.verbose = verbose
         self.connectInfo = connectInfo
         self.onClosed = onClosed
-        log("🟢 CREATED LayerMinusBridgeNIO #\(id) for \(targetHost):\(targetPort)\(infoTag())")
+        let rss = rssMB_NIO()
+        log("🟢 CREATED LayerMinusBridgeNIO #\(id) for \(targetHost):\(targetPort)\(infoTag())| rss_mb=\(rss) pressure=\(memPressureFlag(rss))")
     }
 
     deinit {
         //try? group.syncShutdownGracefully()
-        log("🔵 DEINIT LayerMinusBridgeNIO #\(id)")
+        let rss = rssMB_NIO()
+        log("🔵 DEINIT LayerMinusBridgeNIO #\(id) MEM deinit rss_mb=\(rss) pressure=\(memPressureFlag(rss))")
     }
 
     // MARK: Public API（与旧类对齐）
@@ -222,7 +246,8 @@ public final class LayerMinusBridgeNIO {
         upCh?.close(mode: .all, promise: nil)
         downCh?.close(mode: .all, promise: nil)
         onClosed?(id)
-        log("CANCEL trigger id=\(id) reason=\(reason)")
+        let rss = rssMB_NIO()
+        self.log("MEM cancel rss_mb=\(rss) pressure=\(memPressureFlag(rss)) up_bytes=\(bytesUp) down_bytes=\(bytesDown)")
     }
 
     /// 运行时切换“二层 role”，动态调整水位（=内存预算）
@@ -319,6 +344,8 @@ public final class LayerMinusBridgeNIO {
             down.read()
             up.read()
             self.log("pipes installed")
+            let rss = rssMB_NIO()
+            self.log("MEM pipes_installed rss_mb=\(rss) pressure=\(memPressureFlag(rss))")
         }
 
         // 在下游通道末尾追加一个简单的出站统计处理器

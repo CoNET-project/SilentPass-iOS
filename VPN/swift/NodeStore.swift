@@ -12,6 +12,7 @@ struct Node: Codable {
     var armoredPublicKey: String
     var nftNumber: String
     
+    
     enum CodingKeys: String, CodingKey {
         case country, ip_addr, region, armoredPublicKey, nftNumber
     }
@@ -20,7 +21,7 @@ struct Node: Codable {
 enum NodeFetchError: Error { case badURL, badAddress, decode }
 
 // ✅ 用于承接链上返回的 nodeInfo
-private struct OnchainNode {
+struct OnchainNode: Codable {
     let id: UInt64
     let PGP: String
     let PGPKey: String
@@ -28,69 +29,6 @@ private struct OnchainNode {
     let regionName: String
 }
 
-// ✅ 从合约分页抓取，并**映射**为你项目的 Node
-func fetchAllNodesViaWeb3swift(
-    rpc: String = "https://mainnet-rpc.conet.network",
-    contractHex: String = "0x2DF3302d0c9aC19BE01Ee08ce3DDA841BdcF6F03",
-    pageSize: UInt = 200,
-    maxPages: Int = 10_000
-) async throws -> [Node] {
-
-    guard let url = URL(string: rpc) else { throw NodeFetchError.badURL }
-    let web3 = try await Web3.new(url)
-    guard let caddr = EthereumAddress(contractHex) else { throw NodeFetchError.badAddress }
-
-    let abi = nodeInfoABI
-
-    // ⛏️ 修正：不要从 web3.eth 调，用 web3.contract(...)
-    let contract = web3.contract(abi, at: caddr)!
-    var start = BigUInt(0)
-    let length = BigUInt(pageSize)
-    var allOnchain: [OnchainNode] = []
-    var page = 0
-
-    while page < maxPages {
-        let result = try await contract.createReadOperation(
-            "getAllNodes",
-            parameters: [start, length]
-        )!.callContractMethod()
-
-
-        // 兼容两种返回形态：命名输出/未命名输出
-        let arrAny: [Any]
-        if let named = result["allNodes"] as? [Any] {
-            arrAny = named
-        } else if let first = result.values.first as? [Any] {
-            arrAny = first
-        } else {
-            throw NodeFetchError.decode
-        }
-
-        let pageNodes = try decodeOnchainNodes(arrAny)
-        allOnchain.append(contentsOf: pageNodes)
-
-        if pageNodes.count < Int(pageSize) { break }
-        start += length
-        page += 1
-
-        // 轻微节流（可选）
-        try await Task.sleep(nanoseconds: 50_000_000)
-    }
-
-    // 把 OnchainNode -> 你的 Node
-    let mapped: [Node] = allOnchain.map { oc in
-        let country = deriveCountry(fromRegionName: oc.regionName)
-        return Node(
-            country: country,
-            ip_addr: oc.ip_addr,
-            region: oc.regionName,
-            armoredPublicKey: oc.PGP,          // 映射到你的 armoredPublicKey
-            nftNumber: String(oc.id)           // 把合约里的 id 转成字符串
-        )
-    }
-
-    return dedupeNodes(mapped)
-}
 
 // ⛏️ 把合约返回的数组解成 OnchainNode[]
 private func decodeOnchainNodes(_ arr: [Any]) throws -> [OnchainNode] {
@@ -175,6 +113,43 @@ private func deriveCountry(fromRegionName region: String) -> String {
 struct NodeStore {
     // ⛏️ 去掉对 jsonString 的依赖，默认空数组，等你拉链上数据再填充
     static var allNodes: [Node] = []
+    static var allNodes_domain: [OnchainNode] = []
+    static var allRegion: [String] = []
+    static var allRegionTested: [String] = []
+    /// 每个 Region 抽样出来用于测速/展示的代表节点
+    static var regionSampleNode: [String: Node] = [:]
+    /// 每个 Region 的延迟（ms）。失败/超时会记成 Int.max
+    static var regionLatencyMs: [String: Int] = [:]
+    
+    // ✅ 初始化：自动拉链上节点、填充 allNodes, allNodes_domain, allRegion
+    static func initialize() async {
+        do {
+            let nodes = try await fetchAllNodesViaWeb3swift()
+            allNodes = nodes
+
+            // —— 使用可复用函数：仅测 DE / ES / US / GB ——
+            let results = await sampleRegionsLatency(
+                countries: allRegion.filter { ["DE", "ES", "US", "GB"].contains($0) },
+                timeout: 3.0
+            )
+            
+            // 写回缓存 & 让 allRegion 变为按延迟从快到慢的顺序
+            regionSampleNode = Dictionary(uniqueKeysWithValues: results.map { ($0.region, $0.node) })
+            regionLatencyMs  = Dictionary(uniqueKeysWithValues: results.map { ($0.region, $0.delay >= 0 ? $0.delay : Int.max) })
+            allRegionTested  = results.map { $0.region }
+            
+            // 可选：简单打印观测到的次序
+            #if DEBUG
+                let preview = results.prefix(8).map { "\($0.region)=\($0.delay)ms" }.joined(separator: ", ")
+                print("⚡️ Region latency order (top): \(preview)")
+            #endif
+            
+
+            print("✅ NodeStore initialized: \(allNodes.count) nodes, \(allRegion.count) regions")
+        } catch {
+            print("❌ NodeStore initialization failed:", error)
+        }
+    }
 
     /// 随机选一个可达节点
     static func getRandom(region: String? = nil,
@@ -199,6 +174,44 @@ struct NodeStore {
         }
         return nil
     }
+    
+    /// 按国家列表抽样：每个国家随机 1 节点，并发测延迟，返回 (country, node, delay) 从快到慢
+    static func sampleRegionsLatency(
+        countries: [String],
+        timeout: TimeInterval = 3.0
+    ) async -> [(region: String, node: Node, delay: Int)] {
+        let regionsSnapshot = countries
+        var results: [(region: String, node: Node, delay: Int)] = []
+        results.reserveCapacity(regionsSnapshot.count)
+    
+        await withTaskGroup(of: (String, Node?, Int).self) { group in
+            for r in regionsSnapshot {
+                // 候选以 Node.country 匹配（因为 allRegion 里现在只保留国家码）
+                let candidates = allNodes.filter { $0.country == r }
+                if let pick = candidates.randomElement() {
+                    group.addTask {
+                        let d = await getNodeDelay(pick, timeout: timeout)
+                        return (r, pick, d)
+                    }
+                } else {
+                    group.addTask { (r, nil, Int.max) }
+                }
+            }
+            for await (r, nodeOpt, delay) in group {
+                if let n = nodeOpt { results.append((r, n, delay)) }
+            }
+        }
+        // -1 视为最慢
+        results.sort {
+            let a = $0.delay >= 0 ? $0.delay : Int.max
+            let b = $1.delay >= 0 ? $1.delay : Int.max
+            return a < b
+        }
+        return results
+    }
+    
+    
+    
 
     static func getNodeDelay(_ node: Node, timeout: TimeInterval = 3.0) async -> Int {
         await withCheckedContinuation { continuation in
@@ -206,6 +219,8 @@ struct NodeStore {
             guard let port = NWEndpoint.Port(rawValue: 80) else {
                 continuation.resume(returning: -1); return
             }
+            
+            print("getNodeDelay start for \(node)")
 
             let conn = NWConnection(host: host, port: port, using: .tcp)
             let start = Date()
@@ -244,20 +259,84 @@ struct NodeStore {
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(-1) }
         }
     }
+    
+    // ✅ 将 fetchAllNodesViaWeb3swift 放入 NodeStore 内部
+    static func fetchAllNodesViaWeb3swift(
+        rpc: String = "https://mainnet-rpc.conet.network",
+        contractHex: String = "0x2DF3302d0c9aC19BE01Ee08ce3DDA841BdcF6F03",
+        pageSize: UInt = 200,
+        maxPages: Int = 10_000
+    ) async throws -> [Node] {
+        guard let url = URL(string: rpc) else { throw NodeFetchError.badURL }
+        let web3 = try await Web3.new(url)
+        guard let caddr = EthereumAddress(contractHex) else { throw NodeFetchError.badAddress }
+
+        let abi = nodeInfoABI
+        let contract = web3.contract(abi, at: caddr)!
+        var start = BigUInt(0)
+        let length = BigUInt(pageSize)
+        var allOnchain: [OnchainNode] = []
+        var page = 0
+
+        while page < maxPages {
+            let result = try await contract.createReadOperation(
+                "getAllNodes", parameters: [start, length]
+            )!.callContractMethod()
+
+            let arrAny: [Any]
+            if let named = result["allNodes"] as? [Any] {
+                arrAny = named
+            } else if let first = result.values.first as? [Any] {
+                arrAny = first
+            } else { throw NodeFetchError.decode }
+
+            let pageNodes = try decodeOnchainNodes(arrAny)
+            allOnchain.append(contentsOf: pageNodes)
+            if pageNodes.count < Int(pageSize) { break }
+            start += length
+            page += 1
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        let mapped: [Node] = allOnchain.map { oc in
+            Node(
+                country: deriveCountry(fromRegionName: oc.regionName),
+                ip_addr: oc.ip_addr,
+                region: oc.regionName,
+                armoredPublicKey: oc.PGP,
+                nftNumber: String(oc.id)
+            )
+        }
+        
+        allNodes_domain = allOnchain.map { oc in
+            OnchainNode(id: oc.id, PGP: oc.PGP, PGPKey: oc.PGPKey, ip_addr: oc.ip_addr, regionName: oc.regionName)
+        }
+        
+
+        // 去重并更新 allRegion
+        let deduped = dedupeNodes(mapped)
+        var seen = Set<String>()
+        var regions: [String] = []
+        for n in deduped where seen.insert(n.region).inserted {
+            regions.append(n.region)
+        }
+        allRegion = regions
+        return deduped
+    }
 }
 
 // ⭐️ 提供一个入口把链上数据拉下来并写到 NodeStore.allNodes
-@MainActor
-func reloadNodesFromChain(pageSize: UInt = 200) async {
-    do {
-        let nodes = try await fetchAllNodesViaWeb3swift(pageSize: pageSize)
-        NodeStore.allNodes = nodes
-        print("✅ fetched \(nodes.count) nodes")
-        
-    } catch {
-        print("❌ fetch nodes failed:", error)
-    }
-}
+//@MainActor
+//func reloadNodesFromChain(pageSize: UInt = 200) async {
+//    do {
+//        let nodes = try await NodeStore.initialize()
+//
+//        print("✅ fetched \(nodes.count) nodes")
+//        
+//    } catch {
+//        print("❌ fetch nodes failed:", error)
+//    }
+//}
 
 let nodeInfoABI = """
 [{"inputs":[],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"bytes32","name":"ipAddr","type":"bytes32"},{"indexed":true,"internalType":"bytes32","name":"regin","type":"bytes32"}],"name":"deleteIPAddr","type":"event"},{"inputs":[{"internalType":"string","name":"ipaddress","type":"string"}],"name":"IP2PGP","outputs":[{"internalType":"string","name":"pgp","type":"string"},{"internalType":"string","name":"pgpKey","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"id","type":"uint256"},{"internalType":"string","name":"ipaddress","type":"string"},{"internalType":"string","name":"regionName","type":"string"},{"internalType":"string","name":"pgp","type":"string"},{"internalType":"string","name":"pgpKey","type":"string"},{"internalType":"address","name":"owner","type":"address"}],"name":"addNode","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"adminList","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"addr","type":"address"},{"internalType":"bool","name":"status","type":"bool"}],"name":"changeAddressInAdminlist","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"start","type":"uint256"},{"internalType":"uint256","name":"length","type":"uint256"}],"name":"getAllNodes","outputs":[{"components":[{"internalType":"uint256","name":"id","type":"uint256"},{"internalType":"string","name":"PGP","type":"string"},{"internalType":"string","name":"PGPKey","type":"string"},{"internalType":"string","name":"ip_addr","type":"string"},{"internalType":"string","name":"regionName","type":"string"}],"internalType":"struct nodeInfo[]","name":"allNodes","type":"tuple[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllRegions","outputs":[{"internalType":"string[]","name":"Regions","type":"string[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"}],"name":"getOwnerIPs","outputs":[{"internalType":"string[]","name":"ips","type":"string[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"pgpKey","type":"string"}],"name":"getPGPKeyIPaddress","outputs":[{"internalType":"string","name":"ipaddress","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"regionName","type":"string"}],"name":"getReginNodes","outputs":[{"internalType":"string[]","name":"nodes","type":"string[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"regionName","type":"string"}],"name":"getRegionNodes","outputs":[{"internalType":"string[]","name":"nodes","type":"string[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"text","type":"string"}],"name":"hashString","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"pure","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"id2ip","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"uint256","name":"id","type":"uint256"},{"internalType":"string","name":"ipaddress","type":"string"}],"name":"id2node","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"idOwner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"ip2id","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"ipaddress2PGP","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"ipaddress2owner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"ipaddress2pgpKey","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"ipaddressExisting","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"ipaddressToRegion","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"pgpKey2ipaddress","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"pgpKeyToPGP","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"pgp","type":"string"},{"internalType":"string","name":"pgpKey","type":"string"},{"internalType":"string","name":"ipaddress","type":"string"}],"name":"pgpUpdate","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"string","name":"","type":"string"}],"name":"regionExisting","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"regionList","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"string","name":"ipaddress","type":"string"}],"name":"removeNode","outputs":[],"stateMutability":"nonpayable","type":"function"}]

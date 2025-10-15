@@ -82,7 +82,7 @@ public final class ServerConnection {
 
 
 	/// 获取当前进程物理占用（MB），优先使用 task_vm_info.phys_footprint
-	private static func currentRSSMB() -> Int? {
+	public static func currentRSSMB() -> Int? {
 		#if canImport(Darwin)
 		var info = task_vm_info_data_t()
 		var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
@@ -360,6 +360,8 @@ public final class ServerConnection {
 		}
 		return nil
 	}
+    
+    private var socksVer: Int? = nil  // 4 or 5
 
     private func parseBuffer() {
         // 安全检查：确保 buffer 不为空
@@ -379,24 +381,22 @@ public final class ServerConnection {
             
             switch phase {
             case .methodSelect:
-                // HTTP/HTTPS proxy support added
-                
-                // 先尝试 SOCKS5；若不是，则尝试 HTTP 代理首包解析
-                if let first = recvBuffer.first, first == 0x05 {
-                   advanced = parseMethodSelect()
-                    self.httpConnect = false
-               } else {
-                    // 可能是 HTTP/HTTPS 显式代理（GET/POST/CONNECT ...）
-                    advanced = tryParseHTTPProxyRequest()
-                    if !advanced {
-                        // 还不足以解析 HTTP 首部，继续等待更多数据
-                        // 避免误关连接
-                        log("🔴🔴🔴methodSelect: waiting for more bytes (maybe HTTP proxy)")
+                if let first = recvBuffer.first {
+                    if first == 0x05 {
+                        // SOCKS5
+                        socksVer = 5
+                        httpConnect = false
+                        advanced = parseMethodSelect()
+                    } else if first == 0x04 {
+                        // SOCKS4/4a
+                        socksVer = 4
+                        httpConnect = false
+                        advanced = parseSocks4Request()
+                    } else {
+                        // 尝试当作 HTTP 代理
+                        advanced = tryParseHTTPProxyRequest()
+                        if !advanced { log("methodSelect: waiting (HTTP/SOCKS?)") }
                     }
-                }
-                
-                if advanced {
-                    log("parseBuffer: methodSelect consumed \(bufferSizeBefore - recvBuffer.count) bytes")
                 }
             case .requestHead:
                 advanced = parseRequestHead()
@@ -425,6 +425,95 @@ public final class ServerConnection {
         }
         
         log("parseBuffer: done, remaining buffer=\(recvBuffer.count) bytes")
+    }
+    
+    private func parseSocks4Request() -> Bool {
+        // 格式: VN(0x04) CD(0x01=CONNECT) DSTPORT(2) DSTIP(4) USERID(zero-terminated) [DOMAIN(zero-terminated) if 4a]
+        // 先检查最小头 8 字节
+        guard recvBuffer.count >= 8 else { return false }
+        // 不破坏缓冲，先窥视
+        let head = Array(recvBuffer.prefix(8))
+        let vn = head[0], cd = head[1]
+        guard vn == 0x04 else { return false }
+        guard cd == 0x01 else {
+            // 仅支持 CONNECT
+            // 返回 0x5b（拒绝）
+            _ = sendSocks4Reply(granted: false, host: "0.0.0.0", port: 0)
+            close(reason: "SOCKS4 unsupported cmd \(cd)")
+            return true
+        }
+        let dstPort = (Int(head[2]) << 8) | Int(head[3])
+        let ipBytes = [head[4], head[5], head[6], head[7]]
+        let isSocks4a = (ipBytes[0] == 0 && ipBytes[1] == 0 && ipBytes[2] == 0 && ipBytes[3] != 0)
+
+        // 找 USERID 结尾的 \0
+        // 起始位置从第 8 字节开始
+        guard let uidEnd = recvBuffer[8...].firstIndex(of: 0x00) else { return false } // 等更多数据
+        let afterUID = recvBuffer.index(after: uidEnd)
+
+        var host = ""
+        if isSocks4a {
+            // 需要再找一个 \0 作为域名结尾
+            guard let domainEnd = recvBuffer[afterUID...].firstIndex(of: 0x00) else { return false }
+            let domainData = recvBuffer[afterUID..<domainEnd]
+            host = String(data: domainData, encoding: .utf8) ?? ""
+            // 消费：头(8) + userid + \0 + domain + \0
+            recvBuffer.removeSubrange(recvBuffer.startIndex..<recvBuffer.index(after: domainEnd))
+        } else {
+            // 直接用 IPv4 字面量
+            host = "\(ipBytes[0]).\(ipBytes[1]).\(ipBytes[2]).\(ipBytes[3])"
+            // 消费：头(8) + userid + \0
+            recvBuffer.removeSubrange(recvBuffer.startIndex..<afterUID)
+        }
+
+        // --- 白名单：直连（与 SOCKS5 逻辑保持一致） ---
+        if shouldDirect(host: host) {
+            useLayerMinus = false
+            log("SOCKS4 CONNECT \(host):\(dstPort) matched allowlist -> DIRECT")
+        } else {
+            useLayerMinus = true
+        }
+
+        // --- 黑名单：直接拒绝 ---
+        if shouldBlock(host: host) {
+            log("SOCKS4 CONNECT \(host):\(dstPort) blocked by blacklist")
+            _ = sendSocks4Reply(granted: false, host: "0.0.0.0", port: 0)
+            close(reason: "blocked by blacklist (SOCKS4 \(host))")
+            return true
+        }
+
+        // 发送 0x5a 同意，并进入 .connected
+        return didGetTargetSocks4(host: host, port: dstPort)
+    }
+
+    @discardableResult
+    private func sendSocks4Reply(granted: Bool, host: String, port: Int) -> Bool {
+        // 规范：VN=0x00, REP=0x5a(成功)/0x5b(失败)，然后回填 BINDPORT/BINDIP（这里用 0）
+        let rep: UInt8 = granted ? 0x5a : 0x5b
+        let pHi = UInt8((port >> 8) & 0xff), pLo = UInt8(port & 0xff)
+        let ipBytes: [UInt8]
+        if let ipv4 = IPv4Address(host) {
+            ipBytes = Array(ipv4.rawValue)
+        } else {
+            ipBytes = [0,0,0,0]
+        }
+        var reply = Data()
+        reply.append(contentsOf: [0x00, rep, pHi, pLo])
+        reply.append(contentsOf: ipBytes)
+        client.send(content: reply, completion: .contentProcessed { [weak self] err in
+            if let err = err { self?.log("send SOCKS4 reply err: \(err)") }
+        })
+        return granted
+    }
+
+    private func didGetTargetSocks4(host: String, port: Int) -> Bool {
+        log("SOCKS4 CONNECT \(host):\(port) -> reply OK, then wait first-body")
+        _ = sendSocks4Reply(granted: true, host: "0.0.0.0", port: 0)
+        self.httpConnect = false
+        phase = .connected(host: host, port: port)
+        // 若缓冲里已经有首包，立刻处理
+        parseBuffer()
+        return true
     }
     
     // MARK: HTTP/HTTPS Proxy 解析与改写（绝对URI → origin-form）
@@ -948,10 +1037,10 @@ public final class ServerConnection {
         // 标记已移交，停止接收
         handedOff = true
         phase = .bridged
-
+        
         if isIPAddress(host) {
             if isTelegramIP(host) {
-                useLayerMinus = false
+                useLayerMinus = true
                 log("🔵 TELEGRAM IP detected: \(host):\(port) -> force LayerMinus")
             } else {
                 useLayerMinus = false
@@ -968,12 +1057,14 @@ public final class ServerConnection {
                 return
             }
         }
+        
+        useLayerMinus = false
 
         guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
             !egressNode.isEmpty else {
 		// guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
         //     egressNode.isEmpty else {
-            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) useLayerMinus=\(useLayerMinus), layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
+            let connectInfo = "origin=\(host):\(port) \(useLayerMinus) httpConnect \(httpConnect) socksVer \((socksVer != nil) ? String(socksVer!) : "nil") useLayerMinus=\(useLayerMinus), layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
             
             // 创建并启动 LayerMinusBridge，保存引用
             

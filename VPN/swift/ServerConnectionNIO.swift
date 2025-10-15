@@ -19,6 +19,28 @@ import NIO
 import NIOTransportServices
 import os.log
 
+@inline(__always)
+private func rssMB_NIO() -> Int {
+    #if canImport(Darwin)
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
+    let kr = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    if kr == KERN_SUCCESS { return Int(info.phys_footprint / 1024 / 1024) }
+    #endif
+    return -1
+}
+
+@inline(__always)
+private func memPressureFlag(_ rssMB: Int, softLimitMB: Int = 48) -> String {
+    guard rssMB >= 0 else { return "unknown" }
+    return rssMB >= softLimitMB ? "ON" : "OFF"
+}
+
+
 /// NIO 版本的本地代理连接：解析 SOCKS5 / HTTP 代理首包，决定直连/LayerMinus，
 /// 然后把下游 Channel 交给 LayerMinusBridgeNIO 承载自动背压与双向转发。
 public final class ServerConnectionNIO {
@@ -153,7 +175,7 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
     private var closed = false
     private var handedOff = false
     private var activeBridge: LayerMinusBridgeNIO?
-
+    private var lastReason: String? = nil
     // —— 缓冲与阈值（与旧类一致）
     private let HTTP_HDR_MAX  = 31 * 1024
     private let HTTP_BODY_MAX = 31 * 1024
@@ -172,10 +194,29 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         log("🟢 CREATED ServerConnectionNIO #\(id)")
         log("MEM  \(memorySummary())")
     }
+    
+    @inline(__always)
+    private func appendReason(_ r: @autoclosure () -> String) {
+        let newPart = r()
+        if let existing = lastReason {
+            // 避免重复
+            if !existing.contains(newPart) {
+                lastReason = existing + " | " + newPart
+            }
+        } else {
+            lastReason = newPart
+        }
+    }
 
     deinit {
-        
-        log("🔴 DESTROYED ServerConnectionNIO #\(id)")
+        // 更智能的兜底：优先 lastReason；否则根据状态推断
+        let inferred: String = {
+            if let r = lastReason { return r }
+            if handedOff { return "handedoff (no explicit reason)" }
+            if closed { return "closed (no explicit reason)" }
+            return "unknown (neither closed nor handedOff)"
+        }()
+        log("🔴 DESTROYED ServerConnectionNIO #\(id) reason=\(inferred)")
         log("MEM  \(memorySummary())")
     }
 
@@ -198,6 +239,7 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         guard !closed else { return }
         
         if handedOff {
+            appendReason("handedoff: passthrough")
             context.fireChannelRead(data)
             return
         }
@@ -217,11 +259,27 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
             if recvBuffer.count > KEEP {
                 recvBuffer = recvBuffer.suffix(KEEP)
             }
+            let rss = ServerConnInboundHandler.currentRSSMB()
+            log("MEM  trim_after_exceed rss_mb=\(rss) pressure=\(rss >= 48 ? "ON" : "OFF") buffer=\(recvBuffer.count)B")
             log("recvBuffer exceeded soft limit (\(recvBuffer.count)B), trimmed to \(KEEP)B")
         }
 
         parseBuffer(context)
         if !closed, !handedOff { context.read() }
+    }
+    
+    static func currentRSSMB() -> Int {
+        #if canImport(Darwin)
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
+        let kr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        if kr == KERN_SUCCESS { return Int(info.phys_footprint / 1024 / 1024) }
+        #endif
+        return -1
     }
     
     // 背压事件：务必转发（否则事件链会断，DuplexPipe 的逻辑也可能收不到）
@@ -249,8 +307,8 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         guard !closed else { return }
         closed = true
         phase = .closed
+        lastReason = reason        // 👈 保存关闭原因
         log("close: \(reason)")
-        // 释放 Bridge 引用（让其在关闭后正确析构）
         activeBridge = nil
         context.close(promise: nil)
         onClosed?(id)
@@ -506,11 +564,10 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         let (targetHost, targetPort, originPath) = normalizeAbsoluteOrOriginPath(rawPath: rawPath, hostHeader: hostHeader)
 
         if method.uppercased() == "GET",
-           (targetHost == "127.0.0.1" || targetHost == "localhost"),
            targetPort == 8888,
-           (originPath == "/pac" || originPath == "/pac.js") {
+           (originPath == "/pac") {
             // 返回 PAC
-            let body = PACBuilder.buildPAC()
+            let body =  PACBuilder.buildPAC(proxyHost: targetHost)
             var headers = "HTTP/1.1 200 OK\r\n"
             headers += "Content-Type: application/x-ns-proxy-autoconfig; charset=utf-8\r\n"
             headers += "Cache-Control: no-store, max-age=0\r\n"
@@ -554,11 +611,20 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         guard !handedOff else { return }
         handedOff = true
         phase = .bridged
+        
+        let rssBefore = ServerConnInboundHandler.currentRSSMB()
+        log("MEM  handoff_begin rss_mb=\(rssBefore) pressure=\(rssBefore >= 48 ? "ON" : "OFF") firstBody=\(firstBody.count)B")
+        
         let ch = ctx.channel
+        appendReason("handedoff: bridged pipeline \(host):\(port)")
 
         // —— 直连（或失败时）路径：直接把下游交给 Bridge，目标 host:port
         func startDirectBridge(connectInfo: String, targetHost: String, targetPort: Int, firstBody: Data) {
             let b64 = firstBody.base64EncodedString()
+            let rssAfter = ServerConnInboundHandler.currentRSSMB()
+            self.log("MEM  handoff_direct_started rss_mb=\(rssAfter) pressure=\(rssAfter >= 48 ? "ON" : "OFF")")
+            
+            appendReason("handedoff: DIRECT \(targetHost):\(targetPort)")
             let bridge = LayerMinusBridgeNIO(
                 id: id,
                 targetHost: targetHost,
@@ -594,6 +660,8 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
             ctx.pipeline.addHandler(BridgeRetainerHandler(bridge: bridge), position: .last).whenComplete { _ in
                 // 启动 Bridge
                 bridge.start(withFirstBody: b64)
+                let rssAfter = ServerConnInboundHandler.currentRSSMB()
+                self.log("MEM  handoff_LM_started rss_mb=\(rssAfter) pressure=\(rssAfter >= 48 ? "ON" : "OFF")")
                 // ★ 现在可安全移除解析 handler，避免后续吞事件/断背压链
                 ctx.pipeline.removeHandler(self, promise: nil)
             }
@@ -604,12 +672,12 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
         
         // 如果不走 LayerMinus，或者拿不到 egress/entry 节点，就直接连接目标
 //        guard useLayerMinus, let egress = layerMinus.getRandomEgressNodes(), !egress.isEmpty else {
-            let info = "origin=\(host):\(port) DIRECT (LM disabled or no node)"
+            let info = " httpConnect \(httpConnect) socksVer \(socksVer) origin=\(host):\(port) DIRECT (LM disabled or no node) "
             startDirectBridge(connectInfo: info, targetHost: host, targetPort: port, firstBody: firstBody)
             return
 //        }
 
-        // —— LayerMinus 路径：构造签名请求，目的连 entry(或 egress) 80 端口，首包为 JSON 请求
+         //—— LayerMinus 路径：构造签名请求，目的连 entry(或 egress) 80 端口，首包为 JSON 请求
 //        let entryHost = layerMinus.getRandomEntryNodes()?.ip_addr ?? egress.ip_addr
 //        let message = layerMinus.makeSocksRequest(host: host, port: port, body: firstBody.base64EncodedString(), command: "CONNECT")
 //        let messageData = message.data(using: .utf8)!
@@ -619,6 +687,7 @@ final class ServerConnInboundHandler: ChannelInboundHandler, RemovableChannelHan
 //            guard let self = self else { return }
 //            do {
 //                let sig = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
+//                
 //                if let fn = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message"),
 //                   let ret = fn.call(withArguments: [message, "0x\(sig.toHexString())"]) {
 //                    let cmd = ret.toString()!
