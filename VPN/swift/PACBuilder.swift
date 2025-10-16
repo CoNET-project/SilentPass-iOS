@@ -144,8 +144,7 @@ enum PACBuilder {
         function FindProxyForURL(url, host) {
           if (!host) return "DIRECT";
           if (isPlainHostName(host)) return "DIRECT";
-          // —— 如果 host 是 IPv4 或 IPv6 地址，强制 DIRECT —— //
-          if (_isIPv4(host) || _isIPv6(host)) return "DIRECT";
+
           var h = host.toLowerCase();
 
           // —— 静态本地优先：命中即 DIRECT —— //

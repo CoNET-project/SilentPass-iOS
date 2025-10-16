@@ -44,8 +44,18 @@ private enum BridgeGlobals {
     // 串行队列保护全局状态（避免额外依赖 atomics）
     static let q = DispatchQueue(label: "LayerMinusBridge.globals")
     static var activeConns: Int = 0
-    // 当检测到 ENETDOWN 时，把“路径处于抖动期”的截止时间写在这里
-    static var pathDownUntil: UInt64 = 0  // DispatchTime.uptimeNanoseconds
+        // ENETDOWN 退避：按接口类型分别记录（避免蜂窝抖动影响 Wi-Fi）
+        enum Iface { case cellular, wifi, other }
+        static var pathDownUntilByIface: [Iface: UInt64] = [:]  // DispatchTime.uptimeNanoseconds
+        static var enetdownHitsByIface: [Iface: Int] = [:]      // 连续触发计数（轻量）
+    
+        @inline(__always)
+        static func iface(for path: NWPath?) -> Iface {
+            guard let p = path else { return .other }
+            if p.usesInterfaceType(.cellular) { return .cellular }
+            if p.usesInterfaceType(.wifi)     { return .wifi }
+            return .other
+        }
 }
 
 @inline(__always)
@@ -65,93 +75,93 @@ public actor LayerMinusBridge {
     
     
     
-	// 小工具：毫秒级延迟
-	@inline(__always)
-	private func delayMs(_ ms: Int) async {
-		try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
-	}
+    // 小工具：毫秒级延迟
+    @inline(__always)
+    private func delayMs(_ ms: Int) async {
+        try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+    }
 
-	enum ConnectionState {
-		case idle
-		case connecting
-		case connected
-		case closing
-		case closed
-	}
+    enum ConnectionState {
+        case idle
+        case connecting
+        case connected
+        case closing
+        case closed
+    }
 
-	private var connectionState = ConnectionState.idle
+    private var connectionState = ConnectionState.idle
 
-	private func transitionTo(_ newState: ConnectionState) -> Bool {
-		// Validate state transitions
-		switch (connectionState, newState) {
-		case (.idle, .connecting), 
-			(.connecting, .connected),
-			(.connected, .closing),
-			(.closing, .closed),
-			(.connecting, .closing),
-			(.idle, .closed):
-			connectionState = newState
-			return true
-		default:
-			log("Invalid state transition: \(connectionState) -> \(newState)")
-			return false
-		}
-	}
+    private func transitionTo(_ newState: ConnectionState) -> Bool {
+        // Validate state transitions
+        switch (connectionState, newState) {
+        case (.idle, .connecting),
+            (.connecting, .connected),
+            (.connected, .closing),
+            (.closing, .closed),
+            (.connecting, .closing),
+            (.idle, .closed):
+            connectionState = newState
+            return true
+        default:
+            log("Invalid state transition: \(connectionState) -> \(newState)")
+            return false
+        }
+    }
 
-	private func handleConnectionLoss() async {
-		log("Connection loss detected")
-		if connectionState == .connected {
-			cancel(reason: "connection_viability_lost")
-		}
-	}
+    private func handleConnectionLoss() async {
+        log("Connection loss detected")
+        if connectionState == .connected {
+            cancel(reason: "connection_viability_lost")
+        }
+    }
 
-	private func monitorConnectionHealth() async {
-		while connectionState == .connected {
-			
-			// Log health check
-			log("Health check: state=\(connectionState) upstream=\(upstream != nil) closed=\(closed)")
-			
-			try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
-		}
-	}
+    private func monitorConnectionHealth() async {
+        while connectionState == .connected {
+            
+            // Log health check
+            log("Health check: state=\(connectionState) upstream=\(upstream != nil) closed=\(closed)")
+            
+            try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
+        }
+    }
 
-	public func gracefulShutdown() async {
-		guard transitionTo(.closing) else { return }
+    public func gracefulShutdown() async {
+        guard transitionTo(.closing) else { return }
     
-		cancelWatchdog()
-		
-		// 清理 upstream 回调并置空（先在 actor 上做）
-		upstream?.stateUpdateHandler = nil
-		upstream?.pathUpdateHandler = nil
-		upstream?.viabilityUpdateHandler = nil
-		upstream?.betterPathUpdateHandler = nil
-		let upstreamConn = upstream
-		upstream = nil
-		let clientConn = client
+        cancelWatchdog()
+        
+        // 清理 upstream 回调并置空（先在 actor 上做）
+        upstream?.stateUpdateHandler = nil
+        upstream?.pathUpdateHandler = nil
+        upstream?.viabilityUpdateHandler = nil
+        upstream?.betterPathUpdateHandler = nil
+        let upstreamConn = upstream
+        upstream = nil
+        let clientConn = client
 
-		// 发送 FIN
-		if let up = upstreamConn {
-			try? await up.sendAsync(nil, final: true)
-			try? await Task.sleep(nanoseconds: 500_000_000)
-		}
-		
-		try? await clientConn.sendAsync(nil, final: true)
-		try? await Task.sleep(nanoseconds: 100_000_000)
-		
-		// 在事件队列上取消
-		await withCheckedContinuation { cont in
-			eventQueue.async {
-				upstreamConn?.cancel()
-				clientConn.cancel()
-				cont.resume()
-			}
-		}
-		
-		_ = transitionTo(.closed)
-		onClosed?(id)
-	}
+        // 发送 FIN
+        if let up = upstreamConn {
+            try? await up.sendAsync(nil, final: true)
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        
+        try? await clientConn.sendAsync(nil, final: true)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        
+        // 在事件队列上取消
+        await withCheckedContinuation { cont in
+            eventQueue.async {
+                upstreamConn?.cancel()
+                clientConn.cancel()
+                cont.resume()
+            }
+        }
+        
+        _ = transitionTo(.closed)
+        onClosed?(id)
+    }
 
-	private func setupFirstByteWatchdog() {
+    private func setupFirstByteWatchdog() {
         cancelWatchdog()
         let watchdog = DispatchSource.makeTimerSource(queue: eventQueue)
 
@@ -168,6 +178,11 @@ public actor LayerMinusBridge {
         if targetHost.hasSuffix("telegram.org") || targetHost.hasPrefix("149.154.") || isInstagram {
             timeoutSec = 90.0  // 介于 75–90s
         }
+        
+            // 蜂窝网络下，443 端口普遍更易受抖动/拥塞影响：把首包超时放宽到 90s
+            if upstream?.currentPath?.usesInterfaceType(.cellular) == true && targetPort == 443 {
+                timeoutSec = max(timeoutSec, 90.0)
+            }
 
         let timeoutMs = Int(timeoutSec * 1000)
         watchdog.schedule(deadline: .now() + .milliseconds(timeoutMs))
@@ -181,65 +196,66 @@ public actor LayerMinusBridge {
         }
         firstByteWatchdog = watchdog
         watchdog.resume()
-	}
+    }
 
-	private func checkShouldCancelForTimeout() -> Bool {
-		return tFirstByte == nil && connectionState == .connected && !closed
-	}
+    private func checkShouldCancelForTimeout() -> Bool {
+        return tFirstByte == nil && connectionState == .connected && !closed
+    }
 
-	private func cancelWatchdog() {
-		firstByteWatchdog?.setEventHandler {}
-		firstByteWatchdog?.cancel()
-		firstByteWatchdog = nil
-	}
+    private func cancelWatchdog() {
+        firstByteWatchdog?.setEventHandler {}
+        firstByteWatchdog?.cancel()
+        firstByteWatchdog = nil
+    }
 
-	private func attemptConnection() async -> Bool {
-		guard transitionTo(.connecting) else { return false }
-		
-		// This should integrate with your existing connectUpstreamAndRun logic
-		// Return true if connection succeeds, false otherwise
-		// For now, returning placeholder
-		return false
-	}
+    private func attemptConnection() async -> Bool {
+        guard transitionTo(.connecting) else { return false }
+        
+        // This should integrate with your existing connectUpstreamAndRun logic
+        // Return true if connection succeeds, false otherwise
+        // For now, returning placeholder
+        return false
+    }
 
-	private func connectWithRetry(maxAttempts: Int = 3) async {
-		var attempt = 0
-		var backoffMs = 100
-		
-		while attempt < maxAttempts && !closed {
-			attempt += 1
-			
-			if await attemptConnection() {
-				return // Success
-			}
-			
-			guard attempt < maxAttempts else {
-				cancel(reason: "Max retry attempts reached")
-				return
-			}
-			
-			// Exponential backoff
-			try? await Task.sleep(nanoseconds: UInt64(backoffMs * 1_000_000))
-			backoffMs = min(backoffMs * 2, 5000) // Cap at 5 seconds
-		}
-	}
+    private func connectWithRetry(maxAttempts: Int = 3) async {
+        var attempt = 0
+        var backoffMs = 100
+        
+        while attempt < maxAttempts && !closed {
+            attempt += 1
+            
+            if await attemptConnection() {
+                return // Success
+            }
+            
+            guard attempt < maxAttempts else {
+                cancel(reason: "Max retry attempts reached")
+                return
+            }
+            
+            // Exponential backoff
+            try? await Task.sleep(nanoseconds: UInt64(backoffMs * 1_000_000))
+            backoffMs = min(backoffMs * 2, 5000) // Cap at 5 seconds
+        }
+    }
 
     // Immutable
-    public let id: UInt64
-    private let client: NWConnection
-    private let targetHost: String
-    private let targetPort: Int
-    private let verbose: Bool
-    private let onClosed: ((UInt64) -> Void)?
-    private let connectInfo: String?
-    private func infoTag() -> String {
+    nonisolated public let id: UInt64
+    nonisolated private let client: NWConnection
+    nonisolated private let targetHost: String
+    nonisolated private let targetPort: Int
+    nonisolated private let verbose: Bool
+    nonisolated private let onClosed: ((UInt64) -> Void)?
+    nonisolated private let connectInfo: String?
+    
+    nonisolated private func infoTag() -> String {
         guard let s = connectInfo, !s.isEmpty else { return "" }
         return " [\(s)]"
     }
 
     // A dedicated queue only for NWConnection callbacks & timers.
     // Not for state synchronization (the actor handles that).
-    private let eventQueue: DispatchQueue
+    nonisolated private let eventQueue: DispatchQueue
 
     // Runtime state
     private var upstream: NWConnection?
@@ -286,19 +302,20 @@ public actor LayerMinusBridge {
         os_log("%{public}@", msg)
         // 启动统一内存计量器（只会启动一次）
         MemoryGauge.start()
-		
+        
     }
 
-    #if DEBUG
-    private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "LayerMinusBridge")
+//    #if DEBUG
+    nonisolated private let vpnLog = OSLog(subsystem: "com.silentpass.vpn", category: "LayerMinusBridge")
     @inline(__always)
-    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
-        os_log("%{public}@", log: vpnLog, type: type, msg())
+    nonisolated private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) {
+        let tag = "[LayerMinusBridge #\(id)\(infoTag()) \(targetHost):\(targetPort)] "
+        os_log("%{public}@", log: vpnLog, type: type, tag + msg())
     }
-    #else
-    @inline(__always)
-    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
-    #endif
+//    #else
+//    @inline(__always)
+//    private func log(_ msg: @autoclosure () -> String, type: OSLogType = .info) { }
+//    #endif
 
     // Called by ServerConnection at handoff moment
     public func markHandoffNow() {
@@ -307,8 +324,9 @@ public actor LayerMinusBridge {
 
     // MARK: Start
     public func start(withFirstBody firstBodyBase64: String) {
+        log("start -> \(targetHost):\(targetPort), firstBody(Base64) len=\(firstBodyBase64.count)")
         guard !closed else { return }
-		guard transitionTo(.connecting) else { return }  // State transition
+        guard transitionTo(.connecting) else { return }  // State transition
 
         tStart = .now()
         log("start -> \(targetHost):\(targetPort), firstBody(Base64) len=\(firstBodyBase64.count)")
@@ -340,12 +358,21 @@ public actor LayerMinusBridge {
             }
             // 如果此前检测到 ENETDOWN，则延迟；否则直接连接
             let nowNs = DispatchTime.now().uptimeNanoseconds
-            let delayNs: UInt64 = BridgeGlobals.q.sync {
-                nowNs < BridgeGlobals.pathDownUntil ? (BridgeGlobals.pathDownUntil - nowNs) : 0
-            }
+           
+                let delayNs: UInt64 = BridgeGlobals.q.sync {
+                    let iface = BridgeGlobals.iface(for: self.client.currentPath)
+                    let until = BridgeGlobals.pathDownUntilByIface[iface] ?? 0
+                    return nowNs < until ? (until - nowNs) : 0
+                }
+            
+            
             if delayNs > 0 {
-                let ms = Int(Double(delayNs) / 1e6)
-                await self.log("path_down backoff: delay \(ms)ms before connect")
+                
+                    let ms = Int(Double(delayNs) / 1e6)
+                    let iface = BridgeGlobals.q.sync { BridgeGlobals.iface(for: self.client.currentPath) }
+                    self.log("path_down backoff: iface=\(iface) delay=\(ms)ms before connect")
+                
+                
                 self.eventQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) { [weak self] in
                     Task { [weak self] in
                         await self?.connectUpstreamAndRun(firstBody: firstBody)
@@ -361,10 +388,10 @@ public actor LayerMinusBridge {
     // MARK: Upstream connect
     private func connectUpstreamAndRun(firstBody: Data) {
 
-		guard upstream == nil, !usingBridge, !closed else {
-			log("skip connect: upstream=\(upstream != nil) usingBridge=\(usingBridge) closed=\(closed)")
-			return
-		}
+        guard upstream == nil, !usingBridge, !closed else {
+            log("skip connect: upstream=\(upstream != nil) usingBridge=\(usingBridge) closed=\(closed)")
+            return
+        }
         
             // 再次确认客户端仍可写（极端竞态下的二次保护）
             eventQueue.async { [weak self] in
@@ -384,6 +411,14 @@ public actor LayerMinusBridge {
 
         let host = NWEndpoint.Host(targetHost)
         let params = NWParameters.tcp
+        
+            // 🔧 更稳的蜂窝表现：禁用 TFO、开启 Handover、启用 noDelay
+            if let tcp = params.defaultProtocolStack.internetProtocol as? NWProtocolTCP.Options {
+                tcp.enableFastOpen = false   // 避免部分运营商/站点的 TFO 兼容问题
+                tcp.noDelay = true
+            }
+        //params.multipathServiceType = .handover  // 蜂窝抖动时更顺滑地切换基站/承载
+        params.allowLocalEndpointReuse = true   // 🔹减少频繁重连时的本地端口占用/WAIT 状态拖累
 
         log("Connecting to upstream \(targetHost):\(targetPort)")
         let up = NWConnection(host: host, port: port, using: params)
@@ -413,91 +448,95 @@ public actor LayerMinusBridge {
     private func handleUpstreamState(_ st: NWConnection.State, up: NWConnection?, firstBody: Data) async {
         guard !closed else { return }
 
-		guard connectionState == .connecting || connectionState == .connected else {
-			log("ignore upstream state \(st) in state=\(connectionState)")
-			return
-		}
+        guard connectionState == .connecting || connectionState == .connected else {
+            log("ignore upstream state \(st) in state=\(connectionState)")
+            return
+        }
 
-		
+        
         switch st {
         case .ready:
-			guard !usingBridge else { return }   // ✅ 防止重复启动桥接
+            guard !usingBridge else { return }   // ✅ 防止重复启动桥接
             log("upstream ready to \(targetHost):\(targetPort)")
             tReady = .now()
             usingBridge = true
-			_ = transitionTo(.connected)  // State transition
-			
-			// Start health monitoring
-			// Task { await monitorConnectionHealth() }
+            _ = transitionTo(.connected)  // State transition
+            
+            // Start health monitoring
+            // Task { await monitorConnectionHealth() }
 
             // 首包完成后再进入直通
             if !firstBody.isEmpty {
-				await sendFirstBody(firstBody)
-				// ✅ 若首包失败触发了 cancel，这里直接返回，避免继续桥接
-				if closed { return }
-			}
+                await sendFirstBody(firstBody)
+                // ✅ 若首包失败触发了 cancel，这里直接返回，避免继续桥接
+                if closed { return }
+            }
 
-			if let up = up {
-				up.betterPathUpdateHandler = { [weak self] available in
-					Task { [weak self] in if let self, available { await self.log("Better path available, consider migration") } }
-				}
-				up.viabilityUpdateHandler = { [weak self] viable in
-					Task { [weak self] in if let self { await self.log("viable=\(viable)") } }
-				}
-				up.pathUpdateHandler = { [weak self] path in
-					Task { [weak self] in if let self { await self.log("path status=\(path.status)") } }
-				}
-			}
-			if let up = up {
-				await bridgeConnections(client: client, remote: up)
-			}
+            if let up = up {
+                up.betterPathUpdateHandler = { [weak self] available in
+                    Task { [weak self] in if let self, available { await self.log("Better path available, consider migration") } }
+                }
+                up.viabilityUpdateHandler = { [weak self] viable in
+                    Task { [weak self] in if let self { await self.log("viable=\(viable)") } }
+                }
+                up.pathUpdateHandler = { [weak self] path in
+                    Task { [weak self] in
+                        if let self {
+                            let iface = BridgeGlobals.iface(for: path)
+                            self.log("path status=\(path.status) iface=\(iface) expensive=\(path.isExpensive) constrained=\(path.isConstrained)")
+                        }
+                    }
+                }
+            }
+            if let up = up {
+                await bridgeConnections(client: client, remote: up)
+            }
 
         case .waiting(let error):
-			guard !closed else { return }
+            guard !closed else { return }
             log("upstream waiting: \(error)")
 
         case .failed(let error):
-			guard !closed else { return }
-			log("upstream failed: \(error)")
-			
-			// 检查特定错误代码
+            guard !closed else { return }
+            log("upstream failed: \(error)")
+            
+            // 检查特定错误代码
             if case .posix(let code) = error {
-				switch code {
-				case .ECONNRESET:
-					log("Connection reset detected (ECONNRESET), no retry in DIRECT mode")
-				case .ENETDOWN:
-                    // 标记路径处于抖动期：1.2s 退避窗口，并以 path_down 原因收尾
-//                    let until = DispatchTime.now().uptimeNanoseconds &+ 1_200_000_000
-//                    BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil = max(BridgeGlobals.pathDownUntil, until) }
-//                    log("Network down detected (ENETDOWN) → set backoff 1200ms; cause=path_down")
-                    
-                        // 400–900ms 抖动退避，并设置 3s 冷却窗口避免频繁刷新
-                        let jitterMs = 400 + Int(arc4random_uniform(500)) // [400,900)
-                        let now = DispatchTime.now().uptimeNanoseconds
-                        let currentUntil = BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil }
-                        // 若已设置且距离现在 < 3s，则不刷新，避免持续粘滞
-                        let newUntil: UInt64 = (currentUntil > now && currentUntil - now < 3_000_000_000)
-                            ? currentUntil
-                            : now &+ UInt64(jitterMs) * 1_000_000
-                        BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil = newUntil }
-                        log("Network down (ENETDOWN) → backoff \(jitterMs)ms (cooldown 3s); cause=path_down")
+                switch code {
+                case .ECONNRESET:
+                    log("Connection reset detected (ECONNRESET), no retry in DIRECT mode")
+                case .ENETDOWN:
+                    /*
+                    // ‼️ BUG FIX: Disable the global backoff mechanism.
+                    // This logic incorrectly penalized all new connections, regardless of their network path.
+                    // A failure on the cellular interface should not block a new connection over Wi-Fi.
+                    let jitterMs = 400 + Int(arc4random_uniform(500)) // [400,900)
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    let currentUntil = BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil }
+                    // 若已设置且距离现在 < 3s，则不刷新，避免持续粘滞
+                    let newUntil: UInt64 = (currentUntil > now && currentUntil - now < 3_000_000_000)
+                        ? currentUntil
+                        : now &+ UInt64(jitterMs) * 1_000_000
+                    BridgeGlobals.q.sync { BridgeGlobals.pathDownUntil = newUntil }
+                    */
+                    log("Network down (ENETDOWN) detected. Canceling this connection without setting a global backoff.")
                     await delayMs(50)
                     if !closed { cancel(reason: "path_down(enetdown)") }
                     return
-				case .ECANCELED:
-					log("ECANCELED → soft-delay cancel")
-					await delayMs(150)               // 给 in-flight 的 completion 一个窗口
-					if !closed { cancel(reason: "upstream failed(ECANCELED): \(error)") }
-					return
-				default:
-					break
-				}
-			}
-			await delayMs(50) // 普通失败也稍微缓一缓
-			if !closed { cancel(reason: "upstream failed: \(error)") }
+                case .ECANCELED:
+                    log("ECANCELED → soft-delay cancel")
+                    await delayMs(150)               // 给 in-flight 的 completion 一个窗口
+                    if !closed { cancel(reason: "upstream failed(ECANCELED): \(error)") }
+                    return
+                default:
+                    break
+                }
+            }
+            await delayMs(50) // 普通失败也稍微缓一缓
+            if !closed { cancel(reason: "upstream failed: \(error)") }
 
         case .cancelled:
-			guard !closed else { return }
+            guard !closed else { return }
             log("upstream cancelled")
             await delayMs(100)
             if !closed { cancel(reason: "upstream cancelled (delayed)") }
@@ -514,53 +553,53 @@ public actor LayerMinusBridge {
         var c2sHadError = false
         var s2cHadError = false
         await withTaskGroup(of: Void.self) { group in
-			group.addTask { [weak self] in
-				guard let self = self else { return }
-				do {
-					var chunkCount = 0
-					// 传递 bridgeId 和 connectInfo
-					for try await data in client.receiveStream(
-						maxLength: GLOBAL_MAX_BUFFER,
-						bridgeId: self.id,
-						connectInfo: self.connectInfo
-					) {
-						chunkCount += 1
-						await self.addUpBytes(data.count)
-						
-						if chunkCount % 100 == 0 {
-							await self.log("C->S chunks:\(chunkCount) bytes:\(data.count)")
-						}
-						
-						try await remote.sendAsync(data)
-					}
-				} catch {
-					await self.log("C->S error (benign, no immediate cancel): \(error)")
-					c2sHadError = true
-					return
-				}
-				try? await remote.sendAsync(nil, final: true)
-			}
-			
-			group.addTask { [weak self] in
-				guard let self = self else { return }
-				do {
-					// 同样传递 bridgeId 和 connectInfo
-					for try await data in remote.receiveStream(
-						maxLength: GLOBAL_MAX_BUFFER,
-						bridgeId: self.id,
-						connectInfo: self.connectInfo
-					) {
-						await self.onFirstDownBytes(n: data.count)
-						try await client.sendAsync(data)
-					}
-				} catch {
-					await self.log("S->C error (benign, no immediate cancel): \(error)")
-					s2cHadError = true
-					return
-				}
-				try? await client.sendAsync(nil, final: true)
-			}
-		}
+            group.addTask { [weak self] in
+                guard let self = self else { return }
+                do {
+                    var chunkCount = 0
+                    // 传递 bridgeId 和 connectInfo
+                    for try await data in client.receiveStream(
+                        maxLength: GLOBAL_MAX_BUFFER,
+                        bridgeId: self.id,
+                        connectInfo: self.connectInfo
+                    ) {
+                        chunkCount += 1
+                        await self.addUpBytes(data.count)
+                        
+                        if chunkCount % 100 == 0 {
+                            await self.log("C->S chunks:\(chunkCount) bytes:\(data.count)")
+                        }
+                        
+                        try await remote.sendAsync(data)
+                    }
+                } catch {
+                    await self.log("C->S error (benign, no immediate cancel): \(error)")
+                    c2sHadError = true
+                    return
+                }
+                try? await remote.sendAsync(nil, final: true)
+            }
+            
+            group.addTask { [weak self] in
+                guard let self = self else { return }
+                do {
+                    // 同样传递 bridgeId 和 connectInfo
+                    for try await data in remote.receiveStream(
+                        maxLength: GLOBAL_MAX_BUFFER,
+                        bridgeId: self.id,
+                        connectInfo: self.connectInfo
+                    ) {
+                        await self.onFirstDownBytes(n: data.count)
+                        try await client.sendAsync(data)
+                    }
+                } catch {
+                    await self.log("S->C error (benign, no immediate cancel): \(error)")
+                    s2cHadError = true
+                    return
+                }
+                try? await client.sendAsync(nil, final: true)
+            }
+        }
 
         // 统一收尾：不再固定 500ms cancel，改为“等待另一侧结束或空闲超时”
         if !closed {
@@ -584,7 +623,7 @@ public actor LayerMinusBridge {
             if !closed { cancel(reason: reason + " waited_ms=\(waited)") }
         }
     
-	}
+    }
 
     // Helpers (actor-isolated mutations)
     private func addUpBytes(_ n: Int) {
@@ -627,34 +666,34 @@ public actor LayerMinusBridge {
 
     // MARK: Cancel / KPI
     public func cancel(reason: String) {
-		guard !closed else { return }
-			
-			if connectionState != .closing && connectionState != .closed {
-				_ = transitionTo(.closing)
-			}
-			closed = true
-			cancelWatchdog()
-			kpiLog(reason: reason)
-			
-			// 清理 handlers（在 actor 上下文中，同步执行）
-			upstream?.stateUpdateHandler = nil
-			upstream?.pathUpdateHandler = nil
-			upstream?.viabilityUpdateHandler = nil
-			upstream?.betterPathUpdateHandler = nil
-			
-			// 保存引用
-			let upToCancel = upstream
-			let clientToCancel = client
-			upstream = nil
-			
-			// 在事件队列上取消连接
-			eventQueue.async {
-				upToCancel?.cancel()
-				clientToCancel.cancel()
-			}
-			
-			_ = transitionTo(.closed)
-			onClosed?(id)
+        guard !closed else { return }
+            
+            if connectionState != .closing && connectionState != .closed {
+                _ = transitionTo(.closing)
+            }
+            closed = true
+            cancelWatchdog()
+            kpiLog(reason: reason)
+            
+            // 清理 handlers（在 actor 上下文中，同步执行）
+            upstream?.stateUpdateHandler = nil
+            upstream?.pathUpdateHandler = nil
+            upstream?.viabilityUpdateHandler = nil
+            upstream?.betterPathUpdateHandler = nil
+            
+            // 保存引用
+            let upToCancel = upstream
+            let clientToCancel = client
+            upstream = nil
+            
+            // 在事件队列上取消连接
+            eventQueue.async {
+                upToCancel?.cancel()
+                clientToCancel.cancel()
+            }
+            
+            _ = transitionTo(.closed)
+            onClosed?(id)
             // 活动连接 -1 并打印 RSS
             let left = BridgeGlobals.q.sync { BridgeGlobals.activeConns &-= 1; return BridgeGlobals.activeConns }
             log("CANCEL trigger id=\(id) reason=\(reason) | active_conns=\(left) rss_mb=\(rssMB()) RSS=\(MemoryGauge.rssMB())")
@@ -675,23 +714,23 @@ public actor LayerMinusBridge {
 
     deinit {
         let needsCleanup = !closed
-		if needsCleanup {
-			// 立即清理所有 handlers（这是线程安全的）
-			upstream?.stateUpdateHandler = nil
-			upstream?.pathUpdateHandler = nil  
-			upstream?.viabilityUpdateHandler = nil
-			upstream?.betterPathUpdateHandler = nil
-			
-			// 保存引用
-			let upToCancel = upstream
-			let clientToCancel = client
-			
-			// 异步取消（避免死锁）
-			eventQueue.async {
-				upToCancel?.cancel()
-				clientToCancel.cancel()
-			}
-		}
+        if needsCleanup {
+            // 立即清理所有 handlers（这是线程安全的）
+            upstream?.stateUpdateHandler = nil
+            upstream?.pathUpdateHandler = nil
+            upstream?.viabilityUpdateHandler = nil
+            upstream?.betterPathUpdateHandler = nil
+            
+            // 保存引用
+            let upToCancel = upstream
+            let clientToCancel = client
+            
+            // 异步取消（避免死锁）
+            eventQueue.async {
+                upToCancel?.cancel()
+                clientToCancel.cancel()
+            }
+        }
         // 这里不再做 activeConns--（由 cancel 统一扣减），仅打印当前 RSS/活动数
         log("🔵 DEINIT LayerMinusBridge #\(id), cleanup needed: \(needsCleanup) | active_conns=\(BridgeGlobals.q.sync { BridgeGlobals.activeConns }) rss_mb=\(rssMB()) RSS=\(MemoryGauge.rssMB())")
 
@@ -706,7 +745,7 @@ public actor LayerMinusBridge {
 struct NWReceiveSequence: AsyncSequence {
     typealias Element = Data
     
-	struct Iterator: AsyncIteratorProtocol {
+    struct Iterator: AsyncIteratorProtocol {
         // MARK: - Local static logger just for Iterator
         #if DEBUG
             private static let logger = OSLog(subsystem: "com.silentpass.vpn", category: "NWReceive")
@@ -718,49 +757,49 @@ struct NWReceiveSequence: AsyncSequence {
             @inline(__always) private static func slog(_ msg: @autoclosure () -> String, type: OSLogType = .debug) { }
         #endif
         
-		let conn: NWConnection
-		private let baseMax: Int
-		private var consecutiveEmptyReads = 0
-		private var consecutiveDataReads = 0
-		private var currentBufferSize = 64 * 1024
+        let conn: NWConnection
+        private let baseMax: Int
+        private var consecutiveEmptyReads = 0
+        private var consecutiveDataReads = 0
+        private var currentBufferSize = 64 * 1024
         
         // 统计小块累计量，辅助触发增长
         private var accumBytes: Int = 0
         
-		private let bridgeId: UInt64
-		private let connectInfo: String?
+        private let bridgeId: UInt64
+        private let connectInfo: String?
         
         // 首包暖机时间戳（纳秒，DispatchTime.now().uptimeNanoseconds）
         private var firstByteAt: UInt64? = nil
-		
-		// 缓冲区配置
+        
+        // 缓冲区配置
         // 允许更低的最小缓冲以发挥“暖机跳变”的作用
         private let minBuffer = 64 * 1024
         
-		private let maxBuffer = GLOBAL_MAX_BUFFER
-		private let growthStep = 512 * 1024
-		private let memoryWarningThreshold = 45 * 1024 * 1024
-		
-		init(conn: NWConnection, max: Int, bridgeId: UInt64, connectInfo: String?) {
-			self.conn = conn
-			self.baseMax = max
-			self.bridgeId = bridgeId
-			self.connectInfo = connectInfo
+        private let maxBuffer = GLOBAL_MAX_BUFFER
+        private let growthStep = 512 * 1024
+        private let memoryWarningThreshold = 45 * 1024 * 1024
+        
+        init(conn: NWConnection, max: Int, bridgeId: UInt64, connectInfo: String?) {
+            self.conn = conn
+            self.baseMax = max
+            self.bridgeId = bridgeId
+            self.connectInfo = connectInfo
             
-		}
-		
-		private func makeLogTag() -> String {
-			let info = connectInfo.map { " [\($0)]" } ?? ""
-			return "[LayerMinusBridge \(bridgeId)\(info)]"
-		}
-		
-		
-		mutating func next() async throws -> Data? {
-			// 动态调整缓冲区大小
-			adjustBufferSize()
+        }
+        
+        private func makeLogTag() -> String {
+            let info = connectInfo.map { " [\($0)]" } ?? ""
+            return "[LayerMinusBridge \(bridgeId)\(info)]"
+        }
+        
+        
+        mutating func next() async throws -> Data? {
+            // 动态调整缓冲区大小
+            adjustBufferSize()
 
-			while let d = try await conn.recv(max: Swift.min(currentBufferSize, baseMax)) {
-				if !d.isEmpty {
+            while let d = try await conn.recv(max: Swift.min(currentBufferSize, baseMax)) {
+                if !d.isEmpty {
                     
                     // 首个下行字节：记录暖机起点，并进行一次性“跃迁到 64KB”（若当前更小）
                     if firstByteAt == nil {
@@ -775,34 +814,34 @@ struct NWReceiveSequence: AsyncSequence {
                     }
 
                     
-					consecutiveEmptyReads = 0
-					consecutiveDataReads += 1
+                    consecutiveEmptyReads = 0
+                    consecutiveDataReads += 1
                     
                     
                     // 统计小块总量 —— 为累计触发增长做准备
                     accumBytes &+= d.count
-					
+                    
                     // 放宽额外计数触发：由 3/4 改为 1/2
-					if d.count >= currentBufferSize * 1 / 2 {
-						consecutiveDataReads += 2
-					}
-					
-					return d
-				} else {
-					consecutiveEmptyReads += 1
-					consecutiveDataReads = 0
-					
-					if consecutiveEmptyReads > 1 {
-						let sleepMs = Swift.min(consecutiveEmptyReads, 10)
-						try? await Task.sleep(nanoseconds: UInt64(sleepMs * 1_000_000))
-					}
-				}
-			}
-			return nil
-		}
-		
-		private mutating func adjustBufferSize() {
-			// 获取当前内存使用量
+                    if d.count >= currentBufferSize * 1 / 2 {
+                        consecutiveDataReads += 2
+                    }
+                    
+                    return d
+                } else {
+                    consecutiveEmptyReads += 1
+                    consecutiveDataReads = 0
+                    
+                    if consecutiveEmptyReads > 1 {
+                        let sleepMs = Swift.min(consecutiveEmptyReads, 10)
+                        try? await Task.sleep(nanoseconds: UInt64(sleepMs * 1_000_000))
+                    }
+                }
+            }
+            return nil
+        }
+        
+        private mutating func adjustBufferSize() {
+            // 获取当前内存使用量
             MemoryGauge.forceRefresh()
             let currentMemory = MemoryGauge.rssBytes()   // bytes（phys_footprint）
             
@@ -817,50 +856,50 @@ struct NWReceiveSequence: AsyncSequence {
             
             // 暖机期希望维持更高的下限（避免首屏被过度收缩）
             let warmupMin = 128 * 1024
-			
-			// 内存压力检查
-			if currentMemory >= memoryWarningThreshold {
-				// 达到警戒线：仅在当前缓冲 > 256KB 时减半；<=128KB 保持不变
-				if currentBufferSize > 256 * 1024 {
+            
+            // 内存压力检查
+            if currentMemory >= memoryWarningThreshold {
+                // 达到警戒线：仅在当前缓冲 > 256KB 时减半；<=128KB 保持不变
+                if currentBufferSize > 256 * 1024 {
                     
                     let floor = inWarmup ? Swift.max(minBuffer, warmupMin) : minBuffer
                     let newSize = Swift.max(currentBufferSize / 2, floor)
                     
-					
+                    
                     Self.slog("\(makeLogTag()) 🔵🔵🔵 currentMemory Memory pressure RSS \(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
-						+ "shrink \(currentBufferSize/1024)KB → \(newSize/1024)KB")
-					
-					currentBufferSize = newSize
-				} else {
-					
+                        + "shrink \(currentBufferSize/1024)KB → \(newSize/1024)KB")
+                    
+                    currentBufferSize = newSize
+                } else {
+                    
                     Self.slog("\(makeLogTag()) 🔵🔵🔵 currentMemory Memory pressure RSS\(currentMemory/(1024*1024))MB ≥ \(memoryWarningThreshold/(1024*1024))MB: "
-						+ "buffer kept \(currentBufferSize/1024)KB (≤128KB)")
-					
-				}
-				return
-			}
-			
+                        + "buffer kept \(currentBufferSize/1024)KB (≤128KB)")
+                    
+                }
+                return
+            }
+            
             // 增长逻辑：仅在内存充足时；支持“小块累计触发”
             if currentBufferSize < maxBuffer &&
                 (consecutiveDataReads >= 3 || accumBytes >= currentBufferSize * 2) {
-				let projectedMemory = currentMemory + Int64(growthStep)
-				if projectedMemory < memoryWarningThreshold {
-					let newSize = Swift.min(currentBufferSize + growthStep, maxBuffer)
-					if newSize != currentBufferSize {
-						
+                let projectedMemory = currentMemory + Int64(growthStep)
+                if projectedMemory < memoryWarningThreshold {
+                    let newSize = Swift.min(currentBufferSize + growthStep, maxBuffer)
+                    if newSize != currentBufferSize {
+                        
                         Self.slog("\(makeLogTag()) 🔵🔵🔵 Buffer growing: \(currentBufferSize/1024)KB → \(newSize/1024)KB (currentMemory RSS: \(currentMemory/(1024*1024))MB)")
-						
-						currentBufferSize = newSize
+                        
+                        currentBufferSize = newSize
                         
                         // 增长后清理一部分累计，避免连锁暴涨
                         accumBytes = accumBytes / 2
-					}
-				} else {
+                    }
+                } else {
                     Self.slog("\(makeLogTag()) 🔵🔵🔵 Growth blocked: would exceed memory threshold (current RSS: \(currentMemory/(1024*1024))MB)")
-					
-				}
-			}
-			// 缩减逻辑
+                    
+                }
+            }
+            // 缩减逻辑
             // 收缩逻辑：暖机期禁收缩；非暖机更温和且提高空读阈值
             else if !inWarmup && consecutiveEmptyReads >= 4 && currentBufferSize > minBuffer {
                 let floor = minBuffer
@@ -908,8 +947,8 @@ struct NWReceiveSequence: AsyncSequence {
                 
                 }
             }
-		}
-	}
+        }
+    }
     
     
     let conn: NWConnection
@@ -951,35 +990,35 @@ extension NWConnection {
                         cont.resume(returning: data ?? Data())
                     }
                 }
-			}
-		}, onCancel: {
-			// 注意：这里违反了线程模型，但作为防止资源泄漏的最后防线
-    		// 正常情况下不应该执行到这里
-			self.cancel()
-		})
+            }
+        }, onCancel: {
+            // 注意：这里违反了线程模型，但作为防止资源泄漏的最后防线
+            // 正常情况下不应该执行到这里
+            self.cancel()
+        })
     }
     
     func sendAsync(_ data: Data?, final: Bool = false) async throws {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-				let completion: NWConnection.SendCompletion = .contentProcessed { error in
-					if let error { 
-						cont.resume(throwing: error)
-					} else { 
-						cont.resume(returning: ())
-					}
-				}
-				
-				if final && data == nil {
-					self.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: completion)
-				} else {
-					self.send(content: data, contentContext: .defaultMessage, isComplete: false, completion: completion)
-				}
-        	}
-		}, onCancel: {
-			// 注意：这里违反了线程模型，但作为防止资源泄漏的最后防线
-    		// 正常情况下不应该执行到这里
-			self.cancel()
-		})
-	}
+                let completion: NWConnection.SendCompletion = .contentProcessed { error in
+                    if let error {
+                        cont.resume(throwing: error)
+                    } else {
+                        cont.resume(returning: ())
+                    }
+                }
+                
+                if final && data == nil {
+                    self.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: completion)
+                } else {
+                    self.send(content: data, contentContext: .defaultMessage, isComplete: false, completion: completion)
+                }
+            }
+        }, onCancel: {
+            // 注意：这里违反了线程模型，但作为防止资源泄漏的最后防线
+            // 正常情况下不应该执行到这里
+            self.cancel()
+        })
+    }
 }

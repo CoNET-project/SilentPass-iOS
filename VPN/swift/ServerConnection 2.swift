@@ -1038,15 +1038,15 @@ public final class ServerConnection {
         handedOff = true
         phase = .bridged
         
-        if isIPAddress(host) {
-            if isTelegramIP(host) {
-                useLayerMinus = true
-                log("🔵 TELEGRAM IP detected: \(host):\(port) -> force LayerMinus")
-            } else {
-                useLayerMinus = false
-                log("🟢🟢 DIRECT (IP literal): \(host):\(port) -> bypass LayerMinus")
-            }
-        }
+//        if isIPAddress(host) {
+//            if isTelegramIP(host) {
+//                useLayerMinus = true
+//                log("🔵 TELEGRAM IP detected: \(host):\(port) -> force LayerMinus")
+//            } else {
+//                useLayerMinus = false
+//                log("🟢🟢 DIRECT (IP literal): \(host):\(port) -> bypass LayerMinus")
+//            }
+//        }
             
         Task { [weak self] in
             guard let self = self else { return }
@@ -1058,10 +1058,15 @@ public final class ServerConnection {
             }
         }
         
-        useLayerMinus = false
-
-        guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
-            !egressNode.isEmpty else {
+        // —— 基于当前状态与节点可用性，决定是否走 LM —— //
+        
+        let egressNode = self.layerMinus.getRandomEntryNodes()
+        let canLM = (useLayerMinus == true)
+        
+        
+//        useLayerMinus = false
+//        if !canLM && entryNode == nil {
+        guard useLayerMinus, let entryNode = NodeStore.getRandomEntryNode(), !entryNode.isEmpty, let egressNode = self.layerMinus.getRandomEgressNodes(), !egressNode.isEmpty else  {
 		// guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
         //     egressNode.isEmpty else {
             let connectInfo = "origin=\(host):\(port) \(useLayerMinus) httpConnect \(httpConnect) socksVer \((socksVer != nil) ? String(socksVer!) : "nil") useLayerMinus=\(useLayerMinus), layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
@@ -1100,14 +1105,13 @@ public final class ServerConnection {
             return
         }
         
-        let entryInfo = self.layerMinus.getRandomEntryNodes()?.ip_addr ?? "NONE"
         
+        // 在 5G（蜂窝）下优先使用域名，其它网络使用 IP（保留你原有逻辑）
+//        let onCellular = (self.client.currentPath?.usesInterfaceType(.cellular) == true)
         
-        if self.httpConnect {
-            self.log("Layer Minus start by HTTP/HTTPS PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryInfo), egress \(egressNode.ip_addr)")
-        } else {
-            self.log("Layer Minus start by SOCKS 5 PROXY 🟢 \(self.id) \(host):\(port) with entry  \(entryInfo), egress \(egressNode.ip_addr)")
-        }
+//        let egressOpt = self.layerMinus.getRandomEgressNodes()
+//        let egressNode = egressOpt!
+        
 
 
         
@@ -1127,16 +1131,31 @@ public final class ServerConnection {
         Task{
             
             let signMessage = try await self.layerMinus.web3.personal.signPersonalMessage(message: messageData, from: account, password: "")
-            if let callFun2 = self.layerMinus.javascriptContext.objectForKeyedSubscript("json_sign_message") {
-                if let ret2 = callFun2.call(withArguments: [message, "0x\(signMessage.toHexString())"]) {
-                    let cmd = ret2.toString()!
-                    let pre_request = self.layerMinus.createValidatorData(node: egressNode, responseData: cmd)
-                    let request = self.layerMinus.makeRequest(host: entryInfo == "NONE" ? egressNode.ip_addr: entryInfo, data: pre_request)
+            
+            guard let cmd = Self.makeSignedMessageJSON(
+                message: message,
+                signMessageHex: "0x\(signMessage.toHexString())"
+            ) else {
+                self.log("makeSignedMessageJSON failed")
+                self.close(reason: "makeSignedMessageJSON failed")
+                return
+            }
+
+                    let pre_request = self.layerMinus.createValidatorData(responseData: cmd)
+//            let preferDomain = PathProbe.cellularOrV6Only()
+    let entryInfo: String = entryNode.ip_addr
+            
+                    let request = self.layerMinus.makeRequest(host: entryInfo, data: pre_request)
                     
-                    self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)")
+            
+                    self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryInfo) egress=\(egressNode.ip_addr)")
                     let connectInfo = "origin=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)"
                     log("🟢🟢🟢  \(connectInfo)")
-                    
+                    // 在创建 Bridge 之前，动态检测是否蜂窝/IPv6-only
+
+
+            
+            
                     let newBridge = LayerMinusBridge(
                         id: self.id,
                         client: self.client,
@@ -1153,19 +1172,39 @@ public final class ServerConnection {
                     self.isLayerMinusRouted = true
                     self.bridge = newBridge
                     self.onRoutingDecided?(self)
-					Self.startGlobalMemoryMonitorIfNeeded(event: "LayerMinusBridge #\(self.id) CREATED", logger: { [weak self] in self?.log($0) })
+                    let firstBody = request.data(using: .utf8)!.base64EncodedString()
+					Self.startGlobalMemoryMonitorIfNeeded(event: "🟢🟢🟢 传递 Base64 编码的首包给 bridge \(firstBody.count) LayerMinusBridge #\(self.id) CREATED", logger: { [weak self] in self?.log($0) })
                     
                     // 传递 Base64 编码的首包给 bridge（actor 方法需 await）
+                    
                     Task {
-                        await newBridge.start(withFirstBody: request.data(using: .utf8)!.base64EncodedString())
+                        //Self.startGlobalMemoryMonitorIfNeeded(event: "传递 Base64 编码的首包给 bridge \(firstBody.count)（actor 方法需 await） #\(self.id) CREATED", logger: { [weak self] in self?.log($0) })
+                        await newBridge.start(withFirstBody: firstBody)
                     }
-                }
-            }
+                
+            
         }
         
         
         
         
+    }
+    
+    // MARK: - PathProbe: snapshot current outbound path
+    private enum PathProbe {
+        private static let q = DispatchQueue(label: "ServerConnection.PathProbe")
+        private static let mon: NWPathMonitor = {
+            let m = NWPathMonitor()     // 默认路径
+            m.start(queue: q)
+            return m
+        }()
+        @inline(__always)
+        static func cellularOrV6Only() -> Bool {
+            // 读取 monitor.currentPath（iOS 14+ 有效；已 start 后可随时取）
+            let p = mon.currentPath
+            // 蜂窝 或 不支持 IPv4（常见 5G IPv6-only） → 用域名
+            return p.usesInterfaceType(.cellular) || !p.supportsIPv4
+        }
     }
 
     // MARK: TLS/SSL 检测
@@ -1279,3 +1318,18 @@ extension IPv4Address {
         return (selfInt & mask) == (netInt & mask)
     }
 }
+extension ServerConnection {
+    static func makeSignedMessageJSON(message: String, signMessageHex: String) -> String? {
+        let obj: [String: Any] = [
+            "message": message,
+            "signMessage": signMessageHex
+        ]
+        guard JSONSerialization.isValidJSONObject(obj),
+        let data = try? JSONSerialization.data(withJSONObject: obj, options: []) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
+

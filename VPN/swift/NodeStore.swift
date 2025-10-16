@@ -11,7 +11,7 @@ struct Node: Codable {
     var region: String
     var armoredPublicKey: String
     var nftNumber: String
-    
+    var domain: String?
     
     enum CodingKeys: String, CodingKey {
         case country, ip_addr, region, armoredPublicKey, nftNumber
@@ -121,11 +121,25 @@ struct NodeStore {
     /// 每个 Region 的延迟（ms）。失败/超时会记成 Int.max
     static var regionLatencyMs: [String: Int] = [:]
     
+    static var entryNodes:[Node] = []
+    
+    static func getRandomEntryNode() -> Node? {
+        guard !entryNodes.isEmpty else { return nil }
+        return entryNodes.randomElement()
+    }
+    
     // ✅ 初始化：自动拉链上节点、填充 allNodes, allNodes_domain, allRegion
     static func initialize() async {
         do {
             let nodes = try await fetchAllNodesViaWeb3swift()
             allNodes = nodes
+            
+            // 先基于 nodes 生成国家级 allRegion（唯一且保持顺序）
+            var seen = Set<String>()
+            allRegion = nodes.compactMap { n in
+                let c = n.country
+                return seen.insert(c).inserted ? c : nil
+            }
 
             // —— 使用可复用函数：仅测 DE / ES / US / GB ——
             let results = await sampleRegionsLatency(
@@ -207,6 +221,41 @@ struct NodeStore {
             let b = $1.delay >= 0 ? $1.delay : Int.max
             return a < b
         }
+        
+        // —— 结束前：在“最快的国家”的所有节点中，随机挑 20 个 getNodeDelay 可用的作为 entryNodes ——
+        if let fastest = results.first?.region {
+            // 按国家（country）筛候选；为避免阻塞，分批并发探测
+            let candidates = allNodes.filter { $0.country == fastest }
+            var picked: [Node] = []
+            picked.reserveCapacity(20)
+        
+            // 随机顺序，限制并发批大小，逐批收集成功者
+            let shuffled = candidates.shuffled()
+            let batch = 8
+            var idx = 0
+            while idx < shuffled.count && picked.count < 20 {
+                let end = min(idx + batch, shuffled.count)
+                await withTaskGroup(of: (Node, Int).self) { group in
+                    for n in shuffled[idx..<end] {
+                        group.addTask {
+                            let d = await getNodeDelay(n, timeout: timeout)
+                            return (n, d)
+                        }
+                    }
+                    for await (n, d) in group {
+                        if d >= 0 && picked.count < 20 {
+                            picked.append(n)
+                        }
+                    }
+                }
+                idx = end
+            }
+            entryNodes = picked
+        } else {
+            entryNodes = []
+        }
+        
+        
         return results
     }
     
@@ -304,7 +353,8 @@ struct NodeStore {
                 ip_addr: oc.ip_addr,
                 region: oc.regionName,
                 armoredPublicKey: oc.PGP,
-                nftNumber: String(oc.id)
+                nftNumber: String(oc.id),
+                domain: oc.PGPKey
             )
         }
         

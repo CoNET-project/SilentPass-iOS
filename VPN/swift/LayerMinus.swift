@@ -128,12 +128,12 @@ public final class LayerMinus {
     }
     
     
-    func createValidatorData (node: Node, responseData: String) -> String {
-        let nodePGP = node.armoredPublicKey
+    func createValidatorData (responseData: String) -> String {
+//        let nodePGP = node.armoredPublicKey
         let cmdData = responseData.data(using: .utf8)!.base64EncodedString().data(using: .utf8)!
         do {
-            let keys = try ObjectivePGP.readKeys(from: nodePGP.data(using: .utf8)!)
-            let encrypted = try ObjectivePGP.encrypt(cmdData, addSignature: false, using: keys)
+            
+            let encrypted = try ObjectivePGP.encrypt(cmdData, addSignature: false, using: egressNodesKey)
             let armoredRet = Armor.armored(encrypted, as: .message)
             if let functionFullname = self.javascriptContext.objectForKeyedSubscript("json_string") {
                 if let fullname = functionFullname.call(withArguments: [armoredRet]) {
@@ -152,7 +152,7 @@ public final class LayerMinus {
             if let ret1 = callFun1.call(withArguments: [host, port, body, self.walletAddress, command]) {
                 let message = ret1.toString()!
 //                print(message)
-                let messageData = message.data(using: .utf8)!
+                //let messageData = message.data(using: .utf8)!
                 return message
             }
         }
@@ -174,7 +174,7 @@ public final class LayerMinus {
                 if let callFun2 = self.javascriptContext.objectForKeyedSubscript("json_sign_message") {
                     if let ret2 = callFun2.call(withArguments: [message, "0x\(signMessage.toHexString())"]) {
                         let cmd = ret2.toString()!
-                        return self.createValidatorData(node: node, responseData: cmd)
+                        return self.createValidatorData(responseData: cmd)
                     }
                 }
             }
@@ -253,6 +253,8 @@ public final class LayerMinus {
         }
     }
     
+    var egressNodesKey:[Key] = []
+    
     func startInVPN (privateKey: String, entryNodes: [Node], egressNodes: [Node], port: Int) {
         let privateKeyData = Data.fromHex(privateKey)!
         
@@ -278,9 +280,20 @@ public final class LayerMinus {
         
         NSLog("PacketTunnelProvider startInVPN privateKey \(self.privateKeyAromed) entryNodes [\(self.entryNodes.count)] egressNodes [\(self.egressNodes.count)]")
         
+        let egressNode = egressNodes[0]
+        let nodePGP = egressNode.armoredPublicKey
+        do {
+            egressNodesKey = try ObjectivePGP.readKeys(from: nodePGP.data(using: .utf8)!)
+        } catch {
+            
+        }
+        
+        
         Task{
             self.web3 = try await Web3.new(LayerMinus.rpcUrl)
             web3.addKeystoreManager(self.keystoreManager)
+            
+            
         }
         
 //        if self.miningProcess != nil {

@@ -60,6 +60,7 @@
 		D04D4DF42E593DFD0083DD23 /* LayerMinusBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4DD12E593C860083DD23 /* LayerMinusBridge.swift */; };
 		D04D4E1B2E59908B0083DD23 /* LayerMinus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4E1A2E59908B0083DD23 /* LayerMinus.swift */; };
 		D04D4E1D2E5990FF0083DD23 /* NodeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D04D4E1C2E5990FF0083DD23 /* NodeManager.swift */; };
+		D05491672EA0201600A89748 /* NodeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0487B712E9C6A7E004A1245 /* NodeStore.swift */; };
 		D06663F62E28443F007D010D /* LocalWebServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06663F52E28443F007D010D /* LocalWebServer.swift */; };
 		D06663F92E284A9C007D010D /* Swifter in Frameworks */ = {isa = PBXBuildFile; productRef = D06663F82E284A9C007D010D /* Swifter */; };
 		D06663FB2E284BC0007D010D /* Updater.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06663FA2E284BC0007D010D /* Updater.swift */; };
@@ -713,6 +714,7 @@
 				D04D4E1B2E59908B0083DD23 /* LayerMinus.swift in Sources */,
 				D0064CEF2E5B8D74003FBD9D /* CountryManager.swift in Sources */,
 				D0D00E5E2E6AED7000E76945 /* Allowlist.swift in Sources */,
+				D05491672EA0201600A89748 /* NodeStore.swift in Sources */,
 				D04D4E1D2E5990FF0083DD23 /* NodeManager.swift in Sources */,
 				D0D00E602E6AEF8800E76945 /* PACBuilder.swift in Sources */,
 				7606D71C2D2EC5A000224EC8 /* Server 2.swift in Sources */,

@@ -144,6 +144,7 @@ class PacketTunnelProvider: vpn2socks.PacketTunnelProvider {
     override init() {
         super.init()
         self.socksServer = Server(port: 8888)
+        
 //        self.socksServer?.start()
         do {
             try self.socksServer?.start()
