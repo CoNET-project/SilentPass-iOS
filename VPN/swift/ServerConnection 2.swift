@@ -5,7 +5,7 @@ import Darwin
 import os.log
 
 
-
+let httpMethods = ["CONNECT", "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "TRACE"]
 //		ServerConnection LayerMinusBridge
 public final class ServerConnection {
 
@@ -150,7 +150,7 @@ public final class ServerConnection {
     public let id: UInt64
     public let client: NWConnection
     private let onClosed: ((UInt64) -> Void)?
-    var httpConnect = true
+    var httpConnect = ""
 
     private let logger: Logger
     private let queue: DispatchQueue
@@ -385,12 +385,10 @@ public final class ServerConnection {
                     if first == 0x05 {
                         // SOCKS5
                         socksVer = 5
-                        httpConnect = false
                         advanced = parseMethodSelect()
                     } else if first == 0x04 {
                         // SOCKS4/4a
                         socksVer = 4
-                        httpConnect = false
                         advanced = parseSocks4Request()
                     } else {
                         // 尝试当作 HTTP 代理
@@ -509,7 +507,7 @@ public final class ServerConnection {
     private func didGetTargetSocks4(host: String, port: Int) -> Bool {
         log("SOCKS4 CONNECT \(host):\(port) -> reply OK, then wait first-body")
         _ = sendSocks4Reply(granted: true, host: "0.0.0.0", port: 0)
-        self.httpConnect = false
+        
         phase = .connected(host: host, port: port)
         // 若缓冲里已经有首包，立刻处理
         parseBuffer()
@@ -582,12 +580,13 @@ public final class ServerConnection {
         
         // 支持的方法（大小写不敏感）：CONNECT / GET / POST / PUT / DELETE / HEAD / OPTIONS / PATCH / TRACE
         let upper = firstLine.uppercased()
-        let httpMethods = ["CONNECT", "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "TRACE"]
+        
         guard httpMethods.first(where: { upper.hasPrefix($0 + " ") }) != nil else { return false }
 
         
         // CONNECT 单独处理（只需第一行 + 可选首部）
         if upper.hasPrefix("CONNECT ") {
+            self.httpConnect = firstLine
             // CONNECT host:port HTTP/x.y
             let parts = firstLine.split(separator: " ")
             guard parts.count >= 2 else { return false }
@@ -636,6 +635,7 @@ public final class ServerConnection {
 		// 其它明文 HTTP：需至少拿到完整首部（避免误改正文）
 		guard let headerEnd = recvBuffer.range(of: CRLFCRLF) else { return false }
 
+        
 	
 		// 解析第一行：METHOD SP PATH SP HTTP/x.y
 		let lineParts = firstLine.split(separator: " ", maxSplits: 2)
@@ -648,6 +648,7 @@ public final class ServerConnection {
 		// 解析 Host 首部（用于 origin-form 与默认端口判断）
 		let headerData = recvBuffer.subdata(in: firstLineEnd.upperBound..<headerEnd.lowerBound)
 		guard let headerText = String(data: headerData, encoding: .utf8) else { return false }
+        
 		var hostHeader = ""
 		for line in headerText.split(separator: "\r\n") {
 			let t = line.trimmingCharacters(in: .whitespaces)
@@ -656,7 +657,9 @@ public final class ServerConnection {
 				break
 			}
 		}
-
+        
+        
+        self.httpConnect = firstLine
 	
 		// 目标主机/端口与改写后的 PATH
 		let (targetHost, targetPort, originPath) = normalizeAbsoluteOrOriginPath(
@@ -771,11 +774,13 @@ public final class ServerConnection {
 	}
 
 	private func handoffToBridge(host: String, port: Int, firstBody: Data) {
-		if self.httpConnect {
-			log("🟢 HTTP/HTTPS proxy #\(id) \(host):\(port) ")
-		} else {
-			log("🟢 SOCKS v5 proxy #\(id) \(host):\(port) ")
-		}
+        if self.httpConnect.isEmpty {
+            log("🟢 SOCKS v5 proxy #\(id) \(host):\(port) ")
+        } else {
+            log("🟢 HTTP/HTTPS proxy #\(id) \(host):\(port) ")
+        }
+
+
 		
 		processFirstBody(host: host, port: port, firstBody: firstBody)
 	}
@@ -1060,13 +1065,11 @@ public final class ServerConnection {
         
         // —— 基于当前状态与节点可用性，决定是否走 LM —— //
         
-        let egressNode = self.layerMinus.getRandomEntryNodes()
-        let canLM = (useLayerMinus == true)
-        
+
         
 //        useLayerMinus = false
 //        if !canLM && entryNode == nil {
-        guard useLayerMinus, let entryNode = NodeStore.getRandomEntryNode(), !entryNode.isEmpty, let egressNode = self.layerMinus.getRandomEgressNodes(), !egressNode.isEmpty else  {
+        guard useLayerMinus, let entryNode = self.layerMinus.getRandomEntryNodes(), !entryNode.isEmpty else  {
 		// guard useLayerMinus, let egressNode = self.layerMinus.getRandomEgressNodes(),
         //     egressNode.isEmpty else {
             let connectInfo = "origin=\(host):\(port) \(useLayerMinus) httpConnect \(httpConnect) socksVer \((socksVer != nil) ? String(socksVer!) : "nil") useLayerMinus=\(useLayerMinus), layerMinus entryNodes = \(self.layerMinus.entryNodes.count) egressNode = \(self.layerMinus.egressNodes.count) using DIRECT CONNECT"
@@ -1144,12 +1147,13 @@ public final class ServerConnection {
                     let pre_request = self.layerMinus.createValidatorData(responseData: cmd)
 //            let preferDomain = PathProbe.cellularOrV6Only()
     let entryInfo: String = entryNode.ip_addr
+            let egressNode = self.layerMinus.egressNodes[0]
             
                     let request = self.layerMinus.makeRequest(host: entryInfo, data: pre_request)
                     
             
                     self.log("KPI handoff -> LM host=\(host):\(port) entry=\(entryInfo) egress=\(egressNode.ip_addr)")
-                    let connectInfo = "origin=\(host):\(port) entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)"
+                    let connectInfo = "origin=\(host):\(port) httpConnect \(httpConnect) socksVer \((socksVer != nil) ? String(socksVer!) : "nil") entry=\(entryInfo == "NONE" ? egressNode.ip_addr: entryInfo) egress=\(egressNode.ip_addr)"
                     log("🟢🟢🟢  \(connectInfo)")
                     // 在创建 Bridge 之前，动态检测是否蜂窝/IPv6-only
 
