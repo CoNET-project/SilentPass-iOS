@@ -50,5 +50,6 @@ Thumbs.db
 
 /build
 *.txt
-
+CoNETVPN1.xcworkspace/
 SendablePacketFlow*.*
+vpn2socks/
